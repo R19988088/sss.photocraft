@@ -90,9 +90,12 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 // --- drop shadow ---------------------------------------------------------------------------
 
 // C3 `canvasShadowVertex`/`canvasShadowFragment`: the shadow quad *is* the page quad (rotated
-// with it) grown by an 8 pt border, shifted down in clip space, and faded out over that border by
-// distance from the page edge. Because the border is measured on the rotated quad, the shadow
-// keeps the page's orientation while its light stays overhead.
+// with it) grown by an 8 pt border, shifted down, and faded out over that border by distance from
+// the page edge. Because the border is measured on the rotated quad, the shadow keeps the page's
+// orientation while its light stays overhead.
+//
+// C3 passes `10 / viewSize.height` to a clip-space `y -=`, and clip y spans 2 over the view
+// height, so the drop is 5 pt on screen, not 10.
 const SHADOW_OFFSET_PT: f32 = 5.0;
 const SHADOW_EXTENT_PT: f32 = 8.0;
 
@@ -116,13 +119,10 @@ fn vs_shadow(@builtin(vertex_index) vi: u32) -> VOut {
 @fragment
 fn fs_shadow(in: VOut) -> @location(0) vec4<f32> {
     let u = view.a.w;
-    // Undo the screen-space drop so `p` lands on the page position this shadow pixel came from.
+    // Undo the screen-space drop so this pixel lands where the shadow quad was before the shift.
     let d = px_to_doc(in.pos.xy - vec2(0.0, SHADOW_OFFSET_PT * u));
-    // The page is opaque here; a document with transparent pixels must not show its own shadow.
-    if (all(d >= vec2(0.0)) && all(d < view.b.zw)) {
-        discard;
-    }
     // Distance outside the page in device px, then C3's `length(outside)` fade over the border.
+    // The page is drawn after this pass and is opaque, so its own interior covers the shadow.
     let outside = max(max(-d, d - view.b.zw), vec2(0.0)) * view.a.z;
     let fade = SHADOW_EXTENT_PT * u;
     let alpha = (1.0 - smoothstep(0.0, fade, length(outside))) * 0.14;

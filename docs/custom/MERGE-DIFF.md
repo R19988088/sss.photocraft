@@ -321,8 +321,30 @@ let box = doc_screen_aabb();       // 旋转后的文档屏幕 AABB
 let ambient = box_blur(p - vec2(0.0, 10.0 * u), box.xy, box.zw, 8.0 * u) * 0.14;
 ```
 
-参数也按 C3 对齐：10 pt 下移、8 pt 淡出、0.14 不透明度（原来是 ambient 7pt/σ16/0.40
-加 contact 0.75pt/σ1.25/0.30，两套叠在一起）。
+**这次修正不完整，已作废**（用户 2026-11-10 反馈）。旋转后页面的屏幕 AABB 比纸张本身
+大一圈，投影就变成一个轴对齐的大圆角方块贴在外面：既没跟着纸张转向，尺寸也过大。
+
+**现在的实现**（照 C3 逐行，`canvasShadowVertex`/`canvasShadowFragment`）：
+
+```wgsl
+// 页面四边形按 8pt 向外扩，再整体随页面旋转 —— 取四角连成的四边形，不是它们的 AABB
+let pad = SHADOW_EXTENT_PT * u / max(view.a.z, 1e-6);
+let p = mix(mix(c0, c1, c.x), mix(c3, c2, c.x), c.y) + vec2(0.0, SHADOW_OFFSET_PT * u);
+// 片元：反推回文档坐标，按到页面边缘的距离在 8pt 内淡出
+let d = px_to_doc(in.pos.xy - vec2(0.0, SHADOW_OFFSET_PT * u));
+let outside = max(max(-d, d - view.b.zw), vec2(0.0)) * view.a.z;
+alpha = (1.0 - smoothstep(0.0, SHADOW_EXTENT_PT * u, length(outside))) * 0.14;
+```
+
+要点：
+- 阴影几何是**随页面旋转的四边形**，投影永远贴合纸张的四条边；光仍从正上方来。
+- 偏移是 **5 pt**，不是 10 pt：C3 把 `10 / viewSize.height` 传给裁剪空间 `y -=`，
+  而裁剪空间 y 在视口高度上跨 2.0，所以屏幕位移是 10/2 = 5 pt。
+- 淡出 8 pt、不透明度 0.14，与 C3 `canvasShadowFragment` 一致。
+- 旧的 `erf2`/`box_blur`/`doc_screen_aabb` 高斯近似已删除，改为 C3 的距离场。
+- 页面本体在此 pass 之后绘制且不透明，无需 `discard` 内部像素（C3 也没有）。
+- 验证：`/tmp/shadowgpu` 用同一份 WGSL 在 Metal 上离屏渲染（页面 900×620、缩放 1.45、
+  旋转 −12°），确认投影是贴边窄带、随页面旋转、宽度与 8 pt 一致。
 
 ### 9.2 触摸板/旋转后按 Esc 复位角度
 
