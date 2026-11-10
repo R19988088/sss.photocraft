@@ -321,35 +321,50 @@ let box = doc_screen_aabb();       // 旋转后的文档屏幕 AABB
 let ambient = box_blur(p - vec2(0.0, 10.0 * u), box.xy, box.zw, 8.0 * u) * 0.14;
 ```
 
-**这次修正不完整，已作废**（用户 2026-11-10 反馈）。旋转后页面的屏幕 AABB 比纸张本身
-大一圈，投影就变成一个轴对齐的大圆角方块贴在外面：既没跟着纸张转向，尺寸也过大。
+**第二次修正仍不完整**（用户 2026-11-10 又反馈"是最早那个没有旋转的方形"）。
 
-**现在的实现**（照 C3 逐行，`canvasShadowVertex`/`canvasShadowFragment`）：
+真因有两个：
+1. 旋转后页面的屏幕 AABB 比纸张本身大一圈，投影就变成一个轴对齐的大方块贴在外面：
+   既没跟着纸张转向，尺寸也过大。
+2. 更关键的是：**投影被写成了 CPU / GPU 两套实现**。GPU 着色器里那套改了，CPU 回退路径
+   还是 `egui::Shadow` 的轴对齐方块（`offset [0,8] blur 28`），所以用户看到的一直是旧的
+   方形——底栏显示 "CPU Rendering" 时走的正是这一条。
 
-```wgsl
-// 页面四边形按 8pt 向外扩，再整体随页面旋转 —— 取四角连成的四边形，不是它们的 AABB
-let pad = SHADOW_EXTENT_PT * u / max(view.a.z, 1e-6);
-let p = mix(mix(c0, c1, c.x), mix(c3, c2, c.x), c.y) + vec2(0.0, SHADOW_OFFSET_PT * u);
-// 片元：反推回文档坐标，按到页面边缘的距离在 8pt 内淡出
-let d = px_to_doc(in.pos.xy - vec2(0.0, SHADOW_OFFSET_PT * u));
-let outside = max(max(-d, d - view.b.zw), vec2(0.0)) * view.a.z;
-alpha = (1.0 - smoothstep(0.0, SHADOW_EXTENT_PT * u, length(outside))) * 0.14;
+**现在的实现：只有一套**，放在 egui 绘制层，两条渲染路径共用
+（`crates/ui-egui/src/canvas/paint.rs::paint_canvas_shadow`）：
+
+```rust
+// 12 层由外向内收缩的页面四边形（每层随视图旋转），屏幕空间统一下移 5 pt。
+// 每层只补上更宽那层还没覆盖的 alpha，重叠时是淡出而不是叠加。
+for i in (1..=STEPS).rev() {
+    let t = i / STEPS;
+    let target = 0.14 * (1.0 - smoothstep01(t));   // 由 0 到 0.14
+    let a = (target - cum) / (1.0 - cum);          // "over" 合成
+    let d = 8.0 * t;                               // 8 pt 淡出带
+    mesh.quad(page grown by d, offset (0, 5));
+}
 ```
 
 要点：
-- 阴影几何是**随页面旋转的四边形**，投影永远贴合纸张的四条边；光仍从正上方来。
-- 偏移是 **5 pt**，不是 10 pt：C3 把 `10 / viewSize.height` 传给裁剪空间 `y -=`，
-  而裁剪空间 y 在视口高度上跨 2.0，所以屏幕位移是 10/2 = 5 pt。
-- 淡出 8 pt、不透明度 0.14，与 C3 `canvasShadowFragment` 一致。
-- 旧的 `erf2`/`box_blur`/`doc_screen_aabb` 高斯近似已删除，改为 C3 的距离场。
-- 页面本体在此 pass 之后绘制且不透明，无需 `discard` 内部像素（C3 也没有）。
-- 验证：`/tmp/shadowgpu` 用同一份 WGSL 在 Metal 上离屏渲染（页面 900×620、缩放 1.45、
-  旋转 −12°），确认投影是贴边窄带、随页面旋转、宽度与 8 pt 一致。
+- **不再分 CPU / GPU**：`paint_gpu_view` 在画 canvas 之前调用同一个
+  `paint_canvas_shadow`；GPU 着色器里的 `vs_shadow`/`fs_shadow`、`shadow_pipeline` 已删除。
+- 几何随页面旋转（贴合纸张四条边），偏移在屏幕空间（光从正上方来），与 C3
+  `canvasShadowVertex`/`canvasShadowFragment` 一致。
+- 偏移 **5 pt**：C3 把 `10 / viewSize.height` 传给裁剪空间 `y -=`，裁剪空间 y 跨 2.0，
+  所以屏幕位移是 10/2。
+- 淡出 8 pt、峰值不透明度 0.14。
+- 用 egui 网格而不是 shader 的理由：投影是纯屏幕空间几何，两条路径都要，写在共用层
+  才不会再次分叉。`Shadow` 的模糊是盒式且不可旋转，只能手绘分层。
 
 ### 9.2 触摸板/旋转后按 Esc 复位角度
 
 `crates/ui-egui/src/canvas.rs`：Escape 释放时，若当前 `view.rotation != 0` 且没有修饰键，
 把角度归零。不复用 `consume_key`，所以工具自己的 Escape 取消逻辑不受影响。
+
+**2026-11-10 修正**：原来这段嵌在 `if nav_hovered` 里，还要求
+`!is_shape_tool && !is_selection_tool`。结果是鼠标不在画布上、或正在用选框工具时按 Esc
+完全不复位。现在复位逻辑移到 `nav_hovered` 之外，只保留"非文本编辑 + 无修饰键"，
+任意工具、任意指针位置都能一键回正。
 
 ### 9.3 缩放/旋转手势从 Shift 改为按住 Esc
 

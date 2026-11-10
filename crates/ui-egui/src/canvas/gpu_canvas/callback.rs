@@ -9,6 +9,14 @@ pub(super) struct CanvasCallback {
     pub(super) params: ViewParams,
 }
 
+/// The canvas drop shadow on its own, so a view drawn on the CPU still gets the same shadow as
+/// one drawn by [`CanvasCallback`]. It needs nothing but the view uniform: C3's
+/// `canvasShadowVertex`/`canvasShadowFragment` take the document rectangle from `view.b`.
+pub(super) struct ShadowCallback {
+    pub(super) rect: egui::Rect,
+    pub(super) params: ViewParams,
+}
+
 /// Sampling mode: 0 trilinear, 1 bilinear, 2 anti-aliased nearest.
 pub(super) fn filter_mode(scale: f32) -> (f32, f32) {
     if scale < 0.999 {
@@ -57,17 +65,31 @@ pub(super) fn tile_screen_aabb(origin: [f32; 2], scale: f32, center: [f32; 2], c
 impl CanvasCallback {
     /// Screen-pixel origin of document (0, 0) (snapped to whole pixels) and device px per doc px.
     fn placement(&self, ppp: f32) -> ([f32; 2], f32) {
-        let p = &self.params;
-        let scale = p.zoom * ppp;
-        let c = self.rect.center();
-        let ox = (c.x * ppp - p.center[0] * scale).round();
-        let oy = (c.y * ppp - p.center[1] * scale).round();
-        ([ox, oy], scale)
+        placement_of(&self.params, self.rect, ppp)
     }
 
     fn uniforms(&self, screen: [u32; 2], ppp: f32, out_linear: bool, style: &CanvasStyle) -> [f32; VIEW_FLOATS] {
-        let p = &self.params;
-        let (origin, scale) = self.placement(ppp);
+        uniforms_of(&self.params, self.rect, screen, ppp, out_linear, style)
+    }
+}
+
+impl ShadowCallback {
+    fn uniforms(&self, screen: [u32; 2], ppp: f32, out_linear: bool, style: &CanvasStyle) -> [f32; VIEW_FLOATS] {
+        uniforms_of(&self.params, self.rect, screen, ppp, out_linear, style)
+    }
+}
+
+/// Screen-pixel origin of document (0, 0) (snapped to whole pixels) and device px per doc px.
+fn placement_of(p: &ViewParams, rect: egui::Rect, ppp: f32) -> ([f32; 2], f32) {
+    let scale = p.zoom * ppp;
+    let c = rect.center();
+    let ox = (c.x * ppp - p.center[0] * scale).round();
+    let oy = (c.y * ppp - p.center[1] * scale).round();
+    ([ox, oy], scale)
+}
+
+fn uniforms_of(p: &ViewParams, rect: egui::Rect, screen: [u32; 2], ppp: f32, out_linear: bool, style: &CanvasStyle) -> [f32; VIEW_FLOATS] {
+    let (origin, scale) = placement_of(p, rect, ppp);
         let (mode, lod) = filter_mode(scale);
         // The pixel grid shows above 500% (the constants are shared with the CPU path,
         // pixel_grid.rs). `p.zoom` is screen points per document pixel; the shared threshold is
@@ -120,7 +142,57 @@ impl CanvasCallback {
             p.center[0],
             p.center[1],
         ]
+}
+
+/// Upload the view uniform this callback's key points at. Shared: the shadow-only callback
+/// writes its own key so the two never fight over a buffer.
+fn upload_view(
+    params: &ViewParams,
+    data: &[f32; VIEW_FLOATS],
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    resources: &mut CallbackResources,
+) -> bool {
+    let Some(res) = resources.get_mut::<Resources>() else { return false };
+    if !res.health.is_ok() {
+        return false;
     }
+    let (bgl, sampler) = (&res.view_bgl, &res.sampler);
+    let v = res.views.entry(params.view_key).or_insert_with(|| {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pc_canvas_view"),
+            size: VIEW_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pc_canvas_view"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        ViewGpu { buffer, bind_group, frame_data: [f32::NAN; VIEW_FLOATS] }
+    });
+    if v.frame_data != *data {
+        queue.write_buffer(&v.buffer, 0, &f32_bytes(data));
+        v.frame_data = *data;
+    }
+    true
+}
+
+/// Set up the pass for a callback drawn in whole-screen device pixels, with the scissor doing
+/// the clipping. Returns `None` when the clip is empty.
+fn set_screen_pass(info: &egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>) -> Option<([f32; 2], egui::Rect)> {
+    let [sw, sh] = info.screen_size_px;
+    let clip = info.clip_rect_in_pixels();
+    if clip.width_px <= 0 || clip.height_px <= 0 || sw == 0 || sh == 0 {
+        return None;
+    }
+    pass.set_viewport(0.0, 0.0, sw as f32, sh as f32, 0.0, 1.0);
+    pass.set_scissor_rect(clip.left_px.max(0) as u32, clip.top_px.max(0) as u32, clip.width_px as u32, clip.height_px as u32);
+    Some(([sw as f32, sh as f32], info.clip_rect))
 }
 
 impl CallbackTrait for CanvasCallback {
@@ -132,33 +204,9 @@ impl CallbackTrait for CanvasCallback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(res) = resources.get_mut::<Resources>() else { return Vec::new() };
-        if !res.health.is_ok() {
-            return Vec::new();
-        }
+        let Some(res) = resources.get::<Resources>() else { return Vec::new() };
         let data = self.uniforms(screen.size_in_pixels, screen.pixels_per_point, res.out_linear, &res.style);
-        let (bgl, sampler) = (&res.view_bgl, &res.sampler);
-        let v = res.views.entry(self.params.view_key).or_insert_with(|| {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("pc_canvas_view"),
-                size: VIEW_UNIFORM_SIZE,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pc_canvas_view"),
-                layout: bgl,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-                ],
-            });
-            ViewGpu { buffer, bind_group, frame_data: [f32::NAN; VIEW_FLOATS] }
-        });
-        if v.frame_data != data {
-            queue.write_buffer(&v.buffer, 0, &f32_bytes(&data));
-            v.frame_data = data;
-        }
+        upload_view(&self.params, &data, device, queue, resources);
         Vec::new()
     }
 
@@ -168,14 +216,10 @@ impl CallbackTrait for CanvasCallback {
             return;
         }
         let Some(view) = res.views.get(&self.params.view_key) else { return };
-        let [sw, sh] = info.screen_size_px;
-        let clip = info.clip_rect_in_pixels();
-        if clip.width_px <= 0 || clip.height_px <= 0 || sw == 0 || sh == 0 {
+        if set_screen_pass(&info, pass).is_none() {
             return;
         }
-        // Work in whole-screen pixel coordinates; the scissor does the clipping.
-        pass.set_viewport(0.0, 0.0, sw as f32, sh as f32, 0.0, 1.0);
-        pass.set_scissor_rect(clip.left_px.max(0) as u32, clip.top_px.max(0) as u32, clip.width_px as u32, clip.height_px as u32);
+        let clip = info.clip_rect_in_pixels();
         pass.set_bind_group(0, &view.bind_group, &[]);
         if self.params.shadow {
             pass.set_pipeline(&res.shadow_pipeline);
@@ -203,5 +247,35 @@ impl CallbackTrait for CanvasCallback {
             pass.set_bind_group(1, &t.bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
+    }
+}
+
+impl CallbackTrait for ShadowCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen: &ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some(res) = resources.get::<Resources>() else { return Vec::new() };
+        let data = self.uniforms(screen.size_in_pixels, screen.pixels_per_point, res.out_linear, &res.style);
+        upload_view(&self.params, &data, device, queue, resources);
+        Vec::new()
+    }
+
+    fn paint(&self, info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &CallbackResources) {
+        let Some(res) = resources.get::<Resources>() else { return };
+        if !res.health.is_ok() {
+            return;
+        }
+        let Some(view) = res.views.get(&self.params.view_key) else { return };
+        if set_screen_pass(&info, pass).is_none() {
+            return;
+        }
+        pass.set_bind_group(0, &view.bind_group, &[]);
+        pass.set_pipeline(&res.shadow_pipeline);
+        pass.draw(0..6, 0..1);
     }
 }

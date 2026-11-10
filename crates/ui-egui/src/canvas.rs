@@ -397,6 +397,8 @@ fn paint_canvas(
     // A flipped or pixel-aspect-corrected view draws through the CPU path (the GPU canvas shader
     // has no mirroring or non-square pixels). Rotation stays on the GPU: it is a view uniform.
     let gpu_ok = crate::gpu_canvas::gpu_view_ok(flip, view.rotation, aspect);
+    // View › Canvas Border › Drop Shadow. It is C3's shadow shader, drawn on both render paths.
+    let shadow_wanted = drop_shadow && !crate::theme::Tokens::get(ctx).bevel;
     if app.gpu.is_some() {
         if gpu_ok {
             crate::render_path::view_ok(app, doc.id.0);
@@ -423,10 +425,7 @@ fn paint_canvas(
                 xf.center[1] / k as f32 + (preview_size[1] as f32 - original_size[1] as f32) / 2.0,
             ],
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid: false,
             view_key: egui::Id::unique(("pc-canvas-proxy", ctx.viewport_id(), idx)).value(),
             display: sync_display_lut(app, &shown, key, output),
@@ -446,10 +445,7 @@ fn paint_canvas(
             zoom: point_zoom,
             center: xf.center,
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid,
             view_key: egui::Id::unique(("pc-canvas-pages", ctx.viewport_id(), doc.id.0)).value(),
             display: sync_display_lut(app, doc, key, output),
@@ -468,10 +464,7 @@ fn paint_canvas(
             zoom: point_zoom,
             center: xf.center,
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid,
             view_key: egui::Id::unique(("pc-canvas", ctx.viewport_id(), idx)).value(),
             display: sync_display_lut(app, doc, doc.id.0, output),
@@ -499,9 +492,23 @@ fn paint_canvas(
         if area != doc.bounds() {
             edge_rect = xf.doc_rect(area);
         }
-        if !crate::theme::Tokens::get(ctx).bevel && drop_shadow {
-            let shadow_rect = edge_rect;
-            painter.add(egui::Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha(150) }.as_shape(shadow_rect, 0));
+        if shadow_wanted {
+            // The same C3 shader the GPU path draws, as a callback of its own.
+            let params = crate::gpu_canvas::ViewParams {
+                doc: doc.id.0,
+                doc_size: [area.width(), area.height()],
+                zoom: point_zoom,
+                center: xf.center,
+                rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
+                shadow: true,
+                pixel_grid: false,
+                view_key: egui::Id::unique(("pc-canvas-shadow", ctx.viewport_id(), idx)).value(),
+                display: 0,
+                output: 0,
+                hdr: None,
+                offset: [0.0, 0.0],
+            };
+            crate::gpu_canvas::GpuCanvas::paint_shadow(painter, rect, params);
         }
         let rotated = view.rotation.abs() > 0.05;
         let checkerboard = app.session.prefs().transparency_and_gamut.square().map(|square| (checker(app, ctx), square));
