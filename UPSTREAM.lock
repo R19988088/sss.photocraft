@@ -7,7 +7,7 @@
 
 upstream.repo = storytold/photocraft
 upstream.ref = main
-upstream.commit = (downloaded 2026-11-10 snapshot; workspace version 0.20.1)
+upstream.commit = (downloaded 2026-11-10 snapshot; upstream 0.20.1, ours 0.24.0)
 upstream.date = 2026-11-10
 upstream.base_commit = 2d73f62b0f83fb2330751906f1f034d95e9ab7a8
 upstream.base_date = 2026-10-19
