@@ -363,7 +363,7 @@ fn list_row(ui: &mut egui::Ui, p: &BrushPreset, current: bool, presets: &[BrushP
         ui.painter().rect_filled(r, t.radius_sm, t.hover);
     }
     let pb = &p.brush;
-    let tip = brush_preview::tip_texture(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
+    let tip = brush_preview::tip_texture_shaped(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
     let cell = egui::Rect::from_min_size(r.left_top() + vec2(22.0, 2.0), vec2(36.0, 30.0) * k);
     let tr = egui::Rect::from_center_size(cell.center(), vec2(30.0, 30.0) * k * crate::brush_sections::thumb_scale(pb.size));
     ui.painter().image(tip.id(), tr, full_uv(), Color32::WHITE);
@@ -418,7 +418,7 @@ fn grid_cell(ui: &mut egui::Ui, p: &BrushPreset, current: bool, presets: &[Brush
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     let pb = &p.brush;
-    let tip = brush_preview::tip_texture(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
+    let tip = brush_preview::tip_texture_shaped(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
     let side = (cell - 14.0).max(8.0);
     let ir = egui::Rect::from_center_size(pos2(r.center().x, r.top() + side / 2.0 + 4.0), vec2(side, side) * crate::brush_sections::thumb_scale(pb.size));
     ui.painter().image(tip.id(), ir, full_uv(), Color32::WHITE);
@@ -580,7 +580,7 @@ fn preset_card(
         // Compact cards drop the number — it wouldn't fit — and the tip takes the cell whole.
         let tip_w = if tip_only { top.width() } else { (CARD_TIP_W * scale).min(top.width() * 0.5) };
         let cell = egui::Rect::from_min_size(top.left_top(), vec2(tip_w, top_h));
-        let tip = brush_preview::tip_texture(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
+        let tip = brush_preview::tip_texture_shaped(ui.ctx(), &format!("brushes-tip:{}", p.name), &pb.tip, (pb.hardness, pb.angle, pb.roundness), 36, t.text);
         let number =
             (!compact).then(|| ui.painter().layout_no_wrap(format!("{}", pb.size.round() as i64), egui::FontId::proportional(CARD_NUM_FONT), t.text_faint));
         let tr = card_tip_rect(cell, number.as_ref().map(|g| g.size().y), pb.size, scale);
@@ -966,7 +966,7 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
                             && let Some(preset) = presets.iter().find(|preset| preset.name == *n)
                         {
                             let brush = &preset.brush;
-                            let tip = brush_preview::tip_texture(
+                            let tip = brush_preview::tip_texture_shaped(
                                 ui.ctx(),
                                 &format!("brushes-drag-tip:{}", preset.name),
                                 &brush.tip,

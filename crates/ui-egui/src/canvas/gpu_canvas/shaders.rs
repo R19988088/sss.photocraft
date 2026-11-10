@@ -76,8 +76,15 @@ fn px_to_doc(p: vec2<f32>) -> vec2<f32> {
     return vec2(q.x * cs.x + q.y * cs.y, -q.x * cs.y + q.y * cs.x) + view.h.zw;
 }
 
-fn doc_min() -> vec2<f32> { return view.b.xy; }
-fn doc_max() -> vec2<f32> { return view.b.xy + view.b.zw * view.a.z; }
+/// Screen-space AABB of the document rectangle after the view's rotation (and flip), in device
+/// px. The drop shadow hugs this box, so it turns with the canvas.
+fn doc_screen_aabb() -> vec4<f32> {
+    let c0 = doc_to_px(vec2(0.0, 0.0));
+    let c1 = doc_to_px(vec2(view.b.z, 0.0));
+    let c2 = doc_to_px(vec2(view.b.z, view.b.w));
+    let c3 = doc_to_px(vec2(0.0, view.b.w));
+    return vec4(min(min(c0, c1), min(c2, c3)), max(max(c0, c1), max(c2, c3)));
+}
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
@@ -127,14 +134,18 @@ fn fs_shadow(in: VOut) -> @location(0) vec4<f32> {
     if (all(d >= vec2(0.0)) && all(d < view.b.zw)) {
         discard;
     }
-    let p_align = view.b.xy + d * view.a.z;
-    let lo = doc_min();
-    let hi = doc_max();
+    // The shadow's offsets are screen-space, so the light always comes from above and the shadow
+    // never turns with the canvas (C3 `canvasShadowVertex`: the geometry rotates, the offset does
+    // not). `lo`/`hi` still come from the rotated document box, so the shadow hugs the paper.
+    let box = doc_screen_aabb();
+    let lo = box.xy;
+    let hi = box.zw;
     let u = view.a.w;
-    let ambient = box_blur(p_align - vec2(0.0, 7.0 * u), lo, hi, 16.0 * u) * 0.40;
-    let contact = box_blur(p_align - vec2(0.0, 0.75 * u), lo, hi, 1.25 * u) * 0.30;
-    let a = 1.0 - (1.0 - ambient) * (1.0 - contact);
-    return vec4(0.0, 0.0, 0.0, a);
+    // C3 `canvasShadowVertex`/`canvasShadowFragment` sizes: the return is a 10 pt screen-space
+    // drop with an 8 pt fade range at 0.14 alpha. The document box itself still carries the
+    // rotation, so the shadow follows the turned page while its light stays overhead.
+    let ambient = box_blur(p - vec2(0.0, 10.0 * u), lo, hi, 8.0 * u) * 0.14;
+    return vec4(0.0, 0.0, 0.0, ambient);
 }
 
 // --- document tiles ------------------------------------------------------------------------

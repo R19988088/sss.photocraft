@@ -832,6 +832,8 @@ fn show_layout(app: &mut PhotocraftApp, ui: &mut egui::Ui, dock_only: bool) {
     }
     let mut commands = Vec::new();
     let strip = style.tab_height;
+    // The floating groups' shadows go under the frame `craft_ui` draws for them.
+    floating_shadows(app, ui.ctx());
     let card: std::collections::HashSet<String> =
         layout.floating.iter().filter(|window| window.id == PROPERTIES_WINDOW).flat_map(|window| window.panels().cloned()).collect();
     record::clear_bodies(ui.ctx());
@@ -1201,6 +1203,34 @@ pub(crate) mod record {
     /// Outside tests nothing is noted.
     #[cfg(not(test))]
     pub(crate) fn dock_panel_rect(_: &egui::Context, _: egui::Rect) {}
+}
+
+/// Screen rects of the in-window floating panel groups, in the order the layout lists them.
+/// Their drop shadows are drawn by the app: `craft_ui::docking::FloatingFrame` fills the window
+/// but paints no shadow, so a floating group would sit flat on the canvas.
+fn floating_rects(app: &PhotocraftApp) -> Vec<egui::Rect> {
+    let layout = app.ui.docking.as_ref().map_or_else(|| legacy(app), |workspace| workspace.layout.clone());
+    layout
+        .floating
+        .iter()
+        .filter_map(|window| {
+            let [x, y, w, h] = window.rect;
+            (w > 0.0 && h > 0.0).then(|| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)))
+        })
+        .collect()
+}
+
+/// Draw the floating groups' drop shadows under their windows, in the same layer the
+/// `craft_ui` frame draws them (inside that frame's paint index this is already the pass
+/// before its own `rect_filled`).
+pub(crate) fn floating_shadows(app: &PhotocraftApp, ctx: &egui::Context) {
+    let t = crate::theme::Tokens::get(ctx);
+    for rect in floating_rects(app) {
+        let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::unique(("floating-shadow", rect.min.x as i32, rect.min.y as i32)));
+        let painter = ctx.layer_painter(layer);
+        let shadow = egui::Shadow { offset: [0, 3], blur: 9, spread: 0, color: t.shadow.linear_multiply(0.30) };
+        painter.add(shadow.as_shape(rect, 0));
+    }
 }
 
 /// Where tests find panels and docking controls as drawn last frame.

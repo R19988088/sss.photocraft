@@ -387,7 +387,7 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
         // The browser presents frames itself: Low-Latency Drawing does nothing there.
         || (cfg!(target_arch = "wasm32") && path == "performance.lowLatencyDrawing")
         || (section == "export" && !export_field_visible(obj, k))
-        || (section == "tools" && (!tools_field_visible(obj, k) || k == "tabletInput"));
+        || (section == "tools" && (!tools_field_visible(obj, k) || k == "tabletInput" || k == "tabletPressure"));
     (query.is_empty() || preference_matches(section, k, query))
         && !drawn_elsewhere
         && !prefs::is_hidden(&path)
@@ -418,31 +418,83 @@ pub(super) fn section_fields(
     if section == "performance" && (query.is_empty() || preference_matches(section, "memoryUsageMb", query)) {
         memory_usage_row(ui, obj);
     }
-    // WinTab is an explicit Windows choice; Windows Ink stays the default everywhere else.
+    // The custom build's tablet response: a dead zone, full-pressure calibration, elasticity
+    // and causal coordinate filtering, plus the Windows WinTab/Ink choice.
     if section == "tools"
-        && cfg!(target_os = "windows")
-        && (query.is_empty() || preference_matches(section, "tabletInput", query))
-        && obj.contains_key("tabletInput")
+        && (query.is_empty()
+            || preference_matches(section, "tabletInput", query)
+            || preference_matches(section, "tabletPressure", query)
+            || preference_matches(section, "useTabletPressure", query)
+            || preference_matches(section, "pressureCurve", query))
+        && (cfg!(target_os = "windows") || pressure_response(obj).is_some())
     {
         let t = Tokens::get(ui.ctx());
         pref_group(ui, "Pen Tablet", |ui| {
             egui::Grid::new("prefs-grid-pen-tablet").num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| {
-                field_rows(ui, section, obj, vec!["tabletInput".to_string()], lang);
+                if cfg!(target_os = "windows") && obj.contains_key("tabletInput") {
+                    field_rows(ui, section, obj, vec!["tabletInput".to_string()], lang);
+                }
+                if let Some(response) = obj.get_mut("tabletPressure").and_then(Value::as_object_mut) {
+                    tablet_response_rows(ui, response);
+                }
             });
             ui.add(
                 egui::Label::new(
                     RichText::new(tl!(
-                        "WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it."
+                        "Maximum pressure maps the pen's full press to 100%; the dead zone ignores a light resting touch, elasticity shapes the response curve, and stroke stability averages the last few positions."
                     ))
                     .small()
                     .color(t.text_dim),
                 )
                 .wrap(),
             );
+            if cfg!(target_os = "windows") {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(tl!(
+                            "WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it."
+                        ))
+                        .small()
+                        .color(t.text_dim),
+                    )
+                    .wrap(),
+                );
+            }
         });
     }
     keys.retain(|k| field_visible(section, obj, k, query));
     egui::Grid::new(("prefs-grid", section)).num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| field_rows(ui, section, obj, keys, lang));
+}
+
+
+/// The `tools.tabletPressure` object when the preference file carries one.
+fn pressure_response(obj: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    obj.get("tabletPressure").and_then(Value::as_object)
+}
+
+/// Sliders for the custom tablet response (`tools.tabletPressure`).
+fn tablet_response_rows(ui: &mut egui::Ui, response: &mut Map<String, Value>) {
+    let t = Tokens::get(ui.ctx());
+    let mut row = |ui: &mut egui::Ui, label: &str, key: &str, min: f64, max: f64, as_percent: bool| {
+        ui.label(RichText::new(tl!(label)).color(t.text));
+        if let Some(v) = response.get(key).and_then(Value::as_f64) {
+            let mut v = v;
+            let (lo, hi) = if as_percent { (min * 100.0, max * 100.0) } else { (min, max) };
+            let mut shown = if as_percent { v * 100.0 } else { v };
+            if ui.add(egui::Slider::new(&mut shown, lo..=hi).fixed_decimals(if as_percent { 0 } else { 2 })).changed() {
+                v = if as_percent { shown / 100.0 } else { shown };
+                if let Some(slot) = response.get_mut(key) {
+                    *slot = json!(v);
+                }
+            }
+        }
+        ui.end_row();
+    };
+    row(ui, "Maximum Pressure", "maximumPressure", 0.05, 1.0, true);
+    row(ui, "Dead Zone", "deadZone", 0.0, 0.3, true);
+    row(ui, "Elasticity", "elasticity", 0.1, 16.0, false);
+    row(ui, "Stroke Stability", "coordinateWindow", 1.0, 16.0, false);
+    row(ui, "Pressure Smoothing", "pressureWindow", 1.0, 16.0, false);
 }
 
 /// One grid row per setting in `keys` (already filtered by `field_visible`).

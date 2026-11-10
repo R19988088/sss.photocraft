@@ -683,6 +683,34 @@ fn update_canvas_navigation(app: &mut PhotocraftApp, view: &mut View, input: Can
                 view.rotation = crate::rotate_view::wrap_deg(next);
             }
         }
+        // Held Escape over the canvas is the quick navigation gesture: drag up/down to zoom,
+        // left/right to turn the view. A tap of Escape (no drag) still reaches the tool's own
+        // cancel, because this only claims the key while the primary button is down.
+        let nav_id = input.response.id.with("escape-navigation");
+        let escape_down = input.ctx.input(|i| i.key_down(egui::Key::Escape));
+        let dragging = input.response.is_pointer_button_down_on() && input.ctx.input(|i| i.pointer.primary_down());
+        let modal_ok = !input.ctx.text_edit_focused()
+            && !crate::vector_ui::is_shape_tool(app.ui.tool)
+            && !crate::tool_feedback::is_selection_tool(app.ui.tool);
+        if modal_ok && escape_down && dragging {
+            crate::rotate_view::held_key_navigation(input.ctx, nav_id, view, &input.xf, true, input.ppp);
+            // The press that turns the view must not also reach the tool as a cancel.
+            input.ctx.data_mut(|d| d.insert_temp(nav_id.with("nav-dragged"), true));
+        } else {
+            crate::rotate_view::reset_held_nav(input.ctx, nav_id);
+        }
+        // A tap of Escape (released without dragging) puts the turned view back upright. When
+        // the key was used to navigate, the release only ends the gesture; any other Escape is
+        // left alone so tools keep their own cancel.
+        let navigated = input.ctx.data(|d| d.get_temp::<bool>(nav_id.with("nav-dragged")).unwrap_or(false));
+        if input.ctx.input(|i| i.key_released(egui::Key::Escape)) {
+            if navigated {
+                input.ctx.data_mut(|d| d.remove::<bool>(nav_id.with("nav-dragged")));
+            } else if modal_ok && view.rotation != 0.0 && !input.ctx.input(|i| i.modifiers.any()) {
+                view.rotation = 0.0;
+                input.ctx.request_repaint();
+            }
+        }
     }
 }
 
@@ -2117,6 +2145,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
     let curve = app.session.prefs().tools.pressure_curve.clone();
     app.stylus.set_pressure_curve(&curve);
+    // The custom tablet response: dead zone, full-pressure calibration, elasticity and
+    // pressure averaging, applied to every pen sample before the brush sees it.
+    let tablet_response = app.session.prefs().tools.tablet_pressure.clamped();
+    app.stylus.set_tablet_response(tablet_response);
     app.stylus.update_for_frame(ui.ctx().cumulative_frame_nr(), &ui.input(|i| i.events.clone()));
     crate::stylus::Stylus::sync_eraser_tool(app);
     // A Magnetic Lasso border left behind by a tool or document switch is dropped.

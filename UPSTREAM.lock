@@ -1,0 +1,46 @@
+# 上游跟随锁：记录本分支合并自哪个上游快照，以及哪些区域是冻结的。
+#
+# 更新流程：
+#   1. 改 upstream.commit 与 upstream.date
+#   2. 只允许按 docs/custom/MERGE-DIFF.md 的功能域做定点合并
+#   3. 冻结区域（frozen）不要接受上游改动
+
+upstream.repo = storytold/photocraft
+upstream.ref = main
+upstream.commit = (downloaded 2026-11-10 snapshot; workspace version 0.20.1)
+upstream.date = 2026-11-10
+upstream.base_commit = 2d73f62b0f83fb2330751906f1f034d95e9ab7a8
+upstream.base_date = 2026-10-19
+
+# 合并基线（用户导入上游时的快照）
+ours.origin = deoR/S.photocraft branch liquify-on-023
+ours.version = 0.23.6
+ours.head = d0deb14
+
+# 冻结区域：不接受上游自动合并，只能手工挑拣
+frozen.paths =
+    crates/ui-egui/src/dialogs/liquify_ui.rs          # 上游 Filter 对话框，不启用
+    crates/engine/src/cmd/distort_cmds.rs#liquify      # 用自定义多目标实现
+    crates/ui-egui/src/dialogs/distort_ui.rs#liquify   # 用 Tool::Liquify 入口
+
+# 自定义区域（以用户实现为准，上游改动需手工挑拣）
+custom.paths =
+    crates/paint/src/tablet_pressure.rs
+    crates/paint/src/material.rs
+    crates/paint/src/pigment.rs
+    crates/paint/src/pigment_material.rs
+    crates/paint/src/attributes.rs
+    crates/paint/src/canvas_material.rs
+    crates/paint/src/motion.rs
+    crates/paint/src/transport.rs
+    crates/ui-egui/src/panels/brush_sections.rs
+    crates/ui-egui/src/panels/brush_panel.rs
+    crates/engine/src/cmd/edit_scope.rs
+    crates/engine/src/cmd/cached_transform.rs
+
+# 用户功能域（以用户实现为准）
+custom.domains =
+    liquify        # 多层液化：独立工具类 Tool::Liquify，屏蔽上游 Filter 对话框
+    pressure       # 压感：C3 式滤波 + 校准 + 原生低延迟
+    brush          # 笔刷设置：8 节面板 + pigment/material/transport
+    toolbar        # 工具分组：置顶 4 槽 + 选项栏平铺同组

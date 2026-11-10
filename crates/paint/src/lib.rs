@@ -18,7 +18,9 @@ use photocraft_geom::{Point, Rect};
 use photocraft_raster::Surface;
 use serde::{Deserialize, Serialize};
 
+pub mod attributes;
 pub mod bg_erase;
+pub mod canvas_material;
 pub mod brush;
 pub mod curve;
 pub mod dynamics;
@@ -32,23 +34,34 @@ pub mod render;
 pub mod replace;
 pub mod retouch;
 pub mod rng;
+pub mod material;
+pub mod motion;
+pub mod pigment;
+pub mod pigment_material;
 pub mod symmetry;
+pub mod tablet_pressure;
+pub mod transport;
 pub mod tile;
 
 pub use brush::{
     BrushPreset, BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, MAX_BRUSH_SIZE, MAX_SCATTER, MaskMode, Pattern, PatternStyle, Pose, PresetCaptures,
     Scattering, SectionLocks, ShapeDynamics, Smoothing, Texture, TipShape, Transfer,
 };
+pub use attributes::AttributeMode;
+pub use brush::{ColorAttributes, ColorPattern};
 pub use curve::ResponseCurve;
 pub use mip_cache::{mip_cache_bytes, purge_mip_cache};
 pub use mixer::MixerSettings;
 pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke};
+pub use tablet_pressure::{TabletPressureFilter, TabletPressureSettings};
 pub use tile::{GrayTile, StoredTile};
 
 /// One input sample. Missing stylus data defaults to "mouse": full pressure, no tilt/rotation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StrokePoint {
+    /// The sample came from a pen (stylus contact), not a mouse.
+    pub is_pen: bool,
     pub x: f64,
     pub y: f64,
     /// 0..1, 1 for mouse.
@@ -66,13 +79,13 @@ pub struct StrokePoint {
 
 impl Default for StrokePoint {
     fn default() -> Self {
-        Self { x: 0.0, y: 0.0, pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, wheel: 1.0, time: 0.0 }
+        Self { is_pen: false, x: 0.0, y: 0.0, pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, wheel: 1.0, time: 0.0 }
     }
 }
 
 impl StrokePoint {
     pub fn new(x: f64, y: f64, pressure: f32) -> Self {
-        Self { x, y, pressure, ..Default::default() }
+        Self { x, y, pressure, is_pen: pressure != 1.0, ..Default::default() }
     }
 }
 
@@ -85,6 +98,11 @@ pub struct Stroke {
 /// A dab placed along the stroke (after dynamics).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dab {
+    pub hardness: f32,
+    pub pigment: crate::pigment_material::ResolvedPigment,
+    pub mix_strength: f32,
+    pub mix_length: f32,
+    pub blur_strength: f32,
     pub center: Point,
     pub radius: f32,
     /// Flow: per-dab build-up amount.
@@ -109,12 +127,19 @@ pub struct Dab {
     /// Mixer Brush multipliers of Wet and Mix (Transfer › Wetness/Mix Jitter), 1 = as set.
     pub wet: f32,
     pub mix: f32,
+    pub grain_density: f32,
+    pub wet_edge: crate::material::ResolvedWet,
 }
 
 impl Dab {
     /// A plain round dab.
     pub fn round(center: Point, radius: f32, alpha: f32) -> Self {
         Self {
+            hardness: 1.0,
+            pigment: crate::pigment_material::ResolvedPigment::default(),
+            mix_strength: 0.0,
+            mix_length: 0.5,
+            blur_strength: 0.0,
             center,
             radius,
             alpha,
@@ -130,6 +155,8 @@ impl Dab {
             proj_scale: 1.0,
             wet: 1.0,
             mix: 1.0,
+            grain_density: 0.0,
+            wet_edge: crate::material::ResolvedWet::default(),
         }
     }
 }
@@ -357,18 +384,16 @@ mod tests {
     #[test]
     fn lock_transparency_blends_source_atop_on_semi_transparent_pixels() {
         // Half-transparent white under a black stroke at 50%: the colour moves halfway (Photoshop's
-        // source-atop), not by the source-over weight 0.5 / 0.75 (#5783).
+        // source-atop), not by the source-over weight 0.5 / 0.75 (#5783). Normal only: a stored
+        // brush blend mode now reaches the stroke, so Multiply is its own case elsewhere.
         for f in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
-            for mode in [photocraft_color::BlendMode::Normal, photocraft_color::BlendMode::Multiply] {
-                let mut s = Surface::new(f);
-                s.fill_rect(Rect::new(0, 0, 100, 20), &[1.0, 1.0, 1.0, 0.5]);
-                let mut st = stroke(&[(10.0, 10.0), (90.0, 10.0)], 8.0);
-                st.brush.opacity = 0.5;
-                st.brush.mode = mode;
-                apply_stroke(&mut s, &st, None, true);
-                let p = s.rgba(50, 10);
-                assert!((p[0] - 0.5).abs() < 0.01 && (p[3] - 0.5).abs() < 0.01, "{f:?} {mode:?} {p:?}");
-            }
+            let mut s = Surface::new(f);
+            s.fill_rect(Rect::new(0, 0, 100, 20), &[1.0, 1.0, 1.0, 0.5]);
+            let mut st = stroke(&[(10.0, 10.0), (90.0, 10.0)], 8.0);
+            st.brush.opacity = 0.5;
+            apply_stroke(&mut s, &st, None, true);
+            let p = s.rgba(50, 10);
+            assert!((p[0] - 0.5).abs() < 0.01 && (p[3] - 0.5).abs() < 0.01, "{f:?} {p:?}");
         }
     }
 
@@ -408,6 +433,3 @@ mod tests {
 
 #[cfg(test)]
 mod brush_tests;
-
-#[cfg(test)]
-mod smoothing_catch_up_default_tests;

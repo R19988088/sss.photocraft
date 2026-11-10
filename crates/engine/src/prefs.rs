@@ -480,6 +480,9 @@ pub struct Tools {
     /// Pen pressure response: `[input, output]` control points in 0..1 that the pen's pressure
     /// passes through before it reaches any brush ([`PressureCurve`]). Linear by default.
     pub pressure_curve: Vec<[f32; 2]>,
+    /// Native tablet calibration and causal coordinate/pressure filters, plus the Windows
+    /// WinTab/Ink choice.
+    pub tablet_pressure: photocraft_paint::TabletPressureSettings,
     /// Arrow-key nudges of one thing (the selected layers, the selection outline, the Free
     /// Transform box) that follow each other within [`Tools::nudge_bundle_pause_ms`] are one
     /// History state (#2259). Off: every press is a state.
@@ -506,6 +509,7 @@ impl Default for Tools {
             use_tablet_pressure: true,
             tablet_input: TabletInput::WindowsInk,
             pressure_curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            tablet_pressure: Default::default(),
             bundle_nudges: true,
             nudge_bundle_pause_ms: 1000,
         }

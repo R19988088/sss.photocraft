@@ -285,7 +285,7 @@ pub fn body(
     // past the block empty instead of stretching the rows across it.
     ui.horizontal_top(|ui| {
         let (angle, roundness) = (b.angle, b.roundness);
-        crate::brush_sections::ellipse_widget(ui, &mut b.angle, &mut b.roundness);
+        crate::panels::brush_sections::ellipse_widget(ui, &mut b.angle, &mut b.roundness);
         // A pointer position that isn't finite leaves the tip as it was.
         let finite = |p: egui::Pos2| p.x.is_finite() && p.y.is_finite();
         let pointer_ok = ui.input(|i| i.pointer.interact_pos().is_none_or(finite) && i.pointer.latest_pos().is_none_or(finite));

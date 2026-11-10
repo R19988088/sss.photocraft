@@ -543,6 +543,12 @@ pub struct UiState {
     /// Brush Settings: selected section (0 = Brush Tip Shape) and tab (0 settings, 1 Brushes).
     #[serde(default)]
     pub brush_section: usize,
+    /// The brush panel's lane: 0 the primary brush, 1 the secondary (Dual Brush) one.
+    #[serde(default)]
+    pub brush_lane: usize,
+    /// The secondary lane's selected section, so switching lanes keeps each one's place.
+    #[serde(default)]
+    pub brush_secondary_section: usize,
     #[serde(default)]
     pub brush_tab: usize,
     /// Brushes panel: collapsed groups and the search filter.
@@ -702,6 +708,8 @@ impl Default for UiState {
             color_panel: Default::default(),
             color_panel_synced: None,
             brush_section: 0,
+            brush_lane: 0,
+            brush_secondary_section: 0,
             brush_tab: 0,
             brushes_panel: Default::default(),
             selection_mode: 0,

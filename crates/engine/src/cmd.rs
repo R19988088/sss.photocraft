@@ -76,9 +76,11 @@ mod count_record_label_tests;
 pub mod cutout_cmds;
 pub mod distort_cmds;
 pub mod document_preset_cmds;
+pub mod cached_transform;
 pub mod edit_cmds;
 pub mod edit_menu_cmds;
 mod enabled;
+pub mod edit_scope;
 pub mod eraser_cmds;
 pub mod export_preset_cmds;
 pub mod exr_cmds;
@@ -587,7 +589,6 @@ fn build() -> Vec<CommandSpec> {
                 let add_copy = layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
                 // The dialog offers Duplicate Layer's own name: only a different one was typed (#9023).
                 let mut typed = None;
-                let mut shift = (0, 0);
                 let nid = s.edit("Duplicate Layer", |doc, active| {
                     let mut dup = layer_copy(doc, id, add_copy)?;
                     if let Some(name) = name.as_ref().filter(|n| **n != dup.name) {
@@ -598,12 +599,11 @@ fn build() -> Vec<CommandSpec> {
                     // A lone copy joins its original's link group, as in the reference application (#11217).
                     crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
-                        shift = crate::artboard_cmds::place_copy(doc, nid)?;
+                        crate::artboard_cmds::place_copy(doc, nid)?;
                     }
                     *active = Some(nid);
                     Ok(nid)
                 })?;
-                crate::artboard_cmds::follow_shift(s, shift);
                 if let Some(name) = typed {
                     crate::type_cmds::note_typed_name(s, nid, &name);
                 }
@@ -1255,7 +1255,7 @@ fn build() -> Vec<CommandSpec> {
         (
             "colorLookup",
             "Color Lookup…",
-            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text,"lutFormat":"auto|cube|3dl|look"="auto"} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection, auto detects it)"##,
+            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
         ),
     ];
     for &(kind, label, params) in ADJ {

@@ -1087,8 +1087,12 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
         // style fades the handle to the same opacity as the track, so the thumb disappears (#4611).
         let mut scroll = if t.bevel { egui::style::ScrollStyle::solid() } else { egui::style::ScrollStyle::thin() };
         if scroll.floating {
+            // The handle alone, no track: the background stays fully transparent in every state
+            // (upstream draws a 0.4 track while hovered).
             scroll.interact_handle_opacity = 1.0;
-            scroll.interact_background_opacity = 0.4;
+            scroll.dormant_background_opacity = 0.0;
+            scroll.active_background_opacity = 0.0;
+            scroll.interact_background_opacity = 0.0;
             scroll.floating_width = 4.0;
         }
         s.spacing.scroll = scroll;

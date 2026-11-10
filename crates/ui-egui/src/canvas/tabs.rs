@@ -9,7 +9,6 @@ pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     crate::distort_ui::drop_foreign(app);
-    crate::layer_transfer::prepare(app, ui.ctx());
     documents(app, ui);
     crate::layer_transfer::finish(app, ui.ctx());
     // Once a frame, not per document view: the right-click or options-bar Brush Preset picker.
@@ -817,6 +816,10 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut view = app.ui.windows.iter().find(|x| x.id == w.id).map_or_else(|| w.view.clone(), |x| x.view.clone());
         let mut close = false;
         let mut focused = false;
+        // A floating window that just became the active document is raised within the app: the
+        // re-stepping of every other window's z-order brings the dragged one forward. It is not
+        // `AlwaysOnTop` — that would cover other applications too.
+        let mut raise = false;
         ctx.show_viewport_immediate(vid, builder, |ui, class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 close = true;
@@ -824,6 +827,15 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             focused = ui.ctx().input(|i| i.viewport().focused == Some(true));
             if focused && !w.focused && app.session.active_index() != Some(w.document) {
                 app.session.set_active(w.document);
+                raise = true;
+            }
+            // Dragging this floating window brings it to the front of the app's windows.
+            if focused && w.floating && ui.ctx().input(|i| i.pointer.any_down()) {
+                raise = true;
+            }
+            if raise {
+                ui.ctx().send_viewport_cmd_to(vid, egui::ViewportCommand::Focus);
+                raise = false;
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(crate::theme::Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();

@@ -184,6 +184,10 @@ pub struct ToolState {
     /// Bumped whenever `presets` changes ([`Session::brush_presets_changed`]); the preset store
     /// syncs when it moves.
     pub presets_rev: u64,
+    /// Canvas material presets the brush panel offers (the custom engine's canvas textures).
+    pub canvas_presets: Vec<photocraft_paint::canvas_material::CanvasPreset>,
+    /// Bumps whenever `canvas_presets` changes.
+    pub canvas_presets_rev: u64,
     /// Mixer Brush paint carried between strokes.
     pub mixer: photocraft_paint::mixer::MixerState,
     /// The coalescing key of the running `tools.setBrush` gesture and the brush before it, so the
@@ -270,6 +274,8 @@ impl Default for ToolState {
             },
             presets: photocraft_paint::presets::builtin(),
             presets_rev: 0,
+            canvas_presets: Vec::new(),
+            canvas_presets_rev: 0,
             mixer: Default::default(),
             brush_gesture: None,
             current_preset: None,

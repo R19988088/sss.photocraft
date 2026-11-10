@@ -187,7 +187,7 @@ pub(super) fn brush_preset_chip(ui: &mut egui::Ui, b: &photocraft_engine::BrushS
     let tip = if t.dark() { Color32::WHITE } else { t.icon };
     // The brush's own tip, as the Brush Preset picker's thumbnails draw it: the engine's falloff
     // for its hardness, its angle and roundness, a sampled tip's shape.
-    let tex = crate::brush_preview::tip_texture(ui.ctx(), "options-bar-chip", &b.tip, (b.hardness, b.angle, b.roundness), 32, tip);
+    let tex = crate::brush_preview::tip_texture_shaped(ui.ctx(), "options-bar-chip", &b.tip, (b.hardness, b.angle, b.roundness), 32, tip);
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
     ui.painter().image(tex.id(), Rect::from_center_size(c, vec2(14.0, 14.0)), uv, Color32::WHITE);
     ui.painter().text(pos2(c.x, r.bottom() - 5.0), Align2::CENTER_CENTER, format!("{}", b.size.round() as i64), egui::FontId::proportional(9.5), t.text_dim);

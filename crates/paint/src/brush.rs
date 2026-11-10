@@ -11,6 +11,7 @@ use photocraft_color::BlendMode;
 use serde::{Deserialize, Serialize};
 
 use crate::curve::ResponseCurve;
+use crate::material::{GrainSettings, WetEdgeSettings};
 use crate::mixer::MixerSettings;
 use crate::tile::{GrayTile, StoredTile};
 
@@ -21,6 +22,7 @@ pub const MAX_BRUSH_SIZE: f32 = 5000.0;
 /// Beyond it a dab could land arbitrarily far away, and an unbounded amount overflowed the dab
 /// centre to infinity (#977).
 pub const MAX_SCATTER: f32 = 10.0;
+pub const MAX_C3_SCATTER: f32 = 50.0;
 
 /// What drives a dynamic parameter (Photoshop's "Control" pop-ups).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +32,14 @@ pub enum Control {
     Off,
     /// Ramp over `fadeSteps` spacing steps (from full to the minimum).
     Fade,
+    /// C3 fade over max(96, size × max(0.05, spacing) × 32) pixels.
+    DistanceFade,
     PenPressure,
+    PenPressureInverse,
+    /// Smoothed travel speed relative to the brush diameter.
+    Speed,
+    /// Latched while pen pressure is falling.
+    PressureRelease,
     PenTilt,
     StylusWheel,
     /// Barrel rotation of the stylus.
@@ -39,6 +48,51 @@ pub enum Control {
     InitialDirection,
     /// Angle only: the current stroke direction.
     Direction,
+}
+
+pub const REFERENCE_BASE_CONTROLS: &[Control] = &[Control::Off, Control::PenPressure, Control::Direction, Control::PenTilt, Control::Rotation];
+pub const REFERENCE_SHAPE_CONTROLS: &[Control] =
+    &[Control::Off, Control::DistanceFade, Control::PenPressure, Control::Direction, Control::PenTilt, Control::Rotation];
+/// Transfer's opacity and flow keep the step-based `Fade` (only shape/size use a distance fade).
+pub const REFERENCE_TRANSFER_CONTROLS: &[Control] =
+    &[Control::Off, Control::Fade, Control::PenPressure, Control::Direction, Control::PenTilt, Control::Rotation];
+pub const REFERENCE_SIZE_CONTROLS: &[Control] = &[
+    Control::Off,
+    Control::DistanceFade,
+    Control::PenPressure,
+    Control::PenPressureInverse,
+    Control::Speed,
+    Control::PressureRelease,
+    Control::Direction,
+    Control::PenTilt,
+    Control::Rotation,
+    Control::InitialDirection,
+];
+pub const REFERENCE_SPACING_CONTROLS: &[Control] =
+    &[Control::Off, Control::DistanceFade, Control::PenPressure, Control::PenPressureInverse, Control::Direction, Control::PenTilt, Control::Rotation];
+pub const REFERENCE_TEXTURE_CONTROLS: &[Control] = &[
+    Control::Off,
+    Control::Fade,
+    Control::PenPressure,
+    Control::Direction,
+    Control::PenTilt,
+    Control::StylusWheel,
+    Control::Rotation,
+    Control::InitialDirection,
+];
+pub const REFERENCE_PIGMENT_CONTROLS: &[Control] = &[Control::Off, Control::PenPressure, Control::PenPressureInverse, Control::PenTilt];
+
+fn reference_control(control: &mut Control, allowed: &[Control]) {
+    if matches!(*control, Control::Fade | Control::DistanceFade) {
+        if allowed.contains(&Control::DistanceFade) {
+            *control = Control::DistanceFade;
+        } else if allowed.contains(&Control::Fade) {
+            *control = Control::Fade;
+        }
+    }
+    if !allowed.contains(control) {
+        *control = Control::Off;
+    }
 }
 
 /// One dynamic parameter: random jitter plus a controller with a floor.
@@ -149,6 +203,8 @@ pub struct ShapeDynamics {
     pub angle: Dynamic,
     /// Roundness jitter / control; `minimum` is Minimum Roundness.
     pub roundness: Dynamic,
+    /// Continuous perpendicular path wobble; jitter is a fraction of the diameter.
+    pub stroke_jitter: Dynamic,
     pub flip_x_jitter: bool,
     pub flip_y_jitter: bool,
     /// Brush Projection: the pen's tilt and barrel rotation are applied to the tip as a
@@ -163,17 +219,30 @@ pub struct Scattering {
     pub enabled: bool,
     /// `jitter` = scatter amount (1.0 = 100 %: up to one radius of displacement); control scales it.
     pub scatter: Dynamic,
+    pub range_jitter: f32,
+    pub spacing_jitter: Dynamic,
     /// Scatter radially instead of only perpendicular to the stroke.
     pub both_axes: bool,
     /// Dabs per spacing step (1..16).
     pub count: u32,
+    /// C3 keeps this absolute minimum when the base count changes.
+    pub minimum_count: Option<f32>,
     /// Count jitter / control (reduces the count towards 1).
     pub count_jitter: Dynamic,
 }
 
 impl Default for Scattering {
     fn default() -> Self {
-        Self { enabled: false, scatter: Dynamic::default(), both_axes: false, count: 1, count_jitter: Dynamic::default() }
+        Self {
+            enabled: false,
+            scatter: Dynamic::default(),
+            range_jitter: 0.0,
+            spacing_jitter: Dynamic::default(),
+            both_axes: false,
+            count: 1,
+            minimum_count: None,
+            count_jitter: Dynamic::default(),
+        }
     }
 }
 
@@ -181,6 +250,7 @@ impl Default for Scattering {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MaskMode {
+    Normal,
     #[default]
     Multiply,
     Subtract,
@@ -264,11 +334,24 @@ impl Default for Pattern {
     }
 }
 
+/// Coordinates for a C3 texture: document, stroke origin or the transformed tip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextureCoordinateMode {
+    #[default]
+    CanvasLocked,
+    StrokeLocked,
+    TipLocal,
+}
+
 /// Texture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Texture {
+    /// C3 texture math; false retains imported ABR texture semantics.
+    pub c3_math: bool,
     pub enabled: bool,
+    pub coordinate_mode: TextureCoordinateMode,
     pub pattern: Pattern,
     pub invert: bool,
     /// Pattern scale (1 = 100 %).
@@ -287,12 +370,23 @@ pub struct Texture {
 }
 
 impl Texture {
+    pub fn combine(&self, coverage: f32, pattern: f32, depth: f32) -> f32 {
+        if self.c3_math {
+            crate::render::mask_combine(self.mode, coverage, pattern, depth)
+        } else {
+            crate::render::texture_combine(self.mode, coverage, pattern, depth)
+        }
+    }
     /// A pattern value (0..1) after Brightness, Contrast and Invert: the value the mode combines
     /// with the brush. Measured against Photoshop (#3340): Brightness shifts the pattern by
     /// `brightness / 255` (±150 moves it 150 levels of 255, not all the way to white or black);
     /// positive Contrast steepens it around mid-grey by `1 / (1 − c/100)` after the shift (100 is
     /// a threshold), negative Contrast flattens it by `1 + c/100` before the shift; Invert is last.
     pub fn level(&self, v: f32) -> f32 {
+        if self.c3_math {
+            let x = ((v - 0.5) * (1.0 + self.contrast.clamp(-1.0, 1.0)) + 0.5 + self.brightness.clamp(-1.0, 1.0)).clamp(0.0, 1.0);
+            return if self.invert { 1.0 - x } else { x };
+        }
         let b = if self.brightness.is_finite() { self.brightness.clamp(-1.0, 1.0) * (150.0 / 255.0) } else { 0.0 };
         let c = if self.contrast.is_finite() { self.contrast.clamp(-1.0, 1.0) } else { 0.0 };
         let x = if c >= 0.0 { (v + b - 0.5) / (1.0 - c).max(1e-4) + 0.5 } else { (v - 0.5) * (1.0 + c / 2.0) + 0.5 + b };
@@ -305,6 +399,8 @@ impl Default for Texture {
     fn default() -> Self {
         Self {
             enabled: false,
+            c3_math: false,
+            coordinate_mode: TextureCoordinateMode::CanvasLocked,
             pattern: Pattern::default(),
             invert: false,
             scale: 1.0,
@@ -322,11 +418,22 @@ impl Default for Texture {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DualBrush {
+    pub full_parameters: Option<Box<BrushSettings>>,
+    pub primary_strength: f32,
+    pub secondary_strength: f32,
+    pub grain: Option<GrainSettings>,
+    pub wet_edges: bool,
+    pub wet_edge: Option<WetEdgeSettings>,
     pub enabled: bool,
     pub mode: MaskMode,
     pub tip: TipShape,
     pub size: f32,
+    /// Maximum contribution of the secondary brush to the primary coverage.
+    pub opacity: f32,
+    /// Per-dab contribution of the secondary brush; repeated dabs build up to `opacity`.
+    pub flow: f32,
     pub hardness: f32,
+    pub hardness_dynamic: Dynamic,
     pub roundness: f32,
     pub angle: f32,
     pub spacing: f32,
@@ -339,11 +446,20 @@ pub struct DualBrush {
 impl Default for DualBrush {
     fn default() -> Self {
         Self {
+            full_parameters: None,
+            primary_strength: 1.0,
+            secondary_strength: 0.0,
+            grain: None,
+            wet_edges: false,
+            wet_edge: None,
             enabled: false,
             mode: MaskMode::Multiply,
             tip: TipShape::Round,
             size: 20.0,
+            opacity: 1.0,
+            flow: 1.0,
             hardness: 1.0,
+            hardness_dynamic: Dynamic::default(),
             roundness: 1.0,
             angle: 0.0,
             spacing: 0.25,
@@ -366,15 +482,39 @@ pub struct ColorDynamics {
     pub fg_bg: Dynamic,
     /// 0..1 fraction of ±half the hue wheel.
     pub hue_jitter: f32,
+    pub hue_control: Control,
+    pub hue_minimum: f32,
     pub saturation_jitter: f32,
+    pub saturation_control: Control,
+    pub saturation_minimum: f32,
     pub brightness_jitter: f32,
+    pub brightness_control: Control,
+    pub brightness_minimum: f32,
     /// -1 (fully desaturated) .. 1 (fully saturated).
     pub purity: f32,
+    pub purity_control: Control,
+    pub purity_minimum: f32,
 }
 
 impl Default for ColorDynamics {
     fn default() -> Self {
-        Self { enabled: false, per_tip: true, fg_bg: Dynamic::default(), hue_jitter: 0.0, saturation_jitter: 0.0, brightness_jitter: 0.0, purity: 0.0 }
+        Self {
+            enabled: false,
+            per_tip: true,
+            fg_bg: Dynamic::default(),
+            hue_jitter: 0.0,
+            hue_control: Control::Off,
+            hue_minimum: 0.0,
+            saturation_jitter: 0.0,
+            saturation_control: Control::Off,
+            saturation_minimum: 0.0,
+            brightness_jitter: 0.0,
+            brightness_control: Control::Off,
+            brightness_minimum: 0.0,
+            purity: 0.0,
+            purity_control: Control::Off,
+            purity_minimum: 0.0,
+        }
     }
 }
 
@@ -444,8 +584,8 @@ impl Default for Pose {
     }
 }
 
-// Old presets used one combined flag. Keep that JSON input and readback while the
-// model has only the two independent sources of truth. Explicit axis fields win.
+// Old presets used one combined tilt flag. Keep that JSON input and readback while the model
+// has two independent sources of truth; explicit axis fields win.
 #[derive(Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct PoseWire {
@@ -518,17 +658,17 @@ impl From<Pose> for PoseWire {
     }
 }
 
-/// Stroke smoothing (Photoshop's Smoothing % and its options).
+/// Pulled-string controls; legacy exponential settings remain readable in saved brushes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Smoothing {
     /// Switch smoothing off without discarding its amount or mode. Old presets remain enabled.
     pub enabled: bool,
-    /// 0..1.
+    /// String length, 0..1 of 100 screen pixels.
     pub amount: f32,
     /// Lazy-mouse: paint only when the pointer pulls a string of `amount × 100 px` taut.
     pub pulled_string: bool,
-    /// Keep catching up with the pointer while it pauses (uses point timestamps).
+    /// Legacy exponential catch-up option, retained for preset round-trips and ignored.
     pub catch_up: bool,
     /// Finish the stroke at the last pointer position.
     pub catch_up_on_end: bool,
@@ -538,7 +678,7 @@ pub struct Smoothing {
 
 impl Default for Smoothing {
     fn default() -> Self {
-        Self { enabled: true, amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: false, adjust_for_zoom: true }
+        Self { enabled: true, amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: true, adjust_for_zoom: true }
     }
 }
 
@@ -546,10 +686,26 @@ impl Default for Smoothing {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushSettings {
+    /// C3 pigment response, 0 = ordinary blending, 1 = full Kubelka-Munk response.
+    pub pigment_mix_strength: f32,
+    pub saturation_preserve_output: f32,
+    pub saturation_record_strength: f32,
+    pub canvas_material: Option<crate::canvas_material::CanvasMaterial>,
+    pub c3_preserved_parameters: std::collections::BTreeMap<String, String>,
+    pub pigment: Option<crate::pigment_material::PigmentSettings>,
+    pub contour: Option<crate::pigment_material::ContourSettings>,
+    pub mix_settings: crate::transport::BrushMixSettings,
+    pub flow_algorithm_version: u8,
+    pub motion: crate::motion::MotionSettings,
+    pub inertia: crate::motion::InertiaSettings,
+    pub color_attributes: ColorAttributes,
+    pub pattern_enabled: bool,
+    pub sampled_pattern: Option<ColorPattern>,
     /// Diameter in pixels.
     pub size: f32,
     /// 0 (soft) ..1 (hard). Computed tips only.
     pub hardness: f32,
+    pub hardness_dynamic: Dynamic,
     /// Spacing between dabs as a fraction of the diameter.
     pub spacing: f32,
     /// Photoshop's Spacing checkbox. Off: the pointer's speed sets the spacing (one dab every
@@ -565,6 +721,9 @@ pub struct BrushSettings {
     /// Shortcut for Transfer › Opacity › Pen Pressure.
     #[serde(alias = "pressure_opacity")]
     pub pressure_opacity: bool,
+    /// Shortcut for Transfer › Flow › Pen Pressure.
+    #[serde(alias = "pressure_flow")]
+    pub pressure_flow: bool,
     /// Straight RGBA colour (display RGB). Commands fill it from the foreground colour.
     pub color: [f32; 4],
     /// The inks `color` was picked as (its sRGB colour, the CMYK values), for a CMYK target: the
@@ -582,7 +741,7 @@ pub struct BrushSettings {
     pub mode: BlendMode,
     // --- Brush Tip Shape ---
     pub tip: TipShape,
-    /// Degrees, counter-clockwise.
+    /// Degrees; clockwise with `c3_tip_math`, counter-clockwise for legacy tips.
     pub angle: f32,
     /// 0..1 (1 = circle).
     pub roundness: f32,
@@ -590,6 +749,9 @@ pub struct BrushSettings {
     pub flip_y: bool,
     /// Pencil: no anti-aliasing (coverage is 0 or 1).
     pub aliased: bool,
+    pub triangle: bool,
+    /// Use C3 Gaussian tip falloff and sampled-tip hardness.
+    pub c3_tip_math: bool,
     /// With `aliased`, a square tip: every pixel of the dab's whole-pixel square
     /// ([`crate::grid_square`]), whatever its angle or roundness. The Eraser's Block mode.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -604,8 +766,12 @@ pub struct BrushSettings {
     pub pose: Pose,
     /// Add grain to the soft parts of the tip.
     pub noise: bool,
+    /// None retains the original Noise effect for existing presets.
+    pub grain: Option<GrainSettings>,
     /// Watercolour look: lighter interior, darker rims; overlapping dabs don't build up.
     pub wet_edges: bool,
+    /// None retains the original Wet Edges curve for existing presets.
+    pub wet_edge: Option<WetEdgeSettings>,
     /// Airbrush: keep depositing dabs over time while the pointer lingers.
     pub build_up: bool,
     /// Build-up rate in dabs per second.
@@ -624,15 +790,32 @@ pub struct BrushSettings {
 impl Default for BrushSettings {
     fn default() -> Self {
         Self {
+            pigment_mix_strength: 0.0,
+            saturation_preserve_output: 0.0,
+            saturation_record_strength: 0.0,
+            canvas_material: None,
+            c3_preserved_parameters: Default::default(),
+            pigment: None,
+            contour: None,
+            mix_settings: crate::transport::BrushMixSettings::default(),
+            flow_algorithm_version: 1,
+            motion: crate::motion::MotionSettings::default(),
+            inertia: crate::motion::InertiaSettings::default(),
+            color_attributes: ColorAttributes::default(),
+            pattern_enabled: false,
+            sampled_pattern: None,
             size: 20.0,
             hardness: 1.0,
+            hardness_dynamic: Dynamic::default(),
             spacing: 0.1,
             spacing_enabled: true,
             opacity: 1.0,
             flow: 1.0,
-            // Off, as the reference application leaves it after Reset Tool (#11809).
+            // Off, as the reference application leaves it after Reset Tool (#11809). Each
+            // parameter's own Control is Off by default too (Dynamic::default).
             pressure_size: false,
             pressure_opacity: false,
+            pressure_flow: false,
             color: [0.0, 0.0, 0.0, 1.0],
             color_cmyk: None,
             background: [1.0, 1.0, 1.0, 1.0],
@@ -645,6 +828,8 @@ impl Default for BrushSettings {
             flip_x: false,
             flip_y: false,
             aliased: false,
+            triangle: false,
+            c3_tip_math: false,
             square: false,
             shape_dynamics: ShapeDynamics::default(),
             scattering: Scattering::default(),
@@ -654,7 +839,9 @@ impl Default for BrushSettings {
             transfer: Transfer::default(),
             pose: Pose::default(),
             noise: false,
+            grain: None,
             wet_edges: false,
+            wet_edge: None,
             build_up: false,
             build_up_rate: 20.0,
             smoothing: Smoothing::default(),
@@ -677,7 +864,14 @@ impl BrushSettings {
     /// ([`Self::bounded_for_render`]).
     pub fn resize_with_dual_brush(&mut self, new_size: f32) {
         if self.dual_brush.enabled && self.size.is_finite() && self.size > 0.0 && new_size.is_finite() && new_size > 0.0 {
-            let scaled = self.dual_brush.size * (new_size / self.size);
+            let ratio = new_size / self.size;
+            if let Some(secondary) = &mut self.dual_brush.full_parameters {
+                let scaled = secondary.size * ratio;
+                if scaled > 0.0 {
+                    secondary.size = scaled.min(MAX_BRUSH_SIZE);
+                }
+            }
+            let scaled = self.dual_brush.size * ratio;
             // NaN fails the comparison; infinity is capped.
             if scaled > 0.0 {
                 self.dual_brush.size = scaled.min(MAX_BRUSH_SIZE);
@@ -697,14 +891,84 @@ impl BrushSettings {
             if size.is_finite() { size.clamp(0.5, MAX_BRUSH_SIZE) } else { 0.5 }
         };
         // NaN scatters nothing (as before: it never passed the `> 0` check); infinity is the maximum.
-        let safe_scatter = |amount: f32| if amount.is_nan() { 0.0 } else { amount.clamp(0.0, MAX_SCATTER) };
+        let scatter_limit = if self.c3_tip_math { MAX_C3_SCATTER } else { MAX_SCATTER };
+        let safe_scatter = |amount: f32| if amount.is_nan() { 0.0 } else { amount.clamp(0.0, scatter_limit) };
         let mut brush = self.clone();
+        // Hidden legacy options must not affect strokes loaded from older presets.
+        brush.pose.enabled = false;
+        brush.canvas_material = None;
+        brush.saturation_record_strength = 0.0;
+        brush.saturation_preserve_output = 0.0;
+        brush.flip_x = false;
+        brush.flip_y = false;
+        brush.shape_dynamics.brush_projection = false;
+        brush.contour = None;
+        brush.noise = brush.grain.is_some();
+        brush.shape_dynamics.tilt_scale = 0.0;
+        brush.build_up = false;
+        // Pulled string is an explicit Motion control; legacy exponential settings stay inert.
+        brush.smoothing.enabled &= brush.smoothing.pulled_string;
+        reference_control(&mut brush.dual_brush.hardness_dynamic.control, REFERENCE_SIZE_CONTROLS);
+        for control in [
+            &mut brush.shape_dynamics.size.control,
+            &mut brush.hardness_dynamic.control,
+            &mut brush.shape_dynamics.angle.control,
+        ] {
+            reference_control(control, REFERENCE_SIZE_CONTROLS);
+        }
+        reference_control(&mut brush.transfer.opacity.control, REFERENCE_TRANSFER_CONTROLS);
+        reference_control(&mut brush.transfer.flow.control, REFERENCE_TRANSFER_CONTROLS);
+        for control in [
+            &mut brush.shape_dynamics.roundness.control,
+            &mut brush.shape_dynamics.stroke_jitter.control,
+            &mut brush.scattering.scatter.control,
+            &mut brush.scattering.count_jitter.control,
+            &mut brush.inertia.control,
+        ] {
+            reference_control(control, REFERENCE_SHAPE_CONTROLS);
+        }
+        reference_control(&mut brush.scattering.spacing_jitter.control, REFERENCE_SPACING_CONTROLS);
+        reference_control(&mut brush.texture.depth_jitter.control, REFERENCE_TEXTURE_CONTROLS);
+        for control in [
+            &mut brush.color_dynamics.hue_control,
+            &mut brush.color_dynamics.saturation_control,
+            &mut brush.color_dynamics.brightness_control,
+            &mut brush.color_dynamics.purity_control,
+        ] {
+            reference_control(control, REFERENCE_BASE_CONTROLS);
+        }
+        for grain in [&mut brush.grain, &mut brush.dual_brush.grain].into_iter().flatten() {
+            reference_control(&mut grain.control, REFERENCE_BASE_CONTROLS);
+        }
+        for wet in [&mut brush.wet_edge, &mut brush.dual_brush.wet_edge].into_iter().flatten() {
+            reference_control(&mut wet.control, REFERENCE_BASE_CONTROLS);
+        }
+        if let Some(pigment) = brush.pigment.as_mut() {
+            reference_control(&mut pigment.thickness_control, REFERENCE_PIGMENT_CONTROLS);
+            reference_control(&mut pigment.visual_thickness_control, REFERENCE_PIGMENT_CONTROLS);
+            pigment.liquidity = 0.0;
+            pigment.fluid_strength = 0.0;
+            pigment.fluid_pressure_enabled = false;
+            pigment.gaussian_mask = false;
+        }
+        brush.mix_settings.smudge_enabled = true;
+        brush.mix_settings.blur_enabled = true;
+        brush.mix_settings.strength_dynamic = Dynamic::default();
+        brush.mix_settings.length_dynamic = Dynamic::default();
+        brush.mix_settings.length_pressure_inverted = false;
+        brush.mix_settings.blur_dynamic = Dynamic::default();
+        brush.mix_settings.blur_pressure_inverted = false;
         brush.size = safe_size(brush.size);
         brush.dual_brush.size = safe_size(brush.dual_brush.size);
+        brush.dual_brush.opacity = finite_unit(brush.dual_brush.opacity);
+        brush.dual_brush.flow = finite_unit(brush.dual_brush.flow);
+        brush.dual_brush.primary_strength = finite_unit(brush.dual_brush.primary_strength);
+        brush.dual_brush.secondary_strength = finite_unit(brush.dual_brush.secondary_strength);
         brush.scattering.scatter.jitter = safe_scatter(brush.scattering.scatter.jitter);
         brush.dual_brush.scatter = safe_scatter(brush.dual_brush.scatter);
         // A NaN here would paint fully opaque (`f32::min` returns the other operand) or not at all;
-        // it falls back to the default (the values of `BrushSettings::default` and `DualBrush::default`). Every other value, infinities included, is left to the clamps downstream.
+        // it falls back to the default. Every other value, infinities included, is left to the
+        // clamps downstream.
         let nan_or = |v: f32, d: f32| if v.is_nan() { d } else { v };
         brush.opacity = nan_or(brush.opacity, 1.0);
         brush.flow = nan_or(brush.flow, 1.0);
@@ -721,6 +985,8 @@ impl BrushSettings {
     pub fn picked_over(self, current: &BrushSettings) -> Self {
         let mut b = self.with_protected_texture(current);
         b.smoothing = current.smoothing.clone();
+        b.pattern_enabled = current.pattern_enabled;
+        b.sampled_pattern = current.sampled_pattern.clone();
         let l = &current.locks;
         if l.shape_dynamics {
             b.shape_dynamics = current.shape_dynamics.clone();
@@ -745,9 +1011,11 @@ impl BrushSettings {
         }
         if l.noise {
             b.noise = current.noise;
+            b.grain = current.grain.clone();
         }
         if l.wet_edges {
             b.wet_edges = current.wet_edges;
+            b.wet_edge = current.wet_edge.clone();
         }
         if l.build_up {
             b.build_up = current.build_up;
@@ -770,6 +1038,10 @@ impl BrushSettings {
         }
         self
     }
+}
+
+fn finite_unit(value: f32) -> f32 {
+    if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// A named brush preset (session tool state; serde round-trips).
@@ -835,7 +1107,117 @@ impl BrushPreset {
             b.flow = current.flow;
             b.pressure_size = current.pressure_size;
             b.pressure_opacity = current.pressure_opacity;
+            b.pressure_flow = current.pressure_flow;
         }
         b
+    }
+}
+
+/// The two C3 colour attributes are evaluated against the destination, independently of coverage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ColorAttributes {
+    pub enabled: bool,
+    pub blend: crate::AttributeMode,
+    pub blend_strength: f32,
+    pub color: crate::AttributeMode,
+    pub color_strength: f32,
+}
+impl Default for ColorAttributes {
+    fn default() -> Self {
+        Self { enabled: false, blend: crate::AttributeMode::Off, blend_strength: 0.0, color: crate::AttributeMode::Off, color_strength: 0.0 }
+    }
+}
+impl ColorAttributes {
+    /// Apply both independent attributes to the same brush and destination after normal painting.
+    /// The normal result owns alpha; coverage is the effect's alpha rather than output alpha.
+    pub fn composite(&self, normal: [f32; 4], destination: [f32; 4], source: [f32; 4], coverage: f32) -> [f32; 4] {
+        if !self.enabled || coverage <= 0.0001 || normal[3] <= 0.5 / 255.0 {
+            return normal;
+        }
+        let dst = [destination[0], destination[1], destination[2]];
+        let brush = [source[0].clamp(0.0, 1.0), source[1].clamp(0.0, 1.0), source[2].clamp(0.0, 1.0)];
+        let mut out = normal;
+        for (mode, strength) in [(self.blend, self.blend_strength), (self.color, self.color_strength)] {
+            if mode == crate::AttributeMode::Off {
+                continue;
+            }
+            let mixed = mode.blend(dst, brush);
+            for i in 0..3 {
+                let value = dst[i] + (mixed[i] - dst[i]) * coverage.clamp(0.0, 1.0);
+                out[i] += (value - out[i]) * strength.clamp(0.0, 1.0);
+            }
+        }
+        out
+    }
+}
+
+/// An RGBA patch sampled from the canvas. Its longest side scales to each dab diameter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPattern {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: std::sync::Arc<[[f32; 4]]>,
+}
+impl ColorPattern {
+    pub fn is_valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.width <= 2048
+            && self.height <= 2048
+            && self.pixels.len() == self.width as usize * self.height as usize
+            && self.pixels.iter().all(|p| p.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&p[3]))
+    }
+    /// C3 sampled paint uses an alpha-weighted five-tap color; coverage uses center alpha.
+    pub fn sample_pigment(&self, x: f32, y: f32) -> [f32; 4] {
+        let center = self.sample(x, y);
+        if center[3] <= 0.0001 {
+            return center;
+        }
+        let mut sum = [center[0] * center[3] * 4.0, center[1] * center[3] * 4.0, center[2] * center[3] * 4.0];
+        let mut weight = center[3] * 4.0;
+        let hx = self.width as f32 * 0.5;
+        let hy = self.height as f32 * 0.5;
+        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            let p = self.sample((x + dx).clamp(-hx + 0.5, hx - 0.5), (y + dy).clamp(-hy + 0.5, hy - 0.5));
+            weight += p[3];
+            for i in 0..3 {
+                sum[i] += p[i] * p[3];
+            }
+        }
+        [sum[0] / weight.max(0.0001), sum[1] / weight.max(0.0001), sum[2] / weight.max(0.0001), center[3]]
+    }
+    pub fn sample(&self, x: f32, y: f32) -> [f32; 4] {
+        let (x, y) = (x + self.width as f32 * 0.5 - 0.5, y + self.height as f32 * 0.5 - 0.5);
+        if x < -0.5 || y < -0.5 || x >= self.width as f32 - 0.5 || y >= self.height as f32 - 0.5 {
+            return [0.0; 4];
+        }
+        let (x, y) = (x.max(0.0), y.max(0.0));
+        let (ix, iy) = (x.floor() as u32, y.floor() as u32);
+        let at = |xx: u32, yy: u32| {
+            self.pixels.get((yy.min(self.height.saturating_sub(1)) * self.width + xx.min(self.width.saturating_sub(1))) as usize).copied().unwrap_or([0.0; 4])
+        };
+        let a = at(ix, iy);
+        let b = at(ix + 1, iy);
+        let c = at(ix, iy + 1);
+        let d = at(ix + 1, iy + 1);
+        std::array::from_fn(|i| (a[i] + (b[i] - a[i]) * x.fract()) * (1.0 - y.fract()) + (c[i] + (d[i] - c[i]) * x.fract()) * y.fract())
+    }
+}
+
+impl DualBrush {
+    pub fn resolved_brush(&self, parent: &BrushSettings) -> Option<BrushSettings> {
+        let mut b = self.full_parameters.as_deref()?.clone();
+        b.dual_brush = Self::default();
+        b = b.bounded_for_render();
+        b.color = parent.color;
+        b.background = parent.background;
+        b.seed = parent.seed ^ 0xD1B54A32D192ED03;
+        // C3's sampled colour patch belongs to the primary lane.
+        b.pattern_enabled = false;
+        b.sampled_pattern = None;
+        b.erase = parent.erase;
+        Some(b)
     }
 }

@@ -142,6 +142,15 @@ pub struct Stylus {
     pub(crate) pen_contacts: PenContacts,
     /// The egui frame [`Self::update_for_frame`] last ran in.
     updated_frame: Option<u64>,
+    /// A native input backend (WinTab) currently owns pressure: winit's touch force for the
+    /// same stroke would double-report it, so it is ignored while set.
+    pub external_pen: bool,
+    /// The custom tablet response (dead zone, full-pressure calibration, elasticity, pressure
+    /// averaging) and its per-stroke state.
+    tablet_response: Option<photocraft_paint::TabletPressureSettings>,
+    pressure_filter: photocraft_paint::TabletPressureFilter,
+    filtered_pressure: Option<f32>,
+    last_filtered_raw: Option<f32>,
     /// Tilt X, tilt Y, rotation of each point of the current drag (parallel to its points).
     pub(crate) stroke: Vec<[f32; 3]>,
     /// Time in milliseconds of each point of the current drag (parallel to its points), from
@@ -171,6 +180,11 @@ impl Default for Stylus {
             peak: 0.0,
             pen_contacts: PenContacts::default(),
             updated_frame: None,
+            external_pen: false,
+            tablet_response: None,
+            pressure_filter: photocraft_paint::TabletPressureFilter::default(),
+            filtered_pressure: None,
+            last_filtered_raw: None,
             stroke: Vec::new(),
             times: Vec::new(),
             clock_ms: 0.0,
@@ -228,7 +242,11 @@ impl Stylus {
                         let force = force.or((down && self.touch_pen && (start || self.touch.is_none())).then_some(0.0));
                         if let Some(f) = force {
                             self.touch = Some(f);
-                            self.frame.push(PenSample { pressure: f, ..Default::default() });
+                            // WinTab (or another native backend) supplies this pen's pressure:
+                            // winit's copy of the same stroke would double-report it.
+                            if !self.external_pen {
+                                self.frame.push(PenSample { pressure: f, ..Default::default() });
+                            }
                         }
                     }
                     egui::TouchPhase::End | egui::TouchPhase::Cancel => {
@@ -245,6 +263,8 @@ impl Stylus {
             self.frame.retain(|s| s.pressure > 0.0);
         }
         self.peak = self.frame.iter().fold(self.peak, |m, s| m.max(s.pressure));
+        // This frame's samples are all in now; run the tablet response over the freshest one.
+        self.advance_pressure_filter();
     }
 
     /// The pen's current sample. When the pen touched during this frame but has lifted since
@@ -356,7 +376,67 @@ impl Stylus {
 
     /// Pressure for the next tool event (1 for a mouse).
     pub fn pressure(&self) -> f32 {
-        self.sample().map_or(1.0, |s| s.pressure)
+        match (self.sample(), self.filtered_pressure) {
+            (Some(s), Some(filtered)) if self.tablet_response.is_some() => {
+                // The response is active for this sample: use the filtered value.
+                let _ = s;
+                filtered
+            }
+            (Some(s), _) => s.pressure,
+            (None, _) => 1.0,
+        }
+    }
+
+    /// Preferences › Tools › Tablet Pressure response (off when the filter is disabled).
+    pub fn set_tablet_response(&mut self, settings: photocraft_paint::TabletPressureSettings) {
+        self.tablet_response = settings.enabled.then_some(settings.clamped());
+        if self.tablet_response.is_none() {
+            self.pressure_filter.reset();
+            self.filtered_pressure = None;
+            self.last_filtered_raw = None;
+        }
+    }
+
+    /// Begin a stroke through the tablet response, so its filter state and delay line start
+    /// empty (`Stylus::pressure` then returns the filtered values).
+    pub(crate) fn begin_pressure_filter(&mut self) {
+        self.pressure_filter.reset();
+        self.filtered_pressure = None;
+        self.last_filtered_raw = None;
+        self.advance_pressure_filter();
+    }
+
+    /// Feed the current pen sample through the response once per frame. The delay line makes the
+    /// filter emit a point a couple of samples behind, so this keeps the last emitted pressure;
+    /// a stroke's end flushes it in [`Self::finish_pressure_filter`].
+    fn advance_pressure_filter(&mut self) {
+        let Some(settings) = self.tablet_response else { return };
+        let Some(sample) = self.sample() else {
+            self.filtered_pressure = None;
+            return;
+        };
+        if self.last_filtered_raw == Some(sample.pressure) && self.filtered_pressure.is_some() {
+            return;
+        }
+        self.last_filtered_raw = Some(sample.pressure);
+        let point = photocraft_paint::StrokePoint { is_pen: true, x: 0.0, y: 0.0, pressure: sample.pressure, ..Default::default() };
+        let out = if self.filtered_pressure.is_none() {
+            self.pressure_filter.begin(point, settings)
+        } else {
+            self.pressure_filter.push(point)
+        };
+        // Coordinate stability holds points back a segment; the pressure the brush uses must be
+        // the freshest one, so read the filter's current pressure rather than the delayed point.
+        self.filtered_pressure = Some(self.pressure_filter.pressure_now());
+    }
+
+    /// Flush the tablet response at the end of a stroke.
+    pub(crate) fn finish_pressure_filter(&mut self) {
+        if self.tablet_response.is_some() {
+            let _ = self.pressure_filter.finish(None);
+        }
+        self.filtered_pressure = None;
+        self.last_filtered_raw = None;
     }
 
     /// Pressure for a tap, a drag released where it was pressed: the highest the pen pressed

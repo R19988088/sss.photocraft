@@ -55,6 +55,8 @@ pub enum Tool {
     Dodge,
     Burn,
     Sponge,
+    /// The freeform liquify tool: an on-canvas tool with a resident GPU preview.
+    Liquify,
     QuickSelection,
     ObjectSelection,
     Pen,
@@ -81,7 +83,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 69] = [
+    pub const ALL: [Tool; 70] = [
         Tool::Move,
         Tool::Artboard,
         Tool::RectMarquee,
@@ -131,6 +133,7 @@ impl Tool {
         Tool::Dodge,
         Tool::Burn,
         Tool::Sponge,
+        Tool::Liquify,
         Tool::QuickSelection,
         Tool::ObjectSelection,
         Tool::Pen,
@@ -207,6 +210,7 @@ impl Tool {
             Tool::Dodge => "Dodge Tool",
             Tool::Burn => "Burn Tool",
             Tool::Sponge => "Sponge Tool",
+            Tool::Liquify => "Liquify Tool",
             Tool::QuickSelection => "Quick Selection Tool",
             Tool::ObjectSelection => "Object Selection Tool",
             Tool::Pen => "Pen Tool",
@@ -284,6 +288,7 @@ impl Tool {
             Tool::CloneStamp | Tool::PatternStamp => 'S',
             Tool::HistoryBrush | Tool::ArtHistoryBrush => 'Y',
             Tool::Blur | Tool::Sharpen | Tool::Smudge => '\0',
+            Tool::Liquify => '\0',
             // In the Marquee flyout, but M cycles only the Rectangular and Elliptical Marquee.
             Tool::SingleRowMarquee | Tool::SingleColumnMarquee => '\0',
             Tool::Dodge | Tool::Burn | Tool::Sponge => 'O',
@@ -314,6 +319,7 @@ impl Tool {
             Tool::Hand => "✋",
             Tool::RotateView => "🧭",
             Tool::Zoom => "🔍",
+            Tool::Liquify => "⤢",
             _ => "•",
         }
     }

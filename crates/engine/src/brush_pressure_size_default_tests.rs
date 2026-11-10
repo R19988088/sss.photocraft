@@ -1,10 +1,8 @@
 //! Pressure for Size starts off (#11809). The reference application leaves both pressure toggles
-//! in the options bar unhighlighted after Reset Tool, so a fresh brush has neither on — and the
-//! brush Reset Tool hands back is `BrushSettings::default()` plus smoothing
-//! (`crates/ui-egui/src/canvas/paint_mouse.rs::fresh_brush`), so the default is what the tool
-//! reset reports through `brush.get`. The options bar's two `circle-dot` buttons are drawn from
-//! these same two fields (`crates/ui-egui/src/panels/options_bar.rs`), so off here means drawn
-//! off there.
+//! in the options bar unhighlighted after Reset Tool, so a fresh brush has neither on. Each
+//! parameter's own Control is Off too (`Dynamic::default`), so nothing drives it until the user
+//! picks one in Brush Settings. The options bar's two `circle-dot` buttons are drawn from these
+//! same two fields (`crates/ui-egui/src/panels/options_bar.rs`).
 
 use crate::Session;
 use photocraft_paint::brush::BrushSettings;

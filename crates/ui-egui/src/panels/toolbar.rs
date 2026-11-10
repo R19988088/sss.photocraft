@@ -19,23 +19,35 @@ pub(crate) fn toolbar_width(pro: bool, double: bool) -> f32 {
 /// Photoshop toolbar: divider-separated sections of slots; each slot is a flyout group whose button
 /// shows the group's last-used tool.
 pub(crate) const TOOL_SECTIONS: &[&[&[Tool]]] = &[
+    // Pinned paint tools. The custom build keeps them at the top and out of Edit › Toolbar,
+    // and puts the liquify group in the fourth slot so it is one click away.
+    &[&[Tool::Brush, Tool::Pencil], &[Tool::Eraser], &[Tool::Smudge], &[Tool::Liquify, Tool::Blur, Tool::Sharpen]],
     &[&[Tool::Move, Tool::Artboard]],
     &[
-        &[Tool::RectMarquee, Tool::EllipseMarquee, Tool::SingleRowMarquee, Tool::SingleColumnMarquee],
-        &[Tool::Lasso, Tool::PolygonLasso, Tool::MagneticLasso],
-        &[Tool::ObjectSelection, Tool::QuickSelection, Tool::MagicWand],
+        // Selection tools share one slot: the options bar then shows every one of them at once.
+        &[
+            Tool::RectMarquee,
+            Tool::EllipseMarquee,
+            Tool::SingleRowMarquee,
+            Tool::SingleColumnMarquee,
+            Tool::Lasso,
+            Tool::PolygonLasso,
+            Tool::MagneticLasso,
+            Tool::ObjectSelection,
+            Tool::QuickSelection,
+            Tool::MagicWand,
+        ],
         &[Tool::Crop, Tool::PerspectiveCrop, Tool::Slice, Tool::SliceSelect],
         &[Tool::Frame],
         &[Tool::Eyedropper, Tool::ColorSampler, Tool::Ruler, Tool::Note, Tool::Count],
     ],
     &[
         &[Tool::SpotHealing, Tool::Remove, Tool::Healing, Tool::Patch, Tool::ContentAwareMove, Tool::RedEye],
-        &[Tool::Brush, Tool::Pencil, Tool::ColorReplacement, Tool::MixerBrush],
+        &[Tool::ColorReplacement, Tool::MixerBrush],
         &[Tool::CloneStamp, Tool::PatternStamp],
         &[Tool::HistoryBrush, Tool::ArtHistoryBrush],
-        &[Tool::Eraser, Tool::BackgroundEraser, Tool::MagicEraser],
+        &[Tool::BackgroundEraser, Tool::MagicEraser],
         &[Tool::Gradient, Tool::PaintBucket],
-        &[Tool::Blur, Tool::Sharpen, Tool::Smudge],
         &[Tool::Dodge, Tool::Burn, Tool::Sponge],
     ],
     &[
@@ -78,10 +90,17 @@ pub(super) fn visible_sections(hidden: &[String]) -> Vec<Vec<(usize, Vec<Tool>)>
     let hidden: Vec<Tool> = hidden.iter().map(String::as_str).filter_map(Tool::from_name).collect();
     let mut index = 0usize;
     let mut sections = Vec::new();
-    for section in TOOL_SECTIONS {
+    for (section_index, section) in TOOL_SECTIONS.iter().enumerate() {
         let mut slots = Vec::new();
         for slot in section.iter() {
-            let tools: Vec<Tool> = slot.iter().copied().filter(|tool| !hidden.contains(tool)).collect();
+            // The two single-line marquees stay in the flyout's data but never occupy a button.
+            let tools: Vec<Tool> = slot
+                .iter()
+                .copied()
+                .filter(|tool| !matches!(tool, Tool::SingleRowMarquee | Tool::SingleColumnMarquee))
+                // The pinned paint section cannot be hidden (Edit › Toolbar skips it too).
+                .filter(|tool| section_index == 0 || !hidden.contains(tool))
+                .collect();
             if !tools.is_empty() {
                 slots.push((index, tools));
             }
