@@ -76,16 +76,6 @@ fn px_to_doc(p: vec2<f32>) -> vec2<f32> {
     return vec2(q.x * cs.x + q.y * cs.y, -q.x * cs.y + q.y * cs.x) + view.h.zw;
 }
 
-/// Screen-space AABB of the document rectangle after the view's rotation (and flip), in device
-/// px. The drop shadow hugs this box, so it turns with the canvas.
-fn doc_screen_aabb() -> vec4<f32> {
-    let c0 = doc_to_px(vec2(0.0, 0.0));
-    let c1 = doc_to_px(vec2(view.b.z, 0.0));
-    let c2 = doc_to_px(vec2(view.b.z, view.b.w));
-    let c3 = doc_to_px(vec2(0.0, view.b.w));
-    return vec4(min(min(c0, c1), min(c2, c3)), max(max(c0, c1), max(c2, c3)));
-}
-
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + 0.055) / 1.055, vec3(2.4));
@@ -99,53 +89,44 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 
 // --- drop shadow ---------------------------------------------------------------------------
 
-fn erf2(x: vec2<f32>) -> vec2<f32> {
-    let s = sign(x);
-    let a = abs(x);
-    var t = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
-    t = t * t;
-    return s - s / (t * t);
-}
-
-// Coverage of the box [lo, hi] blurred by a Gaussian of std-dev `sigma`, at point p.
-fn box_blur(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>, sigma: f32) -> f32 {
-    let k = 0.70710678 / sigma;
-    let q = (erf2((p - lo) * k) - erf2((p - hi) * k)) * 0.5;
-    return q.x * q.y;
-}
+// C3 `canvasShadowVertex`/`canvasShadowFragment`: the shadow quad *is* the page quad (rotated
+// with it) grown by an 8 pt border, shifted down in clip space, and faded out over that border by
+// distance from the page edge. Because the border is measured on the rotated quad, the shadow
+// keeps the page's orientation while its light stays overhead.
+const SHADOW_OFFSET_PT: f32 = 5.0;
+const SHADOW_EXTENT_PT: f32 = 8.0;
 
 @vertex
 fn vs_shadow(@builtin(vertex_index) vi: u32) -> VOut {
-    let pad = 64.0 * view.a.w;
-    let c0 = doc_to_px(vec2(0.0, 0.0));
-    let c1 = doc_to_px(vec2(view.b.z, 0.0));
-    let c2 = doc_to_px(vec2(view.b.z, view.b.w));
-    let c3 = doc_to_px(vec2(0.0, view.b.w));
-    let lo = min(min(c0, c1), min(c2, c3)) - vec2(pad);
-    let hi = max(max(c0, c1), max(c2, c3)) + vec2(pad);
-    let p = mix(lo, hi, corner(vi));
-    return VOut(px_to_clip(p));
+    let u = view.a.w;
+    // The page quad grown by 8 pt on every side, then rotated with the page. `doc_to_px` works in
+    // doc px, so the screen-space pad is divided back by the view scale.
+    let pad = SHADOW_EXTENT_PT * u / max(view.a.z, 1e-6);
+    let c0 = doc_to_px(vec2(-pad, -pad));
+    let c1 = doc_to_px(vec2(view.b.z + pad, -pad));
+    let c2 = doc_to_px(vec2(view.b.z + pad, view.b.w + pad));
+    let c3 = doc_to_px(vec2(-pad, view.b.w + pad));
+    // The quad's own corners, not their screen AABB: the shadow keeps the page's rotation.
+    let c = corner(vi);
+    let p = mix(mix(c0, c1, c.x), mix(c3, c2, c.x), c.y);
+    // Down the screen is +y here (device px, top-left origin), matching C3's clip-space −y.
+    return VOut(px_to_clip(p + vec2(0.0, SHADOW_OFFSET_PT * u)));
 }
 
 @fragment
 fn fs_shadow(in: VOut) -> @location(0) vec4<f32> {
-    let p = in.pos.xy;
-    let d = px_to_doc(p);
+    let u = view.a.w;
+    // Undo the screen-space drop so `p` lands on the page position this shadow pixel came from.
+    let d = px_to_doc(in.pos.xy - vec2(0.0, SHADOW_OFFSET_PT * u));
+    // The page is opaque here; a document with transparent pixels must not show its own shadow.
     if (all(d >= vec2(0.0)) && all(d < view.b.zw)) {
         discard;
     }
-    // The shadow's offsets are screen-space, so the light always comes from above and the shadow
-    // never turns with the canvas (C3 `canvasShadowVertex`: the geometry rotates, the offset does
-    // not). `lo`/`hi` still come from the rotated document box, so the shadow hugs the paper.
-    let box = doc_screen_aabb();
-    let lo = box.xy;
-    let hi = box.zw;
-    let u = view.a.w;
-    // C3 `canvasShadowVertex`/`canvasShadowFragment` sizes: the return is a 10 pt screen-space
-    // drop with an 8 pt fade range at 0.14 alpha. The document box itself still carries the
-    // rotation, so the shadow follows the turned page while its light stays overhead.
-    let ambient = box_blur(p - vec2(0.0, 10.0 * u), lo, hi, 8.0 * u) * 0.14;
-    return vec4(0.0, 0.0, 0.0, ambient);
+    // Distance outside the page in device px, then C3's `length(outside)` fade over the border.
+    let outside = max(max(-d, d - view.b.zw), vec2(0.0)) * view.a.z;
+    let fade = SHADOW_EXTENT_PT * u;
+    let alpha = (1.0 - smoothstep(0.0, fade, length(outside))) * 0.14;
+    return vec4(0.0, 0.0, 0.0, alpha);
 }
 
 // --- document tiles ------------------------------------------------------------------------
