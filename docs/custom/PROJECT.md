@@ -3,7 +3,7 @@
 > 这个仓库是 **上游 `storytold/photocraft`** 与 **作者 0.23.6 自研功能** 的合并版。
 > 目标：既能持续跟随上游更新，又永久保留自研功能。
 
-最后更新：2026-11-10
+最后更新：2026-11-10（已跟随上游第二次更新）
 
 ---
 
@@ -12,14 +12,15 @@
 | | 地址 / 位置 |
 |---|---|
 | 上游（跟随） | https://github.com/storytold/photocraft |
-| 本仓库（自定义合并版） | https://github.com/R19988088/S.photocraft |
+| 本仓库（自定义合并版） | https://github.com/R19988088/sss.photocraft |
+| 推送分支 | `custom-merged`（`main` 保持原样） |
 | 合并前的自研分支 | 原 `code/` 目录，分支 `liquify-on-023`，HEAD `d0deb14`，版本 0.23.6 |
 | 合并工作副本 | `photocraft-custom-0.24/` |
 
 ### 当前基线
 
 ```
-上游快照   storytold/photocraft main, 2026-11-09
+上游快照   storytold/photocraft main, 2026-11-10（第二次跟随）
            工作区版本 0.20.1
 上游祖先   2d73f62b0f83fb2330751906f1f034d95e9ab7a8 (2026-10-19)
 自研基线   R19988088/S.photocraft  分支 liquify-on-023, 0.23.6, d0deb14
@@ -251,3 +252,51 @@ codesign --force --sign - --options runtime \
 
 **注意**：release 构建需要约 10 GB 磁盘。`target/debug` 会占 20 GB 以上，
 构建 release 前建议先 `rm -rf target/debug`。
+
+---
+
+## 8. 上游跟随记录
+
+| 日期 | 上游改动 | 重叠文件 | 结果 |
+|---|---|---|---|
+| 2026-11-09 | 首次导入基线（0.20.1） | — | 四项自研功能全部移植 |
+| 2026-11-10 | 221 个文件修改、32 个新增 | 4 个 | 逐个重放我们的增量 |
+
+### 第二次跟随（2026-11-10）细节
+
+上游新功能：Average 滤镜、color glyphs、cylinder warp、`toolbar_side` 面板偏好、
+`damage_span` 增量重绘、perspective crop 改进等。
+
+与我们重叠的 4 个文件：
+
+| 文件 | 上游改动 | 我们的改动 | 处理 |
+|---|---|---|---|
+| `panels/toolbar.rs` | 673 行（缩进重排） | 35 行（工具分组） | 重放成功 |
+| `canvas.rs` | 226 行 | 32 行（Esc 导航、压感接线） | 重放成功 |
+| `panels/panel_docking.rs` | 371 行 | 28 行（浮动面板阴影） | 手工插入 |
+| `tools/brush_picker.rs` | 226 行 | 2 行（tip_texture 签名） | 重放成功 |
+
+另外把上游新增的 API 补进我们覆盖过的文件：
+
+- `doc_state.rs`：`damage_span` 字段 + `damage_from()`
+- `lib.rs`：`whole_redraws` 计数器
+- `state.rs`：`ToolbarSide` 枚举、`brush_lane`/`brush_secondary_section`
+- `brush_panel.rs`：`BrushesPanelState.show_search`
+- `gesture.rs`：`finish_stroke` 的新 `line` 参数
+- `tool_input.rs`：`perspective_crop_ui::pointer` 的新 `mods` 参数
+- `options_bar.rs`：Gradient 分支改用上游新版
+
+### 已知的上游自带失败（与合并无关）
+
+`photocraft-engine` 有 3 个测试在**纯上游快照上同样失败**：
+
+- `artboard_cmds::tests::a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_document`
+- `artboard_cmds::tests::duplicating_a_board_beside_one_past_the_origin_moves_the_color_samplers_with_the_document`
+- `warp_cmds::tests::untouched_cylinder_committed_from_warp_mode_stays_a_cylinder`
+
+前者是色板采样器 0.5px 的像素中心偏移，后者是 cylinder warp 的模式判定。
+**修它们不属于本仓库范围**，跟随上游自行修复即可。
+
+### 备份
+
+旧版 0.23.6 完整源码：`../backup/PhotoCraft-source-20261110-v0.23.6-final.zip`（22MB，不入库）
