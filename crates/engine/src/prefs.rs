@@ -1411,10 +1411,39 @@ pub struct Preferences {
     pub layer_mask_overlay: LayerMaskOverlay,
 }
 
+/// Where a `tablet.<key>` value is stored: the page gathers settings from `tools`.
+fn tablet_storage_path(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "tabletInput" => "tools.tabletInput",
+        "enabled" => "tools.tabletPressure.enabled",
+        "maximumPressure" => "tools.tabletPressure.maximumPressure",
+        "deadZone" => "tools.tabletPressure.deadZone",
+        "elasticity" => "tools.tabletPressure.elasticity",
+        "coordinateWindow" => "tools.tabletPressure.coordinateWindow",
+        "pressureWindow" => "tools.tabletPressure.pressureWindow",
+        _ => return None,
+    })
+}
+
 impl Preferences {
     /// The preferences as JSON (camelCase keys).
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or(Value::Null)
+        let mut v = serde_json::to_value(self).unwrap_or(Value::Null);
+        // The pen's own page (Photoshop's Tablet page): the pressure filter and the Windows input
+        // source, which are stored under `tools` but are not tool settings.
+        if let Value::Object(m) = &mut v {
+            m.insert("tablet".into(), self.tablet_json());
+        }
+        v
+    }
+
+    /// The `tablet` page's values, gathered from `tools.tabletPressure` and `tools.tabletInput`.
+    fn tablet_json(&self) -> Value {
+        let mut t = serde_json::to_value(&self.tools.tablet_pressure).unwrap_or_else(|_| json!({}));
+        if let Value::Object(m) = &mut t {
+            m.insert("tabletInput".into(), json!(self.tools.tablet_input.name()));
+        }
+        t
     }
 
     /// Read a value by dotted path (`""` = everything).
@@ -1458,6 +1487,19 @@ impl Preferences {
             _ => value,
         };
         check_value(path, &value)?;
+        // The tablet page only mirrors `tools`: write what it shows back where it is stored.
+        if path == "tablet" || path.starts_with("tablet.") {
+            let changes: Vec<(String, Value)> = match (path.strip_prefix("tablet."), &value) {
+                (Some(key), v) => vec![(key.to_string(), v.clone())],
+                (None, Value::Object(o)) => o.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                (None, _) => return Err("`tablet` needs an object".into()),
+            };
+            for (key, v) in changes {
+                let target = tablet_storage_path(&key).ok_or_else(|| format!("unknown preference `tablet.{key}`"))?;
+                self.set(target, v)?;
+            }
+            return Ok(());
+        }
         let mut root = self.to_json();
         set_path(&mut root, path, value)?;
         *self = serde_json::from_value(root).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
@@ -1487,6 +1529,23 @@ impl Preferences {
             _ => {}
         }
         let def = Preferences::default().get(path).ok_or_else(|| format!("unknown preference `{path}`"))?;
+        // The tablet page gathers its values from `tools`, so a reset writes them back there.
+        if path == "tablet" || path.starts_with("tablet.") {
+            match def {
+                Value::Object(o) => {
+                    for (k, v) in o {
+                        let target = tablet_storage_path(&k).ok_or_else(|| format!("unknown preference `tablet.{k}`"))?;
+                        self.set(target, v)?;
+                    }
+                }
+                v => {
+                    let key = path.strip_prefix("tablet.").unwrap_or("");
+                    let target = tablet_storage_path(key).ok_or_else(|| format!("unknown preference `{path}`"))?;
+                    self.set(target, v)?;
+                }
+            }
+            return Ok(());
+        }
         if path == "shortcuts" {
             self.shortcuts.clear();
             return Ok(());

@@ -219,9 +219,11 @@ pub(super) fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         .focus
         .and_then(|job| opening.iter().position(|(open, _, _)| *open == job))
         .map_or_else(|| app.session.active_index().and_then(|doc| documents.iter().position(|&d| d == doc)).unwrap_or(0), |p| tab_count + p);
-    let frame = egui::Frame::NONE.fill(t.canvas).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
+    // A floating title strip: no filled band behind the tabs, the tabs sit straight on the canvas.
+    let frame = egui::Frame::NONE.inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
         let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), tab_h), Sense::hover());
-        let f = fit_doc_tabs(&natural, selected, row.width());
+        // The + at the strip's end opens a document; the tabs share what is left.
+        let f = fit_doc_tabs(&natural, selected, (row.width() - OPEN_TAB_WIDTH).max(1.0));
         let mut x = row.left();
         let mut placed: Vec<(usize, Rect)> = Vec::with_capacity(f.shown.len());
         for &(i, w) in &f.shown {
@@ -249,8 +251,8 @@ pub(super) fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
                 egui::WidgetInfo::selected(egui::Role::Button, true, sel, label)
             });
             doc_tabs.push((doc, r));
+            // The selected tab stands out by its text alone: a floating strip has no card behind it.
             if sel {
-                ui.painter().rect_filled(r, t.radius_sm, t.card);
                 ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside);
             } else if resp.hovered() {
                 ui.painter().rect_filled(r, t.radius_sm, t.hover.gamma_multiply(0.5));
@@ -315,8 +317,9 @@ pub(super) fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             }
         }
         if !f.overflow.is_empty() {
-            // Pinned to the strip's right end, as Photoshop's is, not after the last tab (#8290).
-            let left = (row.right() - crate::tab_strip::CHEVRON_W).max(row.left());
+            // Pinned to the strip's right end, as Photoshop's is, not after the last tab (#8290),
+            // with the + after it.
+            let left = (row.right() - OPEN_TAB_WIDTH - crate::tab_strip::CHEVRON_W).max(row.left());
             let r = Rect::from_min_size(egui::pos2(left, row.top()), egui::vec2(crate::tab_strip::CHEVRON_W, row.height()));
             let labels: Vec<&str> = documents
                 .iter()
@@ -334,6 +337,9 @@ pub(super) fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
                 None => {}
             }
         }
+        // The + at the strip's end opens a document (the reference application's own strip has one).
+        let open_rect = Rect::from_min_size(egui::pos2((row.right() - OPEN_TAB_WIDTH).max(row.left()), row.top()), egui::vec2(OPEN_TAB_WIDTH, row.height()));
+        open_document_button(app, ui, open_rect);
     });
     open_tab_clicks(app, activate, focus_open, cancel_open);
     if let Some(i) = drag_over {
@@ -524,6 +530,26 @@ const STUDIO_TAB_PAD: f32 = 48.0;
 
 const STUDIO_TAB_GAP: f32 = 4.0;
 
+/// The + at the document strip's end that opens a document.
+const OPEN_TAB_WIDTH: f32 = 34.0;
+
+/// Draw the strip's + button: a plain cross, hover-highlighted, that opens a document.
+fn open_document_button(app: &mut PhotocraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let response = ui.interact(rect, ui.id().with("open-document"), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Open…")));
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.45));
+    }
+    let plus = rect.center();
+    let color = if response.hovered() { t.text } else { t.text_faint };
+    ui.painter().line_segment([plus - egui::vec2(8.0, 0.0), plus + egui::vec2(8.0, 0.0)], Stroke::new(2.0, color));
+    ui.painter().line_segment([plus - egui::vec2(0.0, 8.0), plus + egui::vec2(0.0, 8.0)], Stroke::new(2.0, color));
+    if response.clicked() {
+        let _ = app.open_dialog_file();
+    }
+}
+
 /// Fit document tabs as Photoshop does (#4487): a tab never shrinks below its whole title, so the
 /// tabs that don't fit move into the » menu instead. Only the active tab, when it alone is wider
 /// than the strip, is cut.
@@ -587,7 +613,6 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     let font = egui::FontId::proportional(if large_tabs { 13.0 } else { 11.5 });
     let tab_h = if large_tabs { 34.0 } else { 26.0 };
     let (strip, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), tab_h), Sense::hover());
-    ui.painter().rect_filled(strip, 0.0, t.tab_strip);
     // Files opening in the background (#210) are tabs too ("name (Opening… 45%)" with a progress
     // underline); they share the fit's index space, after the documents.
     let opening = crate::jobs_ui::open_tabs(app);
@@ -596,7 +621,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
     // Every tab's natural width, whether or not it stays on the strip.
     let natural: Vec<f32> = titles.iter().map(|title| ui.painter().layout_no_wrap(title.clone(), font.clone(), t.text).size().x + DOC_TAB_PAD).collect();
     let selected = app.jobs.focus.and_then(|job| opening.iter().position(|(open, _, _)| *open == job)).map_or_else(|| active.unwrap_or(0), |p| tab_count + p);
-    let f = fit_doc_tabs(&natural, selected, strip.width());
+    let f = fit_doc_tabs(&natural, selected, (strip.width() - OPEN_TAB_WIDTH).max(1.0));
     let mut x = strip.left();
     let mut placed: Vec<(usize, Rect)> = Vec::with_capacity(f.shown.len());
     for &(i, w) in &f.shown {
@@ -612,9 +637,8 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptab", doc)), Sense::click_and_drag());
         let sel = Some(i) == active;
-        if sel {
-            ui.painter().rect_filled(r, 0.0, t.chrome);
-        } else if resp.hovered() {
+        // A floating strip: the active tab is told apart by its text; only a hover shows behind it.
+        if resp.hovered() && !sel {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.35));
         }
         if dragging.is_some_and(|p| r.contains(p)) {
@@ -653,9 +677,7 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptabjob", job.0)), Sense::click());
         let sel = app.jobs.focus == Some(*job);
-        if sel {
-            ui.painter().rect_filled(r, 0.0, t.chrome);
-        } else if resp.hovered() {
+        if resp.hovered() && !sel {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.35));
         }
         ui.painter().line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.separator));
@@ -672,8 +694,9 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         }
     }
     if !f.overflow.is_empty() {
-        // Pinned to the strip's right end, as Photoshop's is, not after the last tab (#8290).
-        let left = (strip.right() - crate::tab_strip::CHEVRON_W).max(strip.left());
+        // Pinned to the strip's right end, as Photoshop's is, not after the last tab (#8290),
+        // with the + after it.
+        let left = (strip.right() - OPEN_TAB_WIDTH - crate::tab_strip::CHEVRON_W).max(strip.left());
         let r = Rect::from_min_size(egui::pos2(left, strip.top()), egui::vec2(crate::tab_strip::CHEVRON_W, strip.height()));
         let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
         let mut picked = None;
@@ -687,6 +710,10 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
             None => {}
         }
     }
+    // The + at the strip's end opens a document.
+    let open_rect =
+        Rect::from_min_size(egui::pos2((strip.right() - OPEN_TAB_WIDTH).max(strip.left()), strip.top()), egui::vec2(OPEN_TAB_WIDTH, strip.height()));
+    open_document_button(app, ui, open_rect);
     open_tab_clicks(app, activate, focus_open, cancel_open);
     if let Some(i) = drag_over {
         crate::layer_transfer::over_tab(app, ui.ctx(), i);

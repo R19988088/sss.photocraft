@@ -3326,3 +3326,76 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 # RAW Develop feature labels
 	RAW Develop	RAW 显影
 	RAW Develop Filter	RAW 显影滤镜
+	Enable Color Attributes	启用颜色属性
+	Enable Mixing	启用混合
+	Enable Pigment	启用颜料
+	Anchor Smooth	锚点平滑
+	Stroke Smoothing	笔画平滑
+	Saturation Record	饱和度记录
+	Saturation Protection	饱和度保护
+	Primary Strength	主笔刷强度
+	Secondary Strength	副笔刷强度
+	Smudge Output	涂抹输出
+	Output Strength	输出强度
+	Concentration	浓度
+	Water	水分
+	Liquidity	流动性
+	Fluid	流体
+	Pressure Controls Fluid	压感控制流体
+	Gaussian Mask	高斯遮罩
+	Mixing Pressure Curve	混合压力曲线
+	Blur Pressure Curve	模糊压力曲线
+	Minimum Strength	最小强度
+	Minimum Length	最小长度
+	Minimum Blur	最小模糊
+	Length Jitter	长度抖动
+	Strength Jitter	强度抖动
+	Blur Jitter	模糊抖动
+	Contour Strength	轮廓强度
+	Pressure Controls Contour	压感控制轮廓
+	Use Grain Parameters	使用颗粒参数
+	Use Wet Edge Parameters	使用湿边参数
+	Anchor Delay	锚点延迟
+	Anchor X	锚点 X
+	Anchor Y	锚点 Y
+	Blur Strength	模糊强度
+	Blend Attribute	混合属性
+	Choose Pattern	选择图案
+	Color Attribute	颜色属性
+	Grain Density	颗粒密度
+	Grain Size	颗粒大小
+	Highlight Brightness	高光亮度
+	Highlight Ratio	高光比例
+	Highlight Strength	高光强度
+	Fixed Width	固定宽度
+	Minimum Width	最小宽度
+	Expansion	扩展
+	Soft Coverage	柔边覆盖
+	Edge Control	边缘控制
+	Darkening	变暗
+	Texture Strength	纹理强度
+	Thickness	厚度
+	Coordinates:	坐标：
+	Canvas Locked	画布锁定
+	Stroke Locked	笔画锁定
+	Tip Local	笔尖局部
+	Keep the current pattern and scale when you switch to another textured brush preset.	切换到其他纹理笔刷预设时保留当前图案和比例。
+	Flow Algorithm:	流量算法：
+	Tablet	数位板
+	Tablet…	数位板…
+	Pressure dead zone	压力死区
+	Elasticity	弹性
+	Stroke stability	笔触稳定
+	Pressure calibration	压力校准
+	Retained peak	保留峰值
+	Tablet input mode	数位板输入模式
+	Windows Ink	Windows Ink
+	WinTab	WinTab
+	Image Palette Color	图像调色板颜色
+	Use Sampled Pattern	使用采样图案
+	C2 Color	C2 颜色
+	Drag panels	拖动面板
+	Complementary Color	互补色
+	Use the eyedropper on the canvas to sample a pattern.	在画布上用吸管采样图案。
+	Maximum pressure maps the pen's full press to 100%; the dead zone ignores a light resting touch, elasticity shapes the response curve, and stroke stability averages the last few positions.	最大压力把笔的满压映射为 100%；压力死区忽略轻放时的触碰，弹性决定响应曲线，笔触稳定会平均最近几帧的位置。
+	WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it.	WinTab 从数位板驱动读取压力、倾斜、旋转和橡皮端。使用前请先在数位板软件（如 Wacom Center）里关闭 Windows Ink。

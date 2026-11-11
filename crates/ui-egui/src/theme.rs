@@ -1082,10 +1082,11 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
         s.spacing.icon_width = 14.0;
         s.visuals.indent_has_left_vline = false;
         s.interaction.tooltip_delay = TOOLTIP_DELAY;
-        // Thin overlay scrollbars that appear on hover (Photoshop/macOS style).
+        // Thin overlay scrollbars that appear on hover (Photoshop/macOS style), in every theme:
+        // the Classic theme used to draw stock solid bars, whose track is not transparent.
         // Thin bars stay visible, including while the pointer is on them. The stock thin
         // style fades the handle to the same opacity as the track, so the thumb disappears (#4611).
-        let mut scroll = if t.bevel { egui::style::ScrollStyle::solid() } else { egui::style::ScrollStyle::thin() };
+        let mut scroll = egui::style::ScrollStyle::thin();
         if scroll.floating {
             // The handle alone, no track: the background stays fully transparent in every state
             // (upstream draws a 0.4 track while hovered).

@@ -741,7 +741,7 @@ fn pose(ui: &mut egui::Ui, b: &mut BrushSettings) {
     let p = &mut b.pose;
     tilt(ui, tl!("Tilt X"), &mut p.tilt_x);
     tilt(ui, tl!("Tilt Y"), &mut p.tilt_y);
-    widgets::checkbox(ui, &mut p.override_tilt_x, tl!("Override Tilt"));
+    widgets::checkbox(ui, &mut p.override_tilt_x, tl!("Override Tilt X"));
     widgets::checkbox(ui, &mut p.override_tilt_y, tl!("Override Tilt Y"));
     ui.add_space(8.0);
     num(ui, tl!("Rotation"), &mut p.rotation, 0.0..=360.0, "°");

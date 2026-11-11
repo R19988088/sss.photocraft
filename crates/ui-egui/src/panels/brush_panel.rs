@@ -41,8 +41,9 @@ pub(crate) fn section_visible(section: usize) -> bool {
 }
 
 /// Panel width and the stroke strip's size.
-pub(crate) const WIDTH: f32 = 540.0;
-const STRIP: (u32, u32) = (488, 76);
+pub(crate) const WIDTH: f32 = 340.0;
+const LIST_WIDTH: f32 = 120.0;
+const STRIP: (u32, u32) = (368, 60);
 
 /// How the Brushes tab lists presets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,14 +69,12 @@ pub struct Renaming {
     pub text: String,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// Brushes panel view state (serde, so the control channel can read and drive it).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushesPanelState {
+    #[serde(default = "crate::panels::brush_panel::default_true")]
+    pub show_search: bool,
     /// Collapsed groups and folders: a group's label, or for a nested folder the group's label and
     /// the folder path joined with `/` ([`crate::brushes_tab::folder_view_key`]).
     pub collapsed: Vec<String>,
@@ -88,9 +87,6 @@ pub struct BrushesPanelState {
     pub show_name: bool,
     /// The Brush Preset picker's cards: show the stroke preview.
     pub show_stroke: bool,
-    /// The Brush Preset picker shows its search field (the gear menu toggles it).
-    #[serde(default = "crate::panels::brush_panel::default_true")]
-    pub show_search: bool,
     /// The Brush Preset picker's cards: show the tip thumbnail.
     pub show_tip: bool,
     /// The Brush Preset picker's cards: their size scale, from the picker's footer slider
@@ -104,17 +100,26 @@ pub struct BrushesPanelState {
 impl Default for BrushesPanelState {
     fn default() -> Self {
         Self {
+            show_search: true,
             collapsed: Vec::new(),
             filter: String::new(),
             view: BrushesView::default(),
             renaming: None,
             show_name: true,
             show_stroke: true,
-            show_search: true,
             show_tip: true,
             scale: 1.0,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Switch-only rows do not select a control pane.
+fn checkbox_only(section: usize) -> bool {
+    matches!(section, 5 | 6)
 }
 
 /// The enable flag behind section `i` (None for Brush Tip Shape).
@@ -254,9 +259,9 @@ pub(crate) fn full_uv() -> egui::Rect {
 fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings) {
     let t = Tokens::get(ui.ctx());
     ui.vertical(|ui| {
-        ui.set_width(150.0);
+        ui.set_width(LIST_WIDTH);
         ui.spacing_mut().item_spacing.y = 1.0;
-        let (br_rect, br_resp) = ui.allocate_exact_size(vec2(150.0, 23.0), Sense::click());
+        let (br_rect, br_resp) = ui.allocate_exact_size(vec2(LIST_WIDTH, 23.0), Sense::click());
         if br_resp.hovered() {
             ui.painter().rect_filled(br_rect, t.radius_sm, t.hover);
         }
@@ -275,7 +280,7 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
                 continue;
             }
             let sel = app.ui.brush_section == i;
-            let (r, resp) = ui.allocate_exact_size(vec2(150.0, 23.0), Sense::click());
+            let (r, resp) = ui.allocate_exact_size(vec2(LIST_WIDTH, 23.0), Sense::click());
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, section_label(name)));
             if sel {
                 ui.painter().rect_filled(r, t.radius_sm, t.accent_soft);
@@ -364,16 +369,16 @@ fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         app.ui.brush_section = 0;
     }
     let section = app.ui.brush_section;
+    let on = section == 2 || !SECTIONS[section].1 || section_enabled(&b, section);
     ui.horizontal_top(|ui| {
         section_list(app, ui, &mut b);
-        widgets::vline(ui, 482.0);
+        widgets::vline(ui, 450.0);
         ui.vertical(|ui| {
-            ui.set_width(WIDTH - 190.0);
-            // No title above the options (#3477): the selected row in the list names them, as
-            // in Photoshop, and the line is better spent on the options.
-            let on = section == 2 || !SECTIONS[section].1 || section_enabled(&b, section);
+            let lane_width = (WIDTH - 190.0).max(240.0);
+            let controls_width = (lane_width - 14.0).max(220.0);
+            ui.set_width(lane_width);
             egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(450.0).auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_width(WIDTH - 204.0);
+                ui.set_width(controls_width);
                 // A section that's off shows its options greyed out (Photoshop). A tip picked in
                 // the grid copies the tip fields only — the dynamics sections stay (Photoshop).
                 // The picked preset is recorded by name (`brush.presets.setCurrent`, identity, so
@@ -552,6 +557,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .id(egui::Id::new("brush-settings"))
         .title_bar(false)
         .resizable(false)
+        .auto_sized()
         .frame(frame)
         .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0))
         .show(ctx, |ui| {

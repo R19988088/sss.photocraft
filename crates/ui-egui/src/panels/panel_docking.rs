@@ -59,6 +59,9 @@ const DOCK_LABELS: &[(&str, &str)] = &[
 /// Where a panel floats when a command gives no rect: craft-ui places it 24 points inside this
 /// area, at (400, 140) on the window.
 const FLOAT_AREA: egui::Rect = egui::Rect::from_min_max(egui::pos2(376.0, 116.0), egui::pos2(1400.0, 900.0));
+
+/// The strip-end header of a docked group: the drag grip and the ⋯ button.
+const GROUP_HEADER_WIDTH: f32 = 52.0;
 const FLOAT_SIZE: egui::Vec2 = egui::vec2(300.0, 400.0);
 
 fn area_id() -> egui::Id {
@@ -806,6 +809,11 @@ fn show_layout(app: &mut PhotocraftApp, ui: &mut egui::Ui, dock_only: bool) {
     let locked = app.session.prefs().workspace_locked;
     let mut style = craft_ui::docking::DockStyle::from_ui(ui);
     style.tab_height = if t.pro { 28.0 } else { 40.0 };
+    // A floating window's own title bar: tall enough to read as one and to grab (craft-ui's 14 pt
+    // is a hairline). Double-clicking it collapses the group.
+    style.title_height = 22.0;
+    // With a title bar there is nothing to grab above it; the bar itself moves the window.
+    style.title_bar_docks = true;
     style.min_pane = 0.0;
     style.background = t.card;
     // Studio themes leave the strip transparent over the dock's card; a floating group has no
@@ -1630,13 +1638,28 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
     fn allow_native(&self, id: &String) -> bool {
         !self.card.contains(id)
     }
-    fn group_header_width(&self, _panels: &[String], _active: &String, _floating: bool, _strip_width: f32) -> f32 {
-        28.0
+    fn group_header_width(&self, _panels: &[String], _active: &String, _floating: bool, strip_width: f32) -> f32 {
+        // The drag grip beside the ⋯ button.
+        GROUP_HEADER_WIDTH.min(strip_width)
     }
     fn group_header(&mut self, ui: &mut egui::Ui, panels: &[String], active: &String, floating: bool) {
+        let t = crate::theme::Tokens::get(ui.ctx());
         let collapsed = panels.iter().all(|id| self.collapsed.contains(id));
         let locked = self.app.session.prefs().workspace_locked;
-        let resp = crate::icons::button(ui, "ellipsis", ui.available_height().min(28.0), false, tl!("Panel menu"));
+        // The reference application's grip: a short bar beside ⋯ that drags the whole group (and
+        // floats it when dragged onto the canvas). It is drawn here; the drag itself is craft-ui's.
+        let height = ui.available_height().min(28.0);
+        let (grip_rect, grip) = ui.allocate_exact_size(egui::vec2((GROUP_HEADER_WIDTH - 28.0).max(0.0), height), egui::Sense::click_and_drag());
+        let bar = 9.0;
+        ui.painter().line_segment(
+            [grip_rect.center() - egui::vec2(bar, 0.0), grip_rect.center() + egui::vec2(bar, 0.0)],
+            egui::Stroke::new(2.0, if grip.hovered() { t.text } else { t.text_faint }),
+        );
+        let grip = grip.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(tl!("Drag panels"));
+        if !locked && (grip.drag_started() || grip.dragged()) {
+            craft_ui::docking::begin_drag(ui.ctx(), area_id(), active.clone(), grip_rect);
+        }
+        let resp = crate::icons::button(ui, "ellipsis", height, false, tl!("Panel menu"));
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(180.0);
             panel_menu(self.app, ui, active);

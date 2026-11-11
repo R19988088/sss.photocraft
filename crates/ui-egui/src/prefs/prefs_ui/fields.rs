@@ -15,7 +15,8 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             f.insert("__gpuInfo".into(), json!(info));
             f.insert("__gpuAdapters".into(), json!(app.perf.gpu_info.adapters));
             let system = system_theme(app, ui.ctx());
-            prefs_body(ui, f, system);
+            let pressure_peak = app.stylus.calibration_peak();
+            prefs_body(ui, f, system, pressure_peak);
         }
         "shortcuts" => shortcuts_body(app, ui, f),
         "presets" => presets_body(app, ui, f),
@@ -156,7 +157,7 @@ pub(super) fn preference_matches(section: &str, key: &str, query: &str) -> bool 
         || en.contains_ignore_case(&label, query)
         || crate::i18n::current().contains_ignore_case(tl!(&label), query)
         // The Tablet input row and its Pen Tablet note are the visible terms, not just the key.
-        || (cfg!(target_os = "windows") && section == "tools" && key == "tabletInput" && en.contains_ignore_case("windows ink pen tablet wintab tablet input", query))
+        || (cfg!(target_os = "windows") && section == "tablet" && key == "tabletInput" && en.contains_ignore_case("windows ink pen tablet wintab tablet input", query))
 }
 
 pub(super) fn preference_sections(values: &Value, search: &str) -> Vec<(&'static str, &'static str)> {
@@ -177,7 +178,7 @@ pub(super) fn preference_sections(values: &Value, search: &str) -> Vec<(&'static
 }
 
 /// Preferences: section list on the left, the section's settings on the right.
-fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui::Theme>) {
+fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui::Theme>, pressure_peak: Option<f32>) {
     let t = Tokens::get(ui.ctx());
     let mut section = f.get("section").and_then(Value::as_str).unwrap_or("general").to_string();
     let mut values = f.get("values").cloned().unwrap_or(Value::Null);
@@ -249,7 +250,7 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>, system: Option<egui
                     ui.add_space(4.0);
                     ui.label(RichText::new(tl!("These settings aren't available in PhotoCraft yet.")).color(t.text_faint));
                 } else if let Some(obj) = values.get_mut(&section).and_then(Value::as_object_mut) {
-                    section_fields(ui, &section, obj, &order, lang, system, filter);
+                    section_fields(ui, &section, obj, &order, lang, system, filter, pressure_peak);
                     if section == "fileHandling" {
                         ui.label(
                             RichText::new(tl!("0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized."))
@@ -309,7 +310,8 @@ pub(super) fn export_field_visible(obj: &Map<String, Value>, key: &str) -> bool 
 /// WinTab is a Windows-only opt-in.
 pub(super) fn tools_field_visible(obj: &Map<String, Value>, key: &str) -> bool {
     match key {
-        "tabletInput" => cfg!(target_os = "windows"),
+        // The pen's Windows input source lives on the Tablet page now.
+        "tabletInput" => false,
         "nudgeBundlePauseMs" => obj.get("bundleNudges").and_then(Value::as_bool) != Some(false),
         _ => true,
     }
@@ -387,7 +389,7 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
         // The browser presents frames itself: Low-Latency Drawing does nothing there.
         || (cfg!(target_arch = "wasm32") && path == "performance.lowLatencyDrawing")
         || (section == "export" && !export_field_visible(obj, k))
-        || (section == "tools" && (!tools_field_visible(obj, k) || k == "tabletInput" || k == "tabletPressure"));
+        || (section == "tools" && (!tools_field_visible(obj, k) || k == "tabletPressure"));
     (query.is_empty() || preference_matches(section, k, query))
         && !drawn_elsewhere
         && !prefs::is_hidden(&path)
@@ -404,8 +406,13 @@ pub(super) fn section_fields(
     lang: crate::i18n::Lang,
     system: Option<egui::Theme>,
     search: &str,
+    pressure_peak: Option<f32>,
 ) {
     let query = search.trim();
+    if section == "tablet" {
+        tablet_fields(ui, obj, pressure_peak);
+        return;
+    }
     let mut keys: Vec<String> = order.iter().filter(|k| obj.contains_key(*k)).cloned().collect();
     keys.extend(obj.keys().filter(|k| !order.contains(k)).cloned());
     if section == "interface" {
@@ -418,83 +425,111 @@ pub(super) fn section_fields(
     if section == "performance" && (query.is_empty() || preference_matches(section, "memoryUsageMb", query)) {
         memory_usage_row(ui, obj);
     }
-    // The custom build's tablet response: a dead zone, full-pressure calibration, elasticity
-    // and causal coordinate filtering, plus the Windows WinTab/Ink choice.
-    if section == "tools"
-        && (query.is_empty()
-            || preference_matches(section, "tabletInput", query)
-            || preference_matches(section, "tabletPressure", query)
-            || preference_matches(section, "useTabletPressure", query)
-            || preference_matches(section, "pressureCurve", query))
-        && (cfg!(target_os = "windows") || pressure_response(obj).is_some())
-    {
-        let t = Tokens::get(ui.ctx());
-        pref_group(ui, "Pen Tablet", |ui| {
-            egui::Grid::new("prefs-grid-pen-tablet").num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| {
-                if cfg!(target_os = "windows") && obj.contains_key("tabletInput") {
-                    field_rows(ui, section, obj, vec!["tabletInput".to_string()], lang);
-                }
-                if let Some(response) = obj.get_mut("tabletPressure").and_then(Value::as_object_mut) {
-                    tablet_response_rows(ui, response);
-                }
-            });
-            ui.add(
-                egui::Label::new(
-                    RichText::new(tl!(
-                        "Maximum pressure maps the pen's full press to 100%; the dead zone ignores a light resting touch, elasticity shapes the response curve, and stroke stability averages the last few positions."
-                    ))
-                    .small()
-                    .color(t.text_dim),
-                )
-                .wrap(),
-            );
-            if cfg!(target_os = "windows") {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(tl!(
-                            "WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it."
-                        ))
-                        .small()
-                        .color(t.text_dim),
-                    )
-                    .wrap(),
-                );
-            }
-        });
-    }
     keys.retain(|k| field_visible(section, obj, k, query));
     egui::Grid::new(("prefs-grid", section)).num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| field_rows(ui, section, obj, keys, lang));
 }
 
 
-/// The `tools.tabletPressure` object when the preference file carries one.
-fn pressure_response(obj: &Map<String, Value>) -> Option<&Map<String, Value>> {
-    obj.get("tabletPressure").and_then(Value::as_object)
-}
-
-/// Sliders for the custom tablet response (`tools.tabletPressure`).
-fn tablet_response_rows(ui: &mut egui::Ui, response: &mut Map<String, Value>) {
+/// Preferences › Tablet: the pen's own page (the reference application's), gathered from
+/// `tools.tabletPressure` and `tools.tabletInput` — the Windows input source, the three response
+/// fields, and a calibration area that records how hard the pen is pressed while dragging in it.
+fn tablet_fields(ui: &mut egui::Ui, obj: &mut Map<String, Value>, pressure_peak: Option<f32>) {
     let t = Tokens::get(ui.ctx());
-    let mut row = |ui: &mut egui::Ui, label: &str, key: &str, min: f64, max: f64, as_percent: bool| {
-        ui.label(RichText::new(tl!(label)).color(t.text));
-        if let Some(v) = response.get(key).and_then(Value::as_f64) {
-            let mut v = v;
-            let (lo, hi) = if as_percent { (min * 100.0, max * 100.0) } else { (min, max) };
-            let mut shown = if as_percent { v * 100.0 } else { v };
-            if ui.add(egui::Slider::new(&mut shown, lo..=hi).fixed_decimals(if as_percent { 0 } else { 2 })).changed() {
-                v = if as_percent { shown / 100.0 } else { shown };
-                if let Some(slot) = response.get_mut(key) {
-                    *slot = json!(v);
+    ui.set_max_width(360.0);
+    // The pen arrives two ways on Windows: WinTab (the tablet driver's API, with tilt, rotation
+    // and the eraser end) or Ink (winit's pointer path, pressure only).
+    if cfg!(target_os = "windows") {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tl!("Tablet input mode")).color(t.text_dim).strong());
+            let mut value = obj.get("tabletInput").and_then(Value::as_str).unwrap_or("windowsInk").to_string();
+            for (v, label) in [("windowsInk", tl!("Windows Ink")), ("winTab", tl!("WinTab"))] {
+                if ui.selectable_label(value == v, label).clicked() {
+                    value = v.to_string();
+                    obj.insert("tabletInput".into(), json!(value));
                 }
             }
+        });
+        ui.add_space(6.0);
+    }
+    egui::Grid::new("prefs-tablet-grid").num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| {
+        let mut row = |ui: &mut egui::Ui, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, scale: f64, suffix: &str| {
+            ui.label(RichText::new(tl!(label)).color(t.text_dim).strong());
+            if let Some(v) = obj.get(key).and_then(Value::as_f64) {
+                let mut shown = (v * scale) as f32;
+                let (lo, hi) = (*range.start() as f32, *range.end() as f32);
+                if crate::widgets::value_field(ui, &mut shown, lo..=hi, suffix, 172.0).changed() {
+                    obj.insert(key.into(), json!(f64::from(shown) / scale));
+                }
+            }
+            ui.end_row();
+        };
+        row(ui, "deadZone", "Pressure dead zone", 0.0..=30.0, 100.0, "%");
+        row(ui, "elasticity", "Elasticity", 1.0..=100.0, 10.0, "");
+        row(ui, "coordinateWindow", "Stroke stability", 1.0..=16.0, 1.0, "");
+    });
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tl!("Pressure calibration")).color(t.text).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let peak = obj.get("maximumPressure").and_then(Value::as_f64).unwrap_or(1.0);
+            ui.label(RichText::new(format!("{} {:.1}%", tl!("Retained peak"), peak * 100.0)).color(t.text_dim).strong());
+        });
+    });
+    ui.add_space(4.0);
+    let size = vec2(ui.available_width().min(420.0), 112.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    ui.painter().rect_filled(rect, 8.0, t.field);
+    ui.painter().rect_stroke(rect, 8.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+    let peak_id = response.id.with("calibration-peak");
+    let trace_id = response.id.with("calibration-trace");
+    if response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
+        ui.data_mut(|d| d.insert_temp(peak_id, 0.0_f32));
+        ui.data_mut(|d| d.insert_temp(trace_id, Vec::<egui::Pos2>::new()));
+    }
+    if (response.is_pointer_button_down_on() || response.drag_stopped() || response.clicked())
+        && let Some(pressure) = pressure_peak
+    {
+        let peak = ui.data(|d| d.get_temp::<f32>(peak_id)).unwrap_or(0.0).max(pressure);
+        ui.data_mut(|d| d.insert_temp(peak_id, peak));
+        if let Some(pointer) = response.interact_pointer_pos() {
+            ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<egui::Pos2>>(trace_id).push(pointer));
         }
-        ui.end_row();
-    };
-    row(ui, "Maximum Pressure", "maximumPressure", 0.05, 1.0, true);
-    row(ui, "Dead Zone", "deadZone", 0.0, 0.3, true);
-    row(ui, "Elasticity", "elasticity", 0.1, 16.0, false);
-    row(ui, "Stroke Stability", "coordinateWindow", 1.0, 16.0, false);
-    row(ui, "Pressure Smoothing", "pressureWindow", 1.0, 16.0, false);
+        // The retained peak is the hardest the pen pressed: full pressure then maps to 100 %.
+        if peak > 0.0 {
+            obj.insert("maximumPressure".into(), json!(f64::from(peak)));
+        }
+    }
+    if response.drag_stopped() {
+        ui.data_mut(|d| d.remove::<f32>(peak_id));
+        ui.data_mut(|d| d.remove::<Vec<egui::Pos2>>(trace_id));
+    }
+    let trace = ui.data(|d| d.get_temp::<Vec<egui::Pos2>>(trace_id).unwrap_or_default());
+    if trace.len() > 1 {
+        ui.painter().add(egui::Shape::line(trace, egui::Stroke::new(2.0, t.accent)));
+    }
+    ui.add_space(8.0);
+    ui.add(
+        egui::Label::new(
+            RichText::new(tl!(
+                "Maximum pressure maps the pen's full press to 100%; the dead zone ignores a light resting touch, elasticity shapes the response curve, and stroke stability averages the last few positions."
+            ))
+            .small()
+            .color(t.text_dim),
+        )
+        .wrap(),
+    );
+    if cfg!(target_os = "windows") {
+        ui.add(
+            egui::Label::new(
+                RichText::new(tl!(
+                    "WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it."
+                ))
+                .small()
+                .color(t.text_dim),
+            )
+            .wrap(),
+        );
+    }
 }
 
 /// One grid row per setting in `keys` (already filtered by `field_visible`).
@@ -649,7 +684,7 @@ mod tests {
     fn wintab_row_matches_its_visible_terms() {
         if cfg!(target_os = "windows") {
             for query in ["windows ink", "pen tablet", "wintab", "tablet input"] {
-                assert!(preference_matches("tools", "tabletInput", query), "{query}");
+                assert!(preference_matches("tablet", "tabletInput", query), "{query}");
             }
         }
         assert!(preference_matches("tools", "useTabletPressure", "tablet pressure"));

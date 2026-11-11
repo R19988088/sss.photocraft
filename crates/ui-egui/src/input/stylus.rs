@@ -279,10 +279,15 @@ impl Stylus {
         }
     }
 
+    /// The highest pressure the pen pressed with this frame, for Preferences › Tablet's pressure
+    /// calibration: pressing the pen while dragging there records its peak.
+    pub(crate) fn calibration_peak(&self) -> Option<f32> {
+        self.frame.iter().copied().chain(self.feed.get()).map(|s| s.pressure).reduce(f32::max)
+    }
+
     /// The current pen sample, `None` for a mouse (and for any pen while Use Tablet Pressure is
     /// off).
-    pub fn sample(&self) -> Option<PenSample> {
-        if !self.use_pressure {
+    pub fn sample(&self) -> Option<PenSample> {        if !self.use_pressure {
             return None;
         }
         let s = self.current.or_else(|| self.latest()).or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
@@ -420,7 +425,8 @@ impl Stylus {
         }
         self.last_filtered_raw = Some(sample.pressure);
         let point = photocraft_paint::StrokePoint { is_pen: true, x: 0.0, y: 0.0, pressure: sample.pressure, ..Default::default() };
-        let out = if self.filtered_pressure.is_none() {
+        // The filter's returned point is the delayed one; the pressure below is the freshest.
+        let _out = if self.filtered_pressure.is_none() {
             self.pressure_filter.begin(point, settings)
         } else {
             self.pressure_filter.push(point)

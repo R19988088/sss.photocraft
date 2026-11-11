@@ -156,6 +156,15 @@ fn every_mode_works_in_every_theme() {
         for mode in ColorPanelMode::ALL {
             let mut h = color_tab(kind, mode, [1.0, 0.0, 0.0, 1.0]);
             match mode {
+                ColorPanelMode::C2 => {
+                    // The C2 layout: the source switch, the chips and the hex/RGB readout.
+                    for label in ["Solid", "Pattern", "Foreground Color", "Background Color", "#"] {
+                        assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: {label}");
+                    }
+                    let field = h.get_by_label("Saturation / Brightness").rect().center();
+                    press(&mut h, field, Modifiers::NONE);
+                    assert_ne!(h.state().session.tools.foreground, [1.0, 0.0, 0.0, 1.0], "{kind:?} {mode:?}: the field picks");
+                }
                 ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => {
                     assert!(h.query_by_label("#").is_some(), "{kind:?} {mode:?}: the readout");
                 }
@@ -354,7 +363,7 @@ fn panel_menu_picks_the_mode_and_ramp() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    assert!(h.query_by_label("✔ Hue Cube").is_some(), "Hue Cube is the default");
+    assert!(h.query_by_label("✔ C2 Color").is_some(), "the C2 layout is the default");
     for mode in ColorPanelMode::ALL.into_iter().skip(1).chain([ColorPanelMode::HueCube, ColorPanelMode::WebColorSliders]) {
         h.get_by_label(&format!("   {}", mode.label())).click();
         h.run_steps(2);
@@ -550,7 +559,7 @@ fn rgb_sliders_recolour_the_selected_shape_with_the_foreground() {
 #[test]
 fn every_slider_mode_recolours_the_selected_shape() {
     for mode in ColorPanelMode::ALL {
-        if matches!(mode, ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel) {
+        if matches!(mode, ColorPanelMode::C2 | ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel) {
             continue;
         }
         let mut h = color_tab_with_a_shape(mode, false);
@@ -578,7 +587,7 @@ fn color_panel_options_survive_a_restart() {
 
     let mut fresh = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     crate::color_panel_ui::restore(&mut fresh);
-    assert_eq!(fresh.ui.color_panel.mode, ColorPanelMode::HueCube, "no saved options: the default");
+    assert_eq!(fresh.ui.color_panel.mode, ColorPanelMode::C2, "no saved options: the default");
 }
 
 /// CodeRabbit on #9606: a preference change made outside the panel (`prefs.set`, a reset) is kept.

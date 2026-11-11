@@ -35,6 +35,7 @@ const BOXES_W: f32 = 16.0;
 /// The Color tab: whatever the panel menu picked.
 pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     match app.ui.color_panel.mode {
+        ColorPanelMode::C2 => super::color_c2::show(app, ui),
         ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => crate::panels::color_field(app, ui),
         ColorPanelMode::ColorWheel => wheel(app, ui),
         mode => sliders(app, ui, mode),
@@ -57,7 +58,8 @@ impl Model {
     pub(crate) fn of(mode: ColorPanelMode) -> Model {
         match mode {
             ColorPanelMode::GrayscaleSlider => Model::Gray,
-            ColorPanelMode::HsbSliders | ColorPanelMode::ColorWheel => Model::Hsb,
+            // The C2 layout has no sliders; it reads and writes RGB.
+            ColorPanelMode::C2 | ColorPanelMode::HsbSliders | ColorPanelMode::ColorWheel => Model::Hsb,
             ColorPanelMode::CmykSliders => Model::Cmyk,
             ColorPanelMode::LabSliders => Model::Lab,
             ColorPanelMode::WebColorSliders => Model::Web,

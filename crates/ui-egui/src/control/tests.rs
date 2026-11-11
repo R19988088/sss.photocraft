@@ -1255,7 +1255,7 @@ fn ui_set_color_panel_mode() {
     use crate::state::ColorPanelMode;
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let ctx = egui::Context::default();
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::HueCube);
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the C2 layout is the panel's default");
     assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "rgbSliders"}}))["ok"], true);
     assert_eq!(app.ui.color_panel.mode, ColorPanelMode::RgbSliders);
     assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "hsbSliders"}}))["ok"], true);
