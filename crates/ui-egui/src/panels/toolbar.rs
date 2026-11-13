@@ -321,6 +321,13 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                         tool
                                     };
                                     crate::tool_memory::select(app, pick);
+                                    // Clicking the toolbar's brush button opens the Brushes panel —
+                                    // the brush list is no longer inside Brush Settings.
+                                    if pick == Tool::Brush && !app.ui.panels.brushes
+                                        && let Err(e) = crate::menus::invoke(app, &ctx, "window.panel.brushes", json!({}))
+                                    {
+                                        app.ui.status = e;
+                                    }
                                 }
                                 // Double-clicking the Hand tool fits the image on screen (Photoshop).
                                 // Modified clicks only cycle / select: a second rapid Alt-click, or a

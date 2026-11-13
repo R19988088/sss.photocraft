@@ -985,17 +985,25 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.add_space(20.0);
         let search_w = (inner_w - 112.0).clamp(90.0, inner_w - 40.0);
         widgets::text_field(ui, ui.id().with("brush-search"), &mut app.ui.brushes_panel.filter, tl!("Search Brushes"), search_w, false);
+        let mut import = false;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let view = &mut app.ui.brushes_panel.view;
+            // Import Brushes right of the view toggles: the brush library is the panel's business
+            // now that Brush Settings no longer carries the list.
+            let tip = "Import Brushes… (.abr or image)";
+            import = crate::brush_picker::named(icons::button(ui, "folder-open", 24.0, false, tl!(tip)), tip).clicked();
+            let view = app.ui.brushes_panel.view;
             let grid_tip = "Grid view";
             let list_tip = "List view";
-            if icons::button(ui, "grid-2x2", 24.0, *view == BrushesView::Grid, tl!(grid_tip)).clicked() {
-                *view = BrushesView::Grid;
+            if icons::button(ui, "grid-2x2", 24.0, view == BrushesView::Grid, tl!(grid_tip)).clicked() {
+                app.ui.brushes_panel.view = BrushesView::Grid;
             }
-            if icons::button(ui, "align-justify", 24.0, *view == BrushesView::List, tl!(list_tip)).clicked() {
-                *view = BrushesView::List;
+            if icons::button(ui, "align-justify", 24.0, view == BrushesView::List, tl!(list_tip)).clicked() {
+                app.ui.brushes_panel.view = BrushesView::List;
             }
         });
+        if import {
+            let _ = crate::preset_files_ui::import_brushes(app);
+        }
     });
     ui.add_space(6.0);
     let acts = preset_list(ui, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), &mut app.ui.brushes_panel, responsive_list_layout(ui));

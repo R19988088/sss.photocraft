@@ -662,39 +662,46 @@ pub(crate) fn secondary_defaults(b: &BrushSettings) -> BrushSettings {
     })
 }
 
+/// The percentage beside a lane's name, in points: three digits and the `%` suffix.
+const LANE_VALUE: f32 = 52.0;
+
+/// The secondary colour's blend modes, for the mode picker in the panel's header row
+/// (`brush_panel`): it sits by the close button, not beside the percentages.
+pub(crate) const DUAL_MODES: [(MaskMode, &str); 9] = [
+    (MaskMode::Normal, "Normal"),
+    (MaskMode::Multiply, "Multiply"),
+    (MaskMode::Darken, "Darken"),
+    (MaskMode::Overlay, "Overlay"),
+    (MaskMode::ColorDodge, "Color Dodge"),
+    (MaskMode::ColorBurn, "Color Burn"),
+    (MaskMode::LinearBurn, "Linear Burn"),
+    (MaskMode::HardMix, "Hard Mix"),
+    (MaskMode::LinearHeight, "Linear Height"),
+];
+
 pub(crate) fn dual_brush_header(ui: &mut egui::Ui, b: &mut BrushSettings, lane: &mut usize) {
+    // The two lanes stack left-aligned, one line each: the mode picker that used to end the row
+    // moved into the panel's header, so the row is as narrow as a lane's name and percentage.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         if widgets::pill_tab(ui, tl!("Primary Brush"), *lane == 0).clicked() {
             *lane = 0;
         }
         let mut primary = (b.dual_brush.primary_strength * 100.0).round();
-        if widgets::value_field(ui, &mut primary, 0.0..=100.0, "%", 70.0).changed() {
+        if widgets::value_field(ui, &mut primary, 0.0..=100.0, "%", LANE_VALUE).changed() {
             b.dual_brush.primary_strength = primary.round() / 100.0;
         }
-        ui.add_space(24.0);
+    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
         if widgets::pill_tab(ui, tl!("Secondary Brush"), *lane == 1).clicked() {
             *lane = 1;
         }
         let mut secondary = (b.dual_brush.secondary_strength * 100.0).round();
-        if widgets::value_field(ui, &mut secondary, 0.0..=100.0, "%", 70.0).changed() {
+        if widgets::value_field(ui, &mut secondary, 0.0..=100.0, "%", LANE_VALUE).changed() {
             b.dual_brush.enabled = secondary > 0.0;
             b.dual_brush.secondary_strength = secondary.round() / 100.0;
         }
-        ui.add_space(12.0);
-        dim(ui, tl!("Mode:"));
-        let modes = [
-            (MaskMode::Normal, "Normal"),
-            (MaskMode::Multiply, "Multiply"),
-            (MaskMode::Darken, "Darken"),
-            (MaskMode::Overlay, "Overlay"),
-            (MaskMode::ColorDodge, "Color Dodge"),
-            (MaskMode::ColorBurn, "Color Burn"),
-            (MaskMode::LinearBurn, "Linear Burn"),
-            (MaskMode::HardMix, "Hard Mix"),
-            (MaskMode::LinearHeight, "Linear Height"),
-        ];
-        widgets::dropdown(ui, "brush-dual-mode", "", &mut b.dual_brush.mode, &modes, 130.0);
     });
 }
 

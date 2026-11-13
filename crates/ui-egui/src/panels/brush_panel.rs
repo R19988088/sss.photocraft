@@ -45,6 +45,10 @@ pub(crate) const WIDTH: f32 = 340.0;
 const LIST_WIDTH: f32 = 120.0;
 const STRIP: (u32, u32) = (368, 60);
 
+/// Height the panel opens at, and the shortest it can be pulled with the bottom grip.
+const DEFAULT_HEIGHT: f32 = 640.0;
+const MIN_HEIGHT: f32 = 300.0;
+
 /// How the Brushes tab lists presets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,14 +374,20 @@ fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
     let section = app.ui.brush_section;
     let on = section == 2 || !SECTIONS[section].1 || section_enabled(&b, section);
+    // The controls fill whatever height the panel is dragged to (its bottom edge is resizable),
+    // leaving the preview strip and its buttons their room at the bottom. The budget is worked
+    // out in `window()` from the window's current height and the measured height of everything
+    // that isn't the lane, so the lane (and with it the panel) really does get shorter when the
+    // bottom edge is pulled up.
+    let lane_height = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("brush-settings-lane"))).unwrap_or(480.0);
     ui.horizontal_top(|ui| {
         section_list(app, ui, &mut b);
-        widgets::vline(ui, 450.0);
+        widgets::vline(ui, lane_height);
         ui.vertical(|ui| {
             let lane_width = (WIDTH - 190.0).max(240.0);
             let controls_width = (lane_width - 14.0).max(220.0);
             ui.set_width(lane_width);
-            egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(450.0).auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(lane_height).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_width(controls_width);
                 // A section that's off shows its options greyed out (Photoshop). A tip picked in
                 // the grid copies the tip fields only — the dynamics sections stay (Photoshop).
@@ -409,31 +419,33 @@ fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.add_space(6.0);
     widgets::hairline(ui);
     ui.add_space(6.0);
+    // The strip spans the panel and its buttons sit in a row beneath it: three 24-point buttons do
+    // not fit in a column as tall as the strip, and the third was clipped by the panel's bottom
+    // edge. The strip is rendered at twice its point size so it stays sharp on a Retina display.
+    let (strip, _) = ui.allocate_exact_size(vec2(STRIP.0 as f32, STRIP.1 as f32), Sense::hover());
+    ui.painter().rect_filled(strip, t.radius_sm, t.field);
+    let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, STRIP.0 * 2, STRIP.1 * 2, t.text);
+    ui.painter().image(tex.id(), strip, full_uv(), Color32::WHITE);
     ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(STRIP.0 as f32, STRIP.1 as f32), Sense::hover());
-        ui.painter().rect_filled(r, t.radius_sm, t.field);
-        let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, STRIP.0, STRIP.1, t.text);
-        ui.painter().image(tex.id(), r, full_uv(), Color32::WHITE);
-        ui.vertical(|ui| {
-            let new = icons::button(ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
-            if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
-                let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
-                crate::brush_preset_dialog::open(app, Some(&preset));
-            }
-            if icons::button(ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
-                b = BrushSettings { color: b.color, background: b.background, locks: b.locks.clone(), ..Default::default() };
-            }
-            // Overwrite the preset the current brush was picked from (Photoshop's "update the
-            // selected brush"): no new preset, the brush keeps its place in the list.
-            let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
-            let update =
-                ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
-            update.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, current.is_some(), "Update the current brush with these settings"));
-            if update.clicked() {
-                let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
-                run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&preset).unwrap_or(Value::Null) }));
-            }
-        });
+        ui.add_space((STRIP.0 as f32 - 3.0 * 24.0).max(0.0));
+        let new = icons::button(ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
+        if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
+            let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
+            crate::brush_preset_dialog::open(app, Some(&preset));
+        }
+        if icons::button(ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
+            b = BrushSettings { color: b.color, background: b.background, locks: b.locks.clone(), ..Default::default() };
+        }
+        // Overwrite the preset the current brush was picked from (Photoshop's "update the
+        // selected brush"): no new preset, the brush keeps its place in the list.
+        let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
+        let update =
+            ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
+        update.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, current.is_some(), "Update the current brush with these settings"));
+        if update.clicked() {
+            let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
+            run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&preset).unwrap_or(Value::Null) }));
+        }
     });
     if secondary {
         std::mem::swap(&mut app.ui.brush_section, &mut app.ui.brush_secondary_section);
@@ -553,27 +565,41 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .inner_margin(egui::Margin::same(10));
     let canvas = app.last_canvas_rect;
     let mut open = true;
+    // The panel's height is ours to keep, not the content's: a bottom grip pulls it shorter and
+    // the controls scroll instead of pushing the panel back open (egui would otherwise let the
+    // content grow the window and never shrink it again).
+    let height_id = egui::Id::new("brush-settings-height");
+    let panel_height = ctx
+        .data(|d| d.get_temp::<f32>(height_id))
+        .unwrap_or(DEFAULT_HEIGHT)
+        .clamp(MIN_HEIGHT, (canvas.height() - 40.0).max(MIN_HEIGHT));
     egui::Window::new(tl!("Brush Settings"))
         .id(egui::Id::new("brush-settings"))
         .title_bar(false)
-        .resizable(false)
-        .auto_sized()
+        .fixed_size([WIDTH + 20.0, panel_height])
         .frame(frame)
         .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0))
         .show(ctx, |ui| {
             ui.set_width(WIDTH);
+            // No title and no brush-selection tab in the header: right-aligned, the colour
+            // attribute's mode picker sits just left of the close button. The brush list itself
+            // lives in the Brushes panel (the toolbar's brush button opens it).
+            // Everything outside the controls (header, hairline, preview strip, its buttons) is
+            // measured at the end of this frame and subtracted next frame, so the lane gets
+            // exactly the space that's left and the panel keeps the height it was dragged to.
+            let overhead_id = egui::Id::new("brush-settings-overhead");
+            let overhead = ctx.data(|d| d.get_temp::<f32>(overhead_id)).unwrap_or(150.0);
+            let full_height = ui.available_height();
+            let lane_height = (full_height - overhead).clamp(120.0, 900.0);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("brush-settings-lane"), lane_height));
+            let before = app.session.tools.brush.clone();
+            let mut b = before.clone();
             ui.horizontal(|ui| {
-                let mut tab = app.ui.brush_tab;
-                for (i, name) in [tl!("Brush Settings"), tl!("Brushes")].iter().enumerate() {
-                    if widgets::pill_tab(ui, name, tab == i).clicked() {
-                        tab = i;
-                    }
-                }
-                app.ui.brush_tab = tab;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icons::button(ui, "x", 20.0, false, tl!("Close")).clicked() {
                         open = false;
                     }
+                    widgets::dropdown(ui, "brush-dual-mode", tl!("Mode:"), &mut b.dual_brush.mode, &crate::brush_sections::DUAL_MODES, 96.0);
                     let menu_btn = widgets::panel_menu_button(ui);
                     egui::Popup::menu(&menu_btn).show(|ui| {
                         widgets::style_spectrum_popup_menu(ui);
@@ -591,13 +617,29 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     });
                 });
             });
-            ui.add_space(6.0);
+            commit_gesture(app, ui.ctx(), &before, &b);
+            ui.add_space(4.0);
             widgets::hairline(ui);
             ui.add_space(6.0);
-            if app.ui.brush_tab == 1 {
-                crate::brushes_tab::show(app, ui);
-            } else {
-                settings_tab(app, ui);
+            settings_tab(app, ui);
+            let content_height = ui.min_rect().height();
+            ctx.data_mut(|d| d.insert_temp(overhead_id, (content_height - lane_height).max(0.0)));
+            // Grip along the bottom edge: drag it up to shorten the panel (the controls scroll
+            // instead of pushing the panel back open).
+            ui.add_space(2.0);
+            let (grip_rect, grip) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::drag());
+            if grip.hovered() || grip.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(grip_rect.center(), egui::vec2(56.0, 2.0)),
+                1.0,
+                if grip.hovered() || grip.dragged() { t.text } else { t.text_faint },
+            );
+            if grip.dragged() {
+                let dy = ui.ctx().input(|i| i.pointer.delta().y);
+                let next = (panel_height + dy).clamp(MIN_HEIGHT, (canvas.height() - 40.0).max(MIN_HEIGHT));
+                ui.ctx().data_mut(|d| d.insert_temp(height_id, next));
             }
         });
     if !open {
