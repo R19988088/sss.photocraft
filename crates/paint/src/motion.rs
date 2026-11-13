@@ -46,6 +46,8 @@ pub struct Motion {
     pending_sin: f64,
     pending_cos: f64,
     pending_count: u32,
+    anchor_offset: (f64, f64),
+    anchor_guide: Option<Point>,
 }
 
 fn angle_delta(v: f64) -> f64 {
@@ -120,11 +122,32 @@ impl Motion {
                 self.direction = Some(Point::new(self.accumulated.x / distance, self.accumulated.y / distance));
                 self.accumulated = Point::new(0., 0.);
             }
-            let target = self.direction.map_or(Point::new(0., 0.), |d| Point::new(-d.x * radius * delay * 1.25, -d.y * radius * delay * 1.25));
-            Point::new(
-                point.x - f64::from(c.anchor_point_x.clamp(-1., 1.)) * radius + target.x,
-                point.y - f64::from(c.anchor_point_y.clamp(-1., 1.)) * radius + target.y,
-            )
+            // C3 `resolveAnchor` (BrushStrokeMotion.swift:107-135) smooths in two stages: a
+            // directional offset that eases toward the lag target, and a guide point that eases
+            // toward the raw input. The rendered point is guide + directional offset. Without
+            // them `anchor_smooth` does nothing at all, which is why it used to be a dead field.
+            let smooth = f64::from(c.anchor_smooth.clamp(0., 1.));
+            let strength = radius * delay * 1.25;
+            let target = self.direction.map_or((0.0, 0.0), |d| (-d.x * strength, -d.y * strength));
+            let offset_alpha = if self.direction.is_some() {
+                (0.42 - smooth * 0.35).max(0.03)
+            } else {
+                ((0.22 - smooth * 0.12) * (1.0 - delay * 0.9)).max(0.015)
+            };
+            let (ox, oy) = self.anchor_offset;
+            if (target.0 - ox).hypot(target.1 - oy) > radius * (0.012 + smooth * 0.12) {
+                self.anchor_offset = (ox + (target.0 - ox) * offset_alpha, oy + (target.1 - oy) * offset_alpha);
+            }
+            let guide_previous = self.anchor_guide.unwrap_or(point);
+            let guide_alpha = (1.0 - smooth * 0.85).max(0.02);
+            let base = Point::new(
+                guide_previous.x + (point.x - guide_previous.x) * guide_alpha,
+                guide_previous.y + (point.y - guide_previous.y) * guide_alpha,
+            );
+            self.anchor_guide = Some(base);
+            let anchor_x = f64::from(c.anchor_point_x.clamp(-1., 1.)) * radius;
+            let anchor_y = f64::from(c.anchor_point_y.clamp(-1., 1.)) * radius;
+            Point::new(base.x - anchor_x + self.anchor_offset.0, base.y - anchor_y + self.anchor_offset.1)
         } else {
             point
         };

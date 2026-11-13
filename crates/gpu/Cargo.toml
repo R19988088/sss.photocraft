@@ -23,6 +23,9 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-compose = { workspace = true }
+# The stamp kernel takes its dab geometry (tip table, reach) from the brush engine, so the GPU
+# and the CPU paths cannot drift apart on what a tip covers.
+photocraft-paint = { workspace = true }
 # Camera Raw's per-pixel stages (`camera_raw.rs`) take their constants from the CPU develop.
 photocraft-algo = { workspace = true }
 bytemuck = { workspace = true }

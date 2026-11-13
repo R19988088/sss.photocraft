@@ -591,6 +591,16 @@ fn main() -> eframe::Result {
                     && std::env::var_os("PHOTOCRAFT_CPU_CANVAS").is_none()
                     && app.session.prefs().performance.effective_rendering_mode() != photocraft_engine::prefs::RenderingMode::Cpu
                 {
+                    // Dab stamping on the GPU: pixel-identical to the CPU rasteriser
+                    // (`crates/gpu/tests/it/brush_stamp.rs`), and any dab it can't draw falls back
+                    // to the CPU one. Opt-in for now because the kernel stamps one dab per
+                    // submission and waits for the readback, which stalls the painter on every
+                    // dab; it becomes the default once dabs are batched into one submission.
+                    if std::env::var_os("PHOTOCRAFT_GPU_STAMP").is_some()
+                        && let Err(e) = photocraft_gpu::install_process_stamper(rs.device.clone(), rs.queue.clone())
+                    {
+                        log::warn!("brush dab stamping stays on the CPU: {e}");
+                    }
                     app.set_wgpu(rs);
                     app.start_compositor(&cc.egui_ctx);
                 } else {

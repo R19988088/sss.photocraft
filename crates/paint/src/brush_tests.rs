@@ -1255,28 +1255,27 @@ fn brush_projection_foreshortens_along_tilt_and_turns_with_rotation() {
 }
 
 #[test]
-fn spacing_off_spaces_dabs_by_pointer_speed() {
-    let mut b = BrushSettings { size: 20.0, spacing_enabled: false, ..brush() };
-    let timed = |ms: f64| vec![StrokePoint { time: 0.0, ..StrokePoint::new(0.0, 10.0, 1.0) }, StrokePoint { time: ms, ..StrokePoint::new(100.0, 10.0, 1.0) }];
-    // 100 px in 400 ms: a dab every 8 ms = every 2 px; in 40 ms: every 20 px.
-    let slow = dabs_of(&b, &timed(400.0)).len();
-    let fast = dabs_of(&b, &timed(40.0)).len();
-    assert_eq!((slow, fast), (51, 6));
-    // Never denser than half a pixel, however slow.
-    assert!(dabs_of(&b, &timed(1.0e9)).len() <= 201);
-    // No timestamps (a ⇧-click line): spaced by distance like Spacing on, not a dab per point.
+fn spacing_is_the_size_times_the_percentage_at_any_pointer_speed() {
+    // `step_len`: the dab pitch is the diameter times the spacing, nothing else — not the
+    // pointer's speed, not the timestamps, not the legacy "Spacing" check box.
+    let b = BrushSettings { size: 20.0, spacing: 0.25, ..brush() };
+    let timed = |ms: f64| {
+        vec![StrokePoint { time: 0.0, ..StrokePoint::new(0.0, 10.0, 1.0) }, StrokePoint { time: ms, ..StrokePoint::new(100.0, 10.0, 1.0) }]
+    };
+    let slow = dabs_of(&b, &timed(400.0));
+    let fast = dabs_of(&b, &timed(40.0));
+    assert_eq!(slow.len(), fast.len(), "100 px in 400 ms and in 40 ms must paint the same dabs");
+    assert_eq!(slow.len(), 21, "100 px at a 5 px pitch");
+    // Spacing unchecked (a legacy preset flag) is the same rule.
+    let off = BrushSettings { spacing_enabled: false, ..b.clone() };
+    assert_eq!(dabs_of(&off, &timed(400.0)).len(), slow.len());
+    // No timestamps (a ⇧-click line): still the distance rule, not one dab per point.
     let pts = [StrokePoint::new(0.0, 10.0, 1.0), StrokePoint::new(90.0, 10.0, 1.0), StrokePoint::new(100.0, 10.0, 1.0)];
-    let checked = BrushSettings { spacing_enabled: true, ..b.clone() };
-    assert_eq!(dabs_of(&b, &pts).len(), dabs_of(&checked, &pts).len());
-    assert!(dabs_of(&b, &pts).len() > 3);
-    // Checked: fixed spacing (25 % of 20 px = 5 px) whatever the speed.
-    b.spacing_enabled = true;
-    assert_eq!(dabs_of(&b, &timed(400.0)).len(), dabs_of(&b, &timed(40.0)).len());
+    assert_eq!(dabs_of(&b, &pts).len(), 21);
     // Chunked input gives the same dabs.
-    b.spacing_enabled = false;
     let pts: Vec<StrokePoint> = (0..20).map(|i| StrokePoint { time: f64::from(i) * 13.0, ..StrokePoint::new(f64::from(i) * 7.0, 10.0, 1.0) }).collect();
-    let one = dabs_of(&b, &pts);
-    let mut g = crate::dynamics::DabGenerator::new(&b, 1.0);
+    let one = dabs_of(&off, &pts);
+    let mut g = crate::dynamics::DabGenerator::new(&off, 1.0);
     let (mut out, mut dual) = (Vec::new(), Vec::new());
     for c in pts.chunks(3) {
         g.push(c, &mut out, &mut dual);
@@ -1993,23 +1992,19 @@ fn mixing_can_deposit_foreground_and_resized_sampled_color() {
 }
 
 #[test]
-fn low_flow_spacing_tracks_live_pressure_without_changing_dab_geometry() {
+fn spacing_and_the_dabs_do_not_depend_on_flow() {
+    // `step_len_for`: the diameter at the step times the spacing, at least half a pixel — no flow
+    // term. Lower flow changes coverage, never where the dabs go.
     let points = [StrokePoint::new(0., 0., 0.25), StrokePoint::new(200., 0., 1.)];
-    let mut b = BrushSettings { c3_tip_math: true, size: 40., hardness: 0., pressure_flow: true, spacing: 0.5, ..brush() };
+    let b = BrushSettings { c3_tip_math: true, size: 40., hardness: 0., pressure_flow: true, spacing: 0.5, ..brush() };
     let full = dabs_of(&b, &points);
-    b.flow = 0.02;
-    let low = dabs_of(&b, &points);
-    assert!(low.len() > full.len(), "low flow's smaller visible footprint needs closer dabs");
-    assert!(low.iter().all(|dab| (dab.radius - 20.).abs() < 1e-6), "flow changes coverage, not geometry");
-    assert!(
-        low.windows(2).last().unwrap()[1].center.x - low.windows(2).last().unwrap()[0].center.x > low[1].center.x - low[0].center.x,
-        "pressure increases the live footprint and spacing"
-    );
-    let zero = BrushSettings { flow: 0.0, ..b.clone() };
-    assert!(dabs_of(&zero, &points).len() <= full.len(), "invisible flow must not flood the dab buffer");
+    let low = dabs_of(&BrushSettings { flow: 0.02, ..b.clone() }, &points);
+    let at = |d: &[Dab]| d.iter().map(|x| (x.center.x, x.center.y, x.radius)).collect::<Vec<_>>();
+    assert_eq!(at(&low), at(&full), "flow must not move the dabs, resize them, or change how many there are");
+    assert!(low.len() > 1, "a 200 px stroke paints");
     let mut renderer = StrokeRenderer::new(&b, None, 1.0).record_dabs();
     renderer.push(&points[..1]);
     renderer.push(&points[1..]);
     renderer.finish();
-    assert_eq!(renderer.dabs(), low.as_slice(), "input chunking must not change spacing");
+    assert_eq!(renderer.dabs(), full.as_slice(), "input chunking must not change spacing");
 }

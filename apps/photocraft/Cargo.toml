@@ -22,6 +22,9 @@ photocraft-raster = { workspace = true }
 photocraft-geom = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-engine = { workspace = true }
+# The brush-dab stamp kernel the canvas installs (`install_process_stamper`) when it runs on the
+# GPU; its device is eframe's, so it costs no second adapter.
+photocraft-gpu = { workspace = true }
 photocraft-codecs = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { workspace = true }

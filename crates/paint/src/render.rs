@@ -92,7 +92,7 @@ impl Clone for RegionPool {
 /// Edge of a stroke-buffer tile.
 pub const COV_TILE: i32 = 64;
 /// Computed tips with a smaller radius (in pixels) are rasterised by area, not at pixel centres.
-const SMALL_TIP_RADIUS: f32 = 3.0;
+pub(crate) const SMALL_TIP_RADIUS: f32 = 3.0;
 /// Sub-pixel sample offsets (a 4×4 grid) for the area coverage of small tips.
 const SUBPIXEL: [f32; 4] = [-0.375, -0.125, 0.125, 0.375];
 const NOISE_SALT: u64 = 0x006E_6F69_7365;
@@ -250,6 +250,8 @@ pub struct BrushContext {
     secondary: Option<Box<BrushContext>>,
     texture_origin: Option<Point>,
     texture_tip: Option<Dab>,
+    /// The injected dab-stamping backend (the GPU kernel); empty = paint everything on the CPU.
+    stamper: crate::stamp::StamperSlot,
 }
 
 fn prepare_pattern(b: &BrushSettings) -> Option<Arc<PatternImage>> {
@@ -280,6 +282,42 @@ pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
 }
 
 impl BrushContext {
+    /// Route dabs through `stamper` when it handles them (a GPU backend), for this context and,
+    /// when the brush has a Dual Brush, its secondary context too.
+    pub fn set_stamper(&mut self, stamper: crate::stamp::StamperSlot) {
+        if let Some(secondary) = self.secondary.as_deref_mut() {
+            secondary.set_stamper(stamper.clone());
+        }
+        self.stamper = stamper;
+    }
+
+    /// The backend injected by [`set_stamper`](Self::set_stamper), if any.
+    pub fn stamper(&self) -> Option<&dyn crate::stamp::DabStamper> {
+        self.stamper.stamper()
+    }
+
+    /// The job a stamper would take for this dab, `None` for a dab only the CPU rasterises
+    /// (sampled tip, per-tip texture, Noise, Grain, single-dab Wet Edges, non-finite fields).
+    pub fn stamp_job(&self, d: &Dab, with_depth: bool) -> Option<crate::stamp::StampJob> {
+        crate::stamp::StampJob::of(d, self, with_depth)
+    }
+
+    /// Whether the tip is a sampled bitmap (which a computed-tip stamper can't draw).
+    pub(crate) fn sampled_tip(&self) -> bool {
+        self.tip.is_some()
+    }
+
+    /// Whether the dab takes a per-tip texture sample.
+    pub(crate) fn per_tip_texture(&self) -> bool {
+        self.brush.texture.enabled && self.brush.texture.each_tip && self.texture.is_some()
+    }
+
+    /// Whether Wet Edges runs as a single-dab outline (a stroke-level feature).
+    pub(crate) fn single_wet_outline(&self) -> bool {
+        let b = &self.brush;
+        b.wet_edges && !b.erase && b.wet_edge.as_ref().is_some_and(|w| w.outline == WetOutline::Single)
+    }
+
     pub fn new(brush: &BrushSettings) -> Self {
         let brush = brush.bounded_for_render();
         // Sampled tips go through the prepared-tip cache (upstream's `mip_cache`): a repeated
@@ -291,6 +329,7 @@ impl BrushContext {
         Self {
             texture_origin: None,
             texture_tip: None,
+            stamper: crate::stamp::process_stamper(),
             tip: mips(&brush.tip),
             dual_tip: if brush.dual_brush.enabled { mips(&brush.dual_brush.tip) } else { None },
             texture: prepare_pattern(&brush),
@@ -367,11 +406,33 @@ impl BrushContext {
         self.rasterize_into(d, dual, rect, out, None);
     }
 
+    /// Hands the dab to the injected stamper (the GPU), with `out` and `depth` sized for `rect`.
+    /// `true` when it stamped the dab; `false` — no stamper, or a dab it doesn't draw — leaves the
+    /// CPU path to do it, exactly as without a stamper.
+    fn stamp_with_stamper(&self, d: &Dab, rect: Rect, out: &mut Vec<f32>, mut depth: Option<&mut Vec<f32>>) -> bool {
+        let (Some(stamper), Some(job)) = (self.stamper.stamper(), self.stamp_job(d, depth.is_some())) else {
+            return false;
+        };
+        let (w, h) = (rect.width() as usize, rect.height() as usize);
+        out.clear();
+        out.resize(w * h, 0.0);
+        if let Some(dp) = depth.as_deref_mut() {
+            dp.clear();
+            dp.resize(w * h, 0.0);
+        }
+        stamper.stamp(&job, rect, out, depth.as_deref_mut())
+    }
+
     /// [`rasterize`](Self::rasterize); with `depth`, Wet Edges is left out of `out` and each
     /// painted pixel's depth inside the dab (`1 − rn`) goes to `depth`, for the stroke to apply it.
     pub fn rasterize_into(&self, d: &Dab, dual: bool, rect: Rect, out: &mut Vec<f32>, mut depth: Option<&mut Vec<f32>>) {
         if dual && let Some(ctx) = &self.secondary {
             ctx.rasterize_into(d, false, rect, out, depth);
+            return;
+        }
+        // An injected stamper (the GPU) takes the dab when it handles it; otherwise, and for
+        // every dab it refuses, the CPU path below runs unchanged.
+        if self.stamp_with_stamper(d, rect, out, depth.as_deref_mut()) {
             return;
         }
         let (w, h) = (rect.width() as usize, rect.height() as usize);
@@ -525,13 +586,7 @@ impl BrushContext {
                             continue;
                         }
                         let dd = d2.sqrt();
-                        let val = if aliased {
-                            if dd <= rm { 1.0 } else { 0.0 }
-                        } else if b.c3_tip_math {
-                            c3_tip_falloff(dd / ro, r, hardness, false)
-                        } else {
-                            dab_coverage(dd, rm, hardness)
-                        };
+                        let val = tip_coverage(b.c3_tip_math, aliased, dd, rm, ro, r, hardness);
                         (val, dd / rm)
                     }
                     Some(m) => {
@@ -2237,6 +2292,17 @@ fn c3_tip_falloff(distance: f32, radius: f32, hardness: f32, subpixel: bool) -> 
     let t = ((distance / radius.max(0.0005) - h) / (1.0 - h)).clamp(0.0, 1.0);
     let tail = (-2.5f32).exp();
     ((-2.5 * t * t).exp() - tail) / (1.0 - tail)
+}
+
+/// Tip coverage at a pixel, shared by the fast path and the reference oracle so the two cannot
+/// drift apart through expression order. `dd` is the roundness-scaled distance from the dab centre;
+/// `ro` the roundness, `r` the un-scaled radius, `rm` the scaled one.
+#[inline]
+pub(crate) fn tip_coverage(c3: bool, aliased: bool, dd: f32, rm: f32, ro: f32, r: f32, hardness: f32) -> f32 {
+    if aliased {
+        return if dd <= rm { 1.0 } else { 0.0 };
+    }
+    if c3 { c3_tip_falloff(dd / ro, r, hardness, false) } else { dab_coverage(dd, rm, hardness) }
 }
 
 fn c3_sampled_mask(m: &Mips, u: f32, v: f32, hardness: f32) -> f32 {

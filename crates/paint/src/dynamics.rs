@@ -13,15 +13,9 @@ use crate::{Dab, StrokePoint};
 /// Maximum pulled-string length at 100 % smoothing, in screen pixels.
 pub const MAX_STRING_PX: f64 = 100.0;
 
-/// With Spacing unchecked, one dab per this many milliseconds of stroke time, so faster strokes
-/// space their dabs further apart (Photoshop: "the speed of the cursor determines the spacing").
-pub const SPEED_SPACING_MS: f64 = 8.0;
-
 /// Longest pixel-grid segment (in pixels) before falling back to distance spacing.
 const MAX_GRID_STEPS: f64 = 1e7;
 
-/// Densest speed spacing, in pixels between dabs (a slow, long stroke never floods the buffer).
-const MIN_SPEED_STEP: f64 = 0.5;
 /// Maximum airbrush catch-up dabs for one input segment.
 const MAX_AIRBRUSH_DABS_PER_SEGMENT: usize = 512;
 
@@ -187,9 +181,6 @@ pub struct PathWalker {
     /// Airbrush interval in ms (None = off).
     interval: Option<f64>,
     time_acc: f64,
-    /// Speed spacing (Spacing unchecked): one step per this many ms of stroke time.
-    speed: Option<f64>,
-    speed_acc: f64,
     /// Pixel-grid stepping for small aliased tips: the dab-centre offset inside a pixel (see
     /// [`PathWalker::pixel_grid`]).
     grid: Option<f64>,
@@ -211,8 +202,6 @@ impl PathWalker {
             step: 0,
             interval: build_up_interval_ms,
             time_acc: 0.0,
-            speed: None,
-            speed_acc: 0.0,
             grid: None,
             sensor_point: None,
             sensor_speed: 0.0,
@@ -260,13 +249,6 @@ impl PathWalker {
             self.emit(q, out);
         }
         true
-    }
-
-    /// Space steps by stroke time instead of distance ([`SPEED_SPACING_MS`]): faster movement
-    /// spreads them out. Segments without timestamps are spaced by distance.
-    pub fn speed_spacing(mut self, interval_ms: f64) -> Self {
-        self.speed = Some(interval_ms.max(0.1));
-        self
     }
 
     fn input(&self, point: StrokePoint) -> StepInput {
@@ -323,34 +305,13 @@ impl PathWalker {
             self.emit(f, out);
         }
         if len > 1e-9 {
-            // Speed spacing needs the segment's duration; without timestamps (a straight ⇧-click
-            // line, or input that carries no times) the segment is spaced by distance instead.
-            let dt = p.time - a.time;
-            match self.speed.filter(|_| dt > 0.0 && dt.is_finite()) {
-                None => {
-                    if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, out)) {
-                        while self.next_at <= len + 1e-9 {
-                            let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
-                            self.emit(q, out);
-                            self.next_at += step_len(&self.input(q)).max(0.25);
-                        }
-                        self.next_at -= len;
-                    }
+            if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, out)) {
+                while self.next_at <= len + 1e-9 {
+                    let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
+                    self.emit(q, out);
+                    self.next_at += step_len(&self.input(q)).max(0.25);
                 }
-                Some(iv) => {
-                    self.speed_acc += dt;
-                    let max_n = (len / MIN_SPEED_STEP).ceil().max(1.0) as usize;
-                    let mut n = 0;
-                    while self.speed_acc >= iv && n < max_n {
-                        self.speed_acc -= iv;
-                        let f = ((dt - self.speed_acc) / dt).clamp(0.0, 1.0);
-                        self.emit(lerp_pt(&a, &p, f), out);
-                        n += 1;
-                    }
-                    if n == max_n {
-                        self.speed_acc = self.speed_acc.rem_euclid(iv);
-                    }
-                }
+                self.next_at -= len;
             }
         }
         if let Some(iv) = self.interval {
@@ -554,28 +515,11 @@ pub struct DabBuilder {
     pub brush: BrushSettings,
     pub seed: u64,
     next_index: u64,
-    sampled_extents: Option<std::sync::Arc<[f32; 256]>>,
 }
 
 impl DabBuilder {
     pub fn new(brush: &BrushSettings) -> Self {
-        let sampled_extents = brush.tip.bitmap().filter(|tip| tip.is_valid()).map(|tip| {
-            let mut extents = [0.0f32; 256];
-            let side = tip.width.max(tip.height) as f32;
-            for (i, alpha) in tip.data.iter().enumerate() {
-                let x = (i % tip.width as usize) as f32 + 0.5 - tip.width as f32 * 0.5;
-                let y = (i / tip.width as usize) as f32 + 0.5 - tip.height as f32 * 0.5;
-                let bin = usize::from(*alpha / 257);
-                if let Some(extent) = extents.get_mut(bin) {
-                    *extent = extent.max((2.0 * x.abs().max(y.abs()) + 1.0) / side);
-                }
-            }
-            for i in (1..255).rev() {
-                extents[i] = extents[i].max(extents[i + 1]);
-            }
-            std::sync::Arc::new(extents)
-        });
-        Self { brush: brush.clone(), seed: brush.seed, next_index: 0, sampled_extents }
+        Self { brush: brush.clone(), seed: brush.seed, next_index: 0 }
     }
 
     fn controlled_input(&self, s: &StepInput) -> StepInput {
@@ -586,40 +530,10 @@ impl DabBuilder {
     pub fn step_len(&self, s: &StepInput) -> f64 {
         let s = self.controlled_input(s);
         let b = &self.brush;
-        // Spacing follows the controlled size, before this dab's own jitter (the reference's
-        // `spacingSize`): otherwise a size-jittered brush spaces its dabs unevenly.
+        // Distance to the next dab: the diameter at this step times the spacing, at least half a
+        // pixel. Only distance and size feed it — no flow, no time, no pointer speed.
         let diameter = base_diameter(b, &s).max(1.0);
-        let alpha = resolved_flow(b, self.seed, s.step, &s);
-        let hardness = self.hardness_at(&s, s.step);
-        let radius = diameter * 0.5;
-        // Use the footprint that survives 8-bit alpha quantization, without resizing the dab.
-        let visible_radius = |flow: f32| {
-            let threshold = (0.5 / 255.0) / flow.max(0.000001);
-            if threshold >= 1.0 {
-                return 0.0;
-            }
-            if let Some(extents) = &self.sampled_extents {
-                let bin = (threshold * 255.0).ceil().clamp(1.0, 255.0) as usize;
-                return radius * extents.get(bin).copied().unwrap_or(0.0);
-            }
-            if b.aliased {
-                return radius;
-            }
-            if b.c3_tip_math {
-                if hardness >= 0.999 {
-                    return radius;
-                }
-                let tail = (-2.5f32).exp();
-                let t = (-(tail + threshold * (1.0 - tail)).ln() / 2.5).sqrt();
-                return radius * (hardness + (1.0 - hardness) * t);
-            }
-            let (core, shoulder) = crate::tip_shape(radius, hardness);
-            // Inverse of tip_falloff's six-squaring exponential.
-            core + shoulder * (64.0 * (1.0 - threshold.powf(1.0 / 64.0))).sqrt()
-        };
-        let full_radius = visible_radius(1.0);
-        let ratio = if alpha <= 0.5 / 255.0 || full_radius <= 0.000001 { 1.0 } else { (visible_radius(alpha) / full_radius).clamp(0.0, 1.0) };
-        f64::from(diameter * ratio * b.spacing.max(0.01)).max(0.5)
+        f64::from(diameter * b.spacing.max(0.01)).max(0.5)
     }
 
     fn diameter_at(&self, s: &StepInput, index: u64) -> f32 {
@@ -964,7 +878,8 @@ impl DabGenerator {
         let brush = brush.bounded_for_render();
         let interval = None;
         let dual_on = brush.dual_brush.enabled;
-        let mut walker = if brush.spacing_enabled { PathWalker::new(interval) } else { PathWalker::new(interval).speed_spacing(SPEED_SPACING_MS) };
+        // Spacing is a distance rule: the dab pitch is the size times the spacing, at every speed.
+        let mut walker = PathWalker::new(interval);
         // A small aliased tip whose dabs are at most a pixel apart steps pixel by pixel (#2139).
         if brush.aliased && brush.size * brush.spacing.max(0.01) <= 1.0 {
             walker = walker.pixel_grid(f64::from(crate::render::grid_center(0.0, 0.0, brush.size).0));
@@ -972,10 +887,8 @@ impl DabGenerator {
         Self {
             smoother: Smoother::new(&brush.smoothing, zoom),
             walker,
-            dual_walker: dual_on.then(|| {
-                let secondary = brush.dual_brush.resolved_brush(&brush);
-                if secondary.as_ref().is_none_or(|b| b.spacing_enabled) { PathWalker::new(None) } else { PathWalker::new(None).speed_spacing(SPEED_SPACING_MS) }
-            }),
+            // The second tip's pitch is the same distance rule.
+            dual_walker: dual_on.then(|| PathWalker::new(None)),
             dual_smoother: dual_on.then(|| {
                 let secondary = brush.dual_brush.resolved_brush(&brush);
                 Smoother::new(secondary.as_ref().map_or(&brush.smoothing, |b| &b.smoothing), zoom)

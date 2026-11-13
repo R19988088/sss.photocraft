@@ -19,7 +19,7 @@ impl BrushContext {
         let noise = b.noise && !dual;
         let tex_tip = !dual && b.texture.enabled && b.texture.each_tip && self.texture.is_some();
         let (cx, cy) = if aliased { grid_center(d.center.x, d.center.y, 2.0 * d.radius) } else { (d.center.x as f32, d.center.y as f32) };
-        let (sn, cs) = d.angle.sin_cos();
+        let (sn, cs) = (if b.c3_tip_math { -d.angle } else { d.angle }).sin_cos();
         let (fx, fy) = (if d.flip_x { -1.0 } else { 1.0 }, if d.flip_y { -1.0 } else { 1.0 });
         // Brush Projection: stretch the sampling coordinates along the tilt direction, which
         // foreshortens the tip there by `proj_scale`.
@@ -28,9 +28,18 @@ impl BrushContext {
             (pc, ps, 1.0 / d.proj_scale.max(0.05) - 1.0)
         });
         let r = d.radius;
-        let ro = d.roundness.max(0.5 / r).min(1.0);
+        // C3 tip math: roundness is used as-is (no 0.5/r floor) and the reach is R + 1 px, exactly
+        // as the fast path. Keeping the legacy values here made the two paths disagree the moment
+        // c3_tip_math was on.
+        let ro = if b.c3_tip_math { d.roundness.max(0.01) } else { d.roundness.max(0.5 / r).min(1.0) };
         let rm = (r * ro).max(0.5);
-        let reach = if aliased || mips.is_some() { rm } else { crate::tip_reach(rm, hardness).max(rm) };
+        let reach = if b.c3_tip_math {
+            rm + 1.0
+        } else if aliased || mips.is_some() {
+            rm
+        } else {
+            crate::tip_reach(rm, hardness).max(rm)
+        };
         let reach2 = (reach + 0.5) * (reach + 0.5);
         // Sampled-tip mapping.
         let (level, inv_scale, tw, th) = match mips {
@@ -54,7 +63,9 @@ impl BrushContext {
         // A tip a few pixels across takes each pixel's covered area (a 4×4 grid inside it):
         // sampling only the pixel centre made a tiny dab's total coverage swing with its sub-pixel
         // position, and thin lines beaded.
-        let small = mips.is_none() && !aliased && rm < SMALL_TIP_RADIUS;
+        // Same sub-pixel rule as the fast path: C3 decides on the raw diameter, the legacy tips
+        // on the roundness-scaled radius. Mixing the two rules was the rest of the mismatch.
+        let small = mips.is_none() && !aliased && if b.c3_tip_math { r * 2.0 < 5.0 } else { rm < SMALL_TIP_RADIUS };
         let small_reach2 = (reach + 0.75) * (reach + 0.75);
         for yy in 0..h {
             let y = rect.y0 + yy as i32;
@@ -81,7 +92,11 @@ impl BrushContext {
                             for sx in SUBPIXEL {
                                 let (su, sv) = to_tip(dx + sx, dy + sy);
                                 let sd = ((su * ro).powi(2) + sv * sv).sqrt();
-                                sum += tip_falloff(sd, rm, hardness);
+                                sum += if b.c3_tip_math {
+                                    c3_tip_falloff(sd / ro, r, hardness, true)
+                                } else {
+                                    tip_falloff(sd, rm, hardness)
+                                };
                             }
                         }
                         (sum / (SUBPIXEL.len() * SUBPIXEL.len()) as f32, d2.sqrt() / rm)
@@ -92,7 +107,7 @@ impl BrushContext {
                             continue;
                         }
                         let dd = d2.sqrt();
-                        let val = if aliased { if dd <= rm { 1.0 } else { 0.0 } } else { dab_coverage(dd, rm, hardness) };
+                        let val = tip_coverage(b.c3_tip_math, aliased, dd, rm, ro, r, hardness);
                         (val, dd / rm)
                     }
                     Some(m) => {
@@ -114,7 +129,9 @@ impl BrushContext {
                     val += (hard - val) * 0.7;
                 }
                 if tex_tip {
-                    val = mask_combine(b.texture.mode, val, self.texture_at(x, y), d.depth);
+                    // Same dispatch and sample point as the fast path; calling `mask_combine`
+                    // directly here ignored `texture.c3_math` and the half-pixel offset.
+                    val = b.texture.combine(val, self.texture_at_point(x as f32 + 0.5, y as f32 + 0.5, Some(d)), d.depth);
                 }
                 if wet {
                     val *= wet_factor(rn);

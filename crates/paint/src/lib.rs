@@ -34,6 +34,7 @@ pub mod render;
 pub mod replace;
 pub mod retouch;
 pub mod rng;
+pub mod stamp;
 pub mod material;
 pub mod motion;
 pub mod pigment;
@@ -54,6 +55,7 @@ pub use mip_cache::{mip_cache_bytes, purge_mip_cache};
 pub use mixer::MixerSettings;
 pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke};
 pub use tablet_pressure::{TabletPressureFilter, TabletPressureSettings};
+pub use stamp::{DabStamper, StampGeometry, StampJob, StamperSlot, process_stamper, set_process_stamper};
 pub use tile::{GrayTile, StoredTile};
 
 /// One input sample. Missing stylus data defaults to "mouse": full pressure, no tilt/rotation.

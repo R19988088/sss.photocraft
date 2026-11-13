@@ -3,7 +3,7 @@ use photocraft_geom::Point;
 use serde::{Deserialize, Serialize};
 
 use crate::brush::{BrushSettings, Dynamic};
-use crate::retouch::{Footprint, Region, Smudge};
+use crate::retouch::{Footprint, Region};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,7 +140,10 @@ impl Transport {
         let spatial_step = self.previous.map_or(0.0, |p| (center.x - p.x).hypot(center.y - p.y) as f32 / (radius * 2.0).max(1.0));
         // The reference's retention grows with the mixing length and the distance travelled
         // (`pow(0.2 + 0.75*length, max(0.08, spatialStep*4))`), so a longer length drags more.
-        let keep = (0.2 + 0.75 * fp.dab.mix_length).powf(spatial_step * 4.0);
+        // Reference (ContentView.swift:9413): pow(0.2 + 0.75 * mixLength, max(0.08, spatialStep * 4)).
+        // The 0.08 floor matters: with a zero step the old form gave keep = 1 and the first dab
+        // never refreshed its carrier at all.
+        let keep = (0.2 + 0.75 * fp.dab.mix_length).powf((spatial_step * 4.0).max(0.08));
         let keep = keep.clamp(0.0, 1.0);
         let previous_carrier = self.carrier.as_ref().map(|c| {
             let scale = self.carrier_radius / radius;
@@ -255,6 +258,14 @@ impl Transport {
                     },
                 );
                 let a = alpha.map_or(1.0, |a| sampled[a]);
+                // C3 (SimpleShaders.metal:3490-3493): a stroke that starts on transparency must
+                // still pick up paint it meets later, so the empty carrier is replaced outright
+                // instead of blended into.
+                let retained_alpha = alpha.map_or(1.0, |a| retained[a]);
+                if retained_alpha <= 0.0001 && a > 0.0001 {
+                    next.px_mut(x, y).copy_from_slice(&sampled);
+                    continue;
+                }
                 let sample_alpha16 = (a.clamp(0.0, 1.0) * 65535.0).floor();
                 if sample_alpha16 == 0.0 {
                     let old_a = alpha.map_or(1.0, |a| retained[a]);
