@@ -761,7 +761,7 @@ fn open_documents_share_one_texture_budget_with_the_shown_ones_first() {
     assert!(gpu.texture_info(a.id.0).is_some());
     assert!(gpu.texture_info(b.id.0).is_none());
     // Side by side, they split the budget: neither set fits its half, so both draw from pages.
-    g.harness.state_mut().ui.view.arrange = "twoUpVertical".into();
+    g.harness.state_mut().ui.view.arrange = "twoUpHorizontal".into();
     g.harness.run_steps(3);
     assert_eq!(gpu.canvas_fit(&a), Some((set, budget / 2)));
     assert_eq!(gpu.canvas_fit(&b), Some((set, budget - budget / 2)));

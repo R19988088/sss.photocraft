@@ -391,7 +391,7 @@ fn polygon_edge_scroll_never_moves_an_inactive_pane_or_survives_a_document_or_to
     h.state_mut().ui.views[1].zoom = 4.0;
     h.state_mut().ui.views[1].center = [200.0, 150.0];
     h.state_mut().ui.views[1].fit_pending = false;
-    h.state_mut().ui.view.arrange = "twoUpVertical".into();
+    h.state_mut().ui.view.arrange = "twoUpHorizontal".into();
     h.run_steps(2);
     let other = crate::canvas::arranged_cells(h.state(), h.state().last_canvas_rect).unwrap().into_iter().find(|(i, _)| *i == 1).unwrap().1;
     let centers: Vec<_> = h.state().ui.views.iter().map(|v| v.center).collect();

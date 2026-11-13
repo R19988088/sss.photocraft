@@ -257,13 +257,16 @@ impl Shape {
             return None;
         }
         let grid = |cols: usize, rows: usize, count: usize| Shape::Grid { cols, rows, count };
+        // "Vertically" stacks the cells down one column and "Horizontally" lays them across one
+        // row, reading as 垂直排列 / 水平排列: the direction the cells run in, which is what the
+        // menu says (#float-window follow-up). The 2-up and 3-up items follow the same reading.
         Some(match layout {
-            "tileAllVertically" => grid(n, 1, n),
-            "tileAllHorizontally" => grid(1, n, n),
-            "twoUpVertical" => grid(2, 1, 2),
-            "twoUpHorizontal" => grid(1, 2, 2),
-            "threeUpVertical" => grid(3, 1, 3),
-            "threeUpHorizontal" => grid(1, 3, 3),
+            "tileAllVertically" => grid(1, n, n),
+            "tileAllHorizontally" => grid(n, 1, n),
+            "twoUpVertical" => grid(1, 2, 2),
+            "twoUpHorizontal" => grid(2, 1, 2),
+            "threeUpVertical" => grid(1, 3, 3),
+            "threeUpHorizontal" => grid(3, 1, 3),
             "threeUpStacked" => Shape::Stacked,
             "fourUp" => grid(2, 2, 4),
             "sixUp" => grid(3, 2, 6),

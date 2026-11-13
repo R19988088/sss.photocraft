@@ -125,7 +125,7 @@ mod tests {
         }
         app.sync_views();
         app.session.set_active(0);
-        app.ui.view.arrange = "twoUpVertical".into();
+        app.ui.view.arrange = "twoUpHorizontal".into();
         app.arrange_start = 0;
         app.ui.views[0] = view(1.0, [200.0, 150.0], 0.0);
         app.ui.views[1] = view(2.0, [400.0, 300.0], 0.0);

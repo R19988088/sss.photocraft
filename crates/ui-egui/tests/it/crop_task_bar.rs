@@ -275,7 +275,7 @@ fn with_tiled_documents_the_bar_sits_on_the_active_tile() {
     h.state_mut().run("file.new", json!({"width": 400, "height": 300, "background": "white"})).expect("new");
     h.run_steps(4);
     let ctx = h.ctx.clone();
-    photocraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.arrange.twoUpVertical", json!({})).expect("2-up");
+    photocraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "window.arrange.twoUpHorizontal", json!({})).expect("2-up");
     h.run_steps(6);
     // Each tile active in turn (side by side, the first one left): the first tile is drawn before
     // the second, so a bar drawn by every tile would end up on the second one both times.
