@@ -552,6 +552,10 @@ pub struct Services {
     /// (Windows custom title bar, #2246). Called once per frame; `None` when the window is
     /// decorated or the platform needs no fixing.
     pub window_frame: Option<WindowFrameFn>,
+    /// Puts the floating document windows back in front of the main window, within the app only
+    /// (macOS: `mac_window::keep_document_windows_above_main`). Called once per frame while a
+    /// document window is open; `None` where they are not the app's own OS windows.
+    pub window_order: Option<fn()>,
     /// How the custom title bar's caption buttons look and where they sit (Linux: the desktop's
     /// style and button layout). Read every frame, with the context to wake when it changes;
     /// `None` keeps Windows' buttons at the right end.

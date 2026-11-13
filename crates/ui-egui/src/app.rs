@@ -248,6 +248,15 @@ impl eframe::App for PhotocraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // A floating document window is the app's own OS window, not a panel: clicking the main
+        // window orders it in front of the document, which then slides behind the app it belongs
+        // to. Put it back above the main window, on this platform only (macOS `window_order`;
+        // the window stays a normal one, so other applications still cover it).
+        if !self.ui.windows.is_empty()
+            && let Some(window_order) = self.services.window_order
+        {
+            window_order();
+        }
         self.logic_frame(ctx, frame);
         self.finish_type_reset_logic(ctx);
     }

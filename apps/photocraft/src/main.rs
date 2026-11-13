@@ -530,6 +530,10 @@ fn main() -> eframe::Result {
             // Only the title bar's free gap drags the window, never the menus (mac_window.rs).
             #[cfg(target_os = "macos")]
             mac_window::disable_native_title_drag();
+            // Taken while the main window is the app's only window: floating document windows stay
+            // above it (mac_window.rs).
+            #[cfg(target_os = "macos")]
+            mac_window::remember_main_window();
             // Long commands and file opens run as background jobs with progress and Cancel (#210).
             app.background_jobs = std::env::var_os("PHOTOCRAFT_INLINE_JOBS").is_none();
             // Displays and their profiles (#569): wait briefly so the first frames already use
@@ -627,6 +631,9 @@ fn main() -> eframe::Result {
                 app.services.os_events = Some(apple_events.connect(&cc.egui_ctx));
                 // Quit through AppKit, not by closing the window (Touch Bar Macs, #1575, #1458).
                 app.services.quit = Some(Box::new(mac_window::terminate_later));
+                // A floating document window is put back above the main window every frame, and
+                // only within the app: another application still covers it (mac_window.rs).
+                app.services.window_order = Some(mac_window::keep_document_windows_above_main);
                 // The macOS menu bar, installed now so winit's default menu doesn't stay up.
                 if !in_window_menus {
                     app.services.native_menu = mac_menu::install(&cc.egui_ctx, &app);
