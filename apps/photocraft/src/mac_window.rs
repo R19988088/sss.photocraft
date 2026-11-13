@@ -9,12 +9,22 @@
 //!
 //! Ordering: a document dragged out of the tab strip is an ordinary AppKit window (`canvas::tabs`
 //! `extra_windows`), so clicking the main window orders it in front of the document, which then
-//! slides behind the app it belongs to. [`keep_document_windows_above_main`] puts it back above the
-//! main window — in front of the app, and above nothing else: not `AlwaysOnTop`, which floats over
-//! other applications too.
+//! slides behind the app it belongs to. [`keep_document_windows_above_main`] makes each document
+//! window a *child* of the main window (`photocraft-winorder`): AppKit then keeps it above the
+//! parent by itself, whichever window is clicked. The sibling order (`orderWindow:relativeTo:`) is
+//! still corrected every frame as a fallback — for a window the child attachment did not take, and
+//! for the frame the attachment happens on — but a child window is never behind the main window in
+//! the first place, which is what a click on the canvas used to flash for one frame: AppKit
+//! reorders the clicked window at once, while the correction only ran on the next frame.
 //!
-//! Quitting: see [`terminate_later`]. All safe objc2 calls.
+//! In front of the app, and above nothing else: the windows keep `NSNormalWindowLevel` (a child
+//! window inherits the parent's), so another application in front still covers them — not
+//! `AlwaysOnTop`, which floats over other applications too.
+//!
+//! Quitting: see [`terminate_later`]. All AppKit calls are safe objc2 ones, except the single
+//! child-window attachment, which `photocraft-winorder` wraps.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
 use objc2::MainThreadMarker;
@@ -23,6 +33,11 @@ use objc2_app_kit::{NSApplication, NSWindowOrderingMode};
 /// The AppKit number of the main window, taken at startup ([`remember_main_window`]); `0` until
 /// then. The floating document windows are kept above this window.
 static MAIN_WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+/// The document windows already attached as children of the main window, by AppKit number
+/// ([`keep_document_windows_above_main`]). Attaching twice is not free, and a window that goes away
+/// has to be detached: AppKit's parent keeps its children alive.
+static ATTACHED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 /// The suffix `canvas::tabs` puts on a floating document window's title (`{name} — window {id}`):
 /// the one thing AppKit-side that tells a document window from the main window or a panel's own
@@ -64,9 +79,13 @@ pub fn remember_main_window() {
 
 /// Keep the app's floating document windows in front of the main window, and above nothing else.
 ///
-/// The windows AppKit has ordered behind the main window are put back just above it, so the
-/// document windows stay in front of the app without covering another application's windows: the
-/// windows keep `NSNormalWindowLevel`, which is why another app in front still covers them.
+/// Each document window becomes a child of the main window, which is what closes the gap a click
+/// leaves: AppKit orders the clicked window to the front at once and keeps child windows above
+/// their parent, so the document never slides behind the app even for one frame. The sibling order
+/// is corrected as well, for the frame a window is attached on and for a window the attachment did
+/// not take (it can be gone between the lookup and the call).
+///
+/// The windows keep `NSNormalWindowLevel`, so another application in front still covers them.
 pub fn keep_document_windows_above_main() {
     let main = MAIN_WINDOW.load(Ordering::Relaxed);
     if main == 0 {
@@ -78,14 +97,20 @@ pub fn keep_document_windows_above_main() {
     let app = NSApplication::sharedApplication(mtm);
     // Ordered front to back: past the main window's place in it, a document window is behind the
     // app, which is what a click on the main window (or on a panel's window) leaves behind.
+    let mut documents = Vec::new();
     let mut behind_the_main = false;
     let mut moved = 0;
     for window in app.orderedWindows().iter() {
-        if window.windowNumber() == main {
+        let number = window.windowNumber();
+        if number == main {
             behind_the_main = true;
             continue;
         }
-        if !behind_the_main || !window.isVisible() || !is_document_window(&window.title().to_string()) {
+        if !window.isVisible() || !is_document_window(&window.title().to_string()) {
+            continue;
+        }
+        documents.push(number);
+        if !behind_the_main {
             continue;
         }
         // Taken front to back, each window lands just above the main window, so the documents keep
@@ -93,6 +118,26 @@ pub fn keep_document_windows_above_main() {
         window.orderWindow_relativeTo(NSWindowOrderingMode::Above, main);
         moved += 1;
     }
+
+    let mut attached = ATTACHED.lock().unwrap_or_else(|poison| poison.into_inner());
+    for &number in &documents {
+        if attached.contains(&number) {
+            continue;
+        }
+        if photocraft_winorder::attach(main, number) {
+            attached.push(number);
+        }
+    }
+    // A closed or re-tabbed document window is gone from the list: detach it, or AppKit's parent
+    // keeps the closed window allocated.
+    attached.retain(|number| {
+        if documents.contains(number) {
+            return true;
+        }
+        photocraft_winorder::detach(*number);
+        false
+    });
+
     if moved > 0 {
         log::debug!("window order: {moved} document window(s) back above the main window");
     }

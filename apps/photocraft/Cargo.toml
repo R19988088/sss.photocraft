@@ -68,6 +68,10 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std
 # The macOS menu bar (mac_menu.rs): a standalone native menu crate (from the tauri-apps org, but
 # not Tauri: no webview, no JS), AppKit menus behind a safe API (no GTK with default features off). Pinned exactly: review the diff before bumping.
 muda = { version = "=0.21.2", default-features = false }
+# Child windows (mac_window.rs): AppKit keeps a floating document window above the main window by
+# itself, so a click on the canvas cannot put it behind for one frame. Objective-C interop needs
+# unsafe, so the one call lives behind this crate's safe API (window numbers in, nothing borrowed).
+photocraft-winorder = { path = "../../crates/winorder" }
 # Quit with `terminate:` from the main queue, outside winit's event handler (mac_window.rs).
 # Already in Cargo.lock (winit, objc2-app-kit); pinned exactly to the same version.
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
