@@ -41,6 +41,7 @@ const PANELS: &[(&str, &str, Group)] = &[
     ("channels", "Channels", Group::Layers),
     ("paths", "Paths", Group::Layers),
     ("brushes", "Brushes", Group::Brushes),
+    ("toolPresets", "Tool Presets", Group::ToolPresets),
 ];
 
 /// PhotoCraft's wording of craft-ui's docking labels, translated through `tl!`. The others keep
@@ -1526,6 +1527,7 @@ pub(crate) fn prepare_legacy_update(
                 Group::History => tabs.history,
                 Group::Layers => tabs.layers,
                 Group::Brushes => tabs.brushes,
+                Group::ToolPresets => tabs.tool_presets,
             };
             let id = group.tabs(pro).get(index).and_then(|label| normalize(label)).ok_or("dockTabs index is outside the panel group")?;
             if visibility == Some(false) {
@@ -1634,6 +1636,12 @@ impl craft_ui::docking::DockContent<String> for PanelContent<'_> {
     }
     fn panel_menu(&mut self, ui: &mut egui::Ui, id: &String) {
         panel_menu(self.app, ui, id);
+    }
+    fn tab_menu_tail(&self, id: &String) -> bool {
+        // The Color panel floats by dragging its tab and closes from the Window menu, so the
+        // stock Float / Move to group / Close / group rows would only repeat those gestures; its
+        // menu is the host's alone (craft-ui's `tab_menu_tail`, `vendor/craft-ui/VENDOR.md`).
+        id != "color"
     }
     fn allow_native(&self, id: &String) -> bool {
         !self.card.contains(id)

@@ -155,7 +155,7 @@ fn float_window(
     close
 }
 
-/// Draws the open floating panels (Styles, Shapes, Tool Presets, Clone Source).
+/// Draws the open floating panels (Styles, Shapes, Clone Source). Tool Presets docks.
 pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let p = app.ui.presets_ui.clone();
     if p.styles && float_window(app, ctx, "styles", tl!("Styles"), 250.0, 0.0, styles_panel) {
@@ -163,9 +163,6 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     if p.shapes && float_window(app, ctx, "shapes", tl!("Shapes"), 250.0, 280.0, shapes_panel) {
         app.ui.presets_ui.shapes = false;
-    }
-    if p.tool_presets && float_window(app, ctx, "toolPresets", tl!("Tool Presets"), 250.0, 560.0, tool_presets_panel) {
-        app.ui.presets_ui.tool_presets = false;
     }
     if p.clone_source && float_window(app, ctx, "cloneSource", tl!("Clone Source"), 270.0, 840.0, clone_source_panel) {
         app.ui.presets_ui.clone_source = false;

@@ -1,5 +1,5 @@
 //! Window › Gradients, Patterns (tabs of the Color card, as in Photoshop's Essentials workspace),
-//! Styles, Shapes, Tool Presets and Clone Source (floating panels).
+//! Styles, Shapes and Clone Source (floating panels); Tool Presets docks beside Brushes.
 //!
 //! The preset panels share one browser: folders with disclosure triangles, a thumbnail grid (or a
 //! list when the size slider is at its minimum), a rename field, a context menu (Rename, Delete,
@@ -31,10 +31,9 @@ use panels::{new_tool_preset_params, tool_id};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PresetUi {
-    /// Floating panels.
+    /// Floating panels. (Tool Presets is a dock panel, beside Brushes.)
     pub styles: bool,
     pub shapes: bool,
-    pub tool_presets: bool,
     pub clone_source: bool,
     /// Thumbnail size per panel (px; the minimum shows a list).
     pub sizes: BTreeMap<String, f32>,
@@ -113,8 +112,7 @@ impl PresetUi {
     }
 }
 
-const PANELS: [&str; 6] =
-    ["window.panel.gradients", "window.panel.patterns", "window.panel.styles", "window.panel.shapes", "window.panel.toolPresets", "window.panel.cloneSource"];
+const PANELS: [&str; 5] = ["window.panel.gradients", "window.panel.patterns", "window.panel.styles", "window.panel.shapes", "window.panel.cloneSource"];
 const MIN_THUMB: f32 = 20.0;
 
 /// Window-menu ids handled here.
@@ -135,7 +133,6 @@ fn float_flag<'a>(p: &'a mut PresetUi, id: &str) -> Option<&'a mut bool> {
     Some(match id {
         "window.panel.styles" => &mut p.styles,
         "window.panel.shapes" => &mut p.shapes,
-        "window.panel.toolPresets" => &mut p.tool_presets,
         "window.panel.cloneSource" => &mut p.clone_source,
         _ => return None,
     })
@@ -730,14 +727,22 @@ mod tests {
         // Choosing it again hides the card.
         invoke(&mut app, &ctx, "window.panel.patterns", Value::Null).unwrap();
         assert!(!app.ui.panels.color);
-        for (id, f) in [("window.panel.styles", 0), ("window.panel.shapes", 1), ("window.panel.toolPresets", 2), ("window.panel.cloneSource", 3)] {
+        for (id, f) in [("window.panel.styles", 0), ("window.panel.shapes", 1), ("window.panel.cloneSource", 2)] {
             invoke(&mut app, &ctx, id, Value::Null).unwrap();
             let p = &app.ui.presets_ui;
-            assert!([p.styles, p.shapes, p.tool_presets, p.clone_source][f], "{id}");
+            assert!([p.styles, p.shapes, p.clone_source][f], "{id}");
             assert_eq!(checked(&app, id), Some(true));
             invoke(&mut app, &ctx, id, json!({"show": false})).unwrap();
             assert_eq!(checked(&app, id), Some(false));
         }
+        // Tool Presets is a dock panel beside Brushes: the Window item toggles its group.
+        assert!(crate::menus::is_live("window.panel.toolPresets"));
+        invoke(&mut app, &ctx, "window.panel.toolPresets", Value::Null).unwrap();
+        assert!(app.ui.panels.tool_presets);
+        assert_eq!(crate::menus::checked(&app, "window.panel.toolPresets"), Some(true));
+        invoke(&mut app, &ctx, "window.panel.toolPresets", json!({"show": false})).unwrap();
+        assert!(!app.ui.panels.tool_presets);
+        assert_eq!(crate::menus::checked(&app, "window.panel.toolPresets"), Some(false));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The C2 Color panel layout: the reference application's own, side by side with Photoshop's
-//! modes in [`super::color_panel_ui`]. A colour/pattern source switch, the colour chips, a large
-//! saturation/brightness field with its hue strip, the hex and RGB readout, the recent colours and
-//! the image palette.
+//! modes in [`super::color_panel_ui`]. A colour/pattern source switch with the colour value at its
+//! right (over the hue strip), the colour chips, a large saturation/brightness field with its
+//! hue strip, the recent colours and the image palette.
 //!
 //! The geometry is the reference's 54 : 8 : 168 : 8 : 25 strip at the panel's width, so the whole
 //! panel scales with the dock instead of its height.
@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::PhotocraftApp;
 use crate::panels::c32;
-use crate::panels::color::{color_readout, hsva_color32, hsva_srgb, srgb_bytes, srgb_hsva};
+use crate::panels::color::{hsva_color32, hsva_srgb, srgb_bytes, srgb_hsva};
 use crate::theme::Tokens;
 
 /// The C2 layout's proportions, at the reference's 263-point panel width.
@@ -133,10 +133,12 @@ fn panels_srgb(h: egui::ecolor::Hsva) -> [f32; 3] {
 }
 
 /// The 实线/图案 switch: the brush paints the solid foreground colour, or a pattern sampled from
-/// the canvas with the eyedropper. A click on the sampled patch selects it too.
-fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+/// the canvas with the eyedropper. A click on the sampled patch selects it too. The colour value
+/// closes the row, flush with the hue strip's right edge under it.
+fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui, scale: f32, readout_right: f32, color: &mut [f32; 4]) -> bool {
     let t = Tokens::get(ui.ctx());
     let pattern = app.session.tools.brush.pattern_enabled;
+    let mut changed = false;
     ui.horizontal(|ui| {
         if ui.selectable_label(!pattern, tl!("Solid")).clicked() {
             let _ = app.run("tools.setColorSource", json!({"pattern": false}));
@@ -155,11 +157,21 @@ fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let _ = app.run("tools.setColorSource", json!({"pattern": true}));
             }
         }
+        // The value the 2-column layout kept under the field, over the hue strip: `#` then the
+        // box, the box's right edge on `readout_right`.
+        let id = ui.id().with(("c2-color-value", app.ui.color_panel.background));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let inset = (ui.max_rect().right() - readout_right).max(0.);
+            ui.add_space(inset);
+            changed = super::color::hex_field(ui, id, color, vec2(64. * scale, 24.));
+            ui.label(egui::RichText::new("#").font(crate::theme::mono(12.0)).color(t.text_faint));
+        });
     });
     if pattern && app.session.tools.brush.sampled_pattern.is_none() {
         ui.label(tl!("Use the eyedropper on the canvas to sample a pattern."));
     }
     ui.add_space(4.);
+    changed
 }
 
 /// Cells across the pattern preview. The patch can be 2048 x 2048, so the preview is a texture
@@ -199,10 +211,25 @@ fn pattern_preview(ui: &egui::Ui, patch: &photocraft_paint::brush::ColorPattern)
 /// pattern itself comes from the eyedropper on the canvas (`document.samplePattern`), so the
 /// panel says where a pattern comes from while it has none.
 pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    color_source(app, ui);
     let background = app.ui.color_panel.background;
-    let color = if background { app.session.tools.background } else { app.session.tools.foreground };
+    // The reference's 54 : 8 : 168 : 8 : 25 strip is a fixed point size (PaletteLayerPanels:
+    // `scale = 1`, core 168, source 54, hue 25, gap 8). The picker stays a 168 pt square
+    // whatever the dock's width, so the panel's height never follows the dock; a narrower dock
+    // shrinks the strip evenly instead of clipping, and a wider one centres it.
+    let width = ui.available_width().max(1.);
+    let scale = (width / C2_WIDTH).min(1.);
+    let left = 54. * scale;
+    let side = 168. * scale;
+    let pad = ((width - C2_WIDTH * scale) / 2.).max(0.);
+    // The hue strip's right edge: where the colour value above it ends.
+    let strip_right = ui.max_rect().left() + pad + C2_WIDTH * scale;
+    let mut c = if background { app.session.tools.background } else { app.session.tools.foreground };
+    let mut changed = color_source(app, ui, scale, strip_right, &mut c);
     let key = egui::Id::new(("c2-hue", background));
+    if changed {
+        super::color_panel_ui::set_color(app, ui.ctx(), background, [c[0], c[1], c[2]]);
+    }
+    let color = if background { app.session.tools.background } else { app.session.tools.foreground };
     let raw = srgb_hsva(color);
     // A grey carries no hue of its own and black neither hue nor saturation: remember what the
     // field last showed so its knob does not jump (#3228).
@@ -214,19 +241,10 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if h.v < 0.04 && h.s < remembered.1 {
         h.s += (remembered.1 - h.s) * (1. - h.v / 0.04).clamp(0., 1.);
     }
-    // The reference's 54 : 8 : 168 : 8 : 25 strip is a fixed point size (PaletteLayerPanels:
-    // `scale = 1`, core 168, source 54, hue 25, gap 8). The picker stays a 168 pt square
-    // whatever the dock's width, so the panel's height never follows the dock; a narrower dock
-    // shrinks the strip evenly instead of clipping, and a wider one centres it.
-    let width = ui.available_width().max(1.);
-    let scale = (width / C2_WIDTH).min(1.);
-    let left = 54. * scale;
-    let side = 168. * scale;
-    let pad = ((width - C2_WIDTH * scale) / 2.).max(0.);
     let (rect, response) = ui.allocate_exact_size(vec2(width, side), Sense::hover());
     sources(app, ui, Rect::from_min_size(rect.min + vec2(pad, 0.), vec2(left, side)));
     let square = Rect::from_min_size(pos2(rect.min.x + pad + left + 8. * scale, rect.min.y), vec2(side, side));
-    let mut changed = sv(ui, square, &mut h);
+    changed |= sv(ui, square, &mut h);
     changed |= hue(ui, Rect::from_min_size(pos2(square.right() + 8. * scale, square.top()), vec2(25. * scale, square.height())), &mut h);
     if changed {
         super::color_panel_ui::set_color(app, ui.ctx(), background, panels_srgb(h));
@@ -244,15 +262,6 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     image_palette(app, ui, scale);
-    ui.add_space(6.);
-    let mut c = if background { app.session.tools.background } else { app.session.tools.foreground };
-    if color_readout(ui, ui.id().with(("c2-readout", background)), &mut c) {
-        super::color_panel_ui::set_color(app, ui.ctx(), background, [c[0], c[1], c[2]]);
-        let h = srgb_hsva(c);
-        if h.s > 0.001 && h.v > 0.04 {
-            ui.data_mut(|d| d.insert_temp(key, (h.h, h.s)));
-        }
-    }
     // The panel menu, from a right-click anywhere on the panel.
     let popup = egui::Popup::context_menu(&response);
     let open = ui.input(|i| {

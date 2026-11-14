@@ -111,7 +111,9 @@ fn numeric_fields(ui: &mut egui::Ui, label: &str, fields: [(Option<&mut f32>, st
                     ui.push_id(index, |ui| {
                         if let Some(field) = field {
                             let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
-                            changed |= widgets::value_field(ui, field, range, suffix, width).on_hover_text(hint).changed();
+                            changed |= widgets::value_field_named(ui, &format!("{label} {hint}"), field, range, suffix, width)
+                                .on_hover_text(hint)
+                                .changed();
                         } else {
                             ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
                         }
@@ -133,7 +135,9 @@ fn numeric_fields(ui: &mut egui::Ui, label: &str, fields: [(Option<&mut f32>, st
                     let Some(field) = field else { continue };
                     fields_ui.push_id(index, |ui| {
                         let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
-                        changed |= widgets::value_field(ui, field, range, suffix, cell).on_hover_text(hint).changed();
+                        changed |= widgets::value_field_named(ui, &format!("{label} {hint}"), field, range, suffix, cell)
+                            .on_hover_text(hint)
+                            .changed();
                     });
                 }
             }
@@ -216,7 +220,10 @@ fn control_row(ui: &mut egui::Ui, id: &str, d: &mut Dynamic, angle: bool) {
         widgets::dropdown(ui, id, "", &mut d.control, &reference_controls(id), width);
         if d.control == Control::Fade {
             let mut steps = d.fade_steps as f32;
-            if widgets::value_field(ui, &mut steps, 1.0..=9999.0, "", 56.0).on_hover_text(tl!("Fade steps")).changed() {
+            if widgets::value_field_named(ui, tl!("Fade steps"), &mut steps, 1.0..=9999.0, "", 56.0)
+                .on_hover_text(tl!("Fade steps"))
+                .changed()
+            {
                 d.fade_steps = steps.round().clamp(1.0, 9999.0) as u32;
             }
         }
@@ -259,7 +266,7 @@ fn parameter(
             parameter_label(ui, label, label_width);
             if ui
                 .add_enabled_ui(dynamics_enabled && (d.control != Control::Off || d.jitter > 0.0 || id == "brush-flow-ctl" || id == "brush-depth-ctl"), |ui| {
-                    widgets::value_field(ui, &mut minimum, 0.0..=100.0, "%", width)
+                    widgets::value_field_named(ui, &format!("{label} {}", tl!("Minimum")), &mut minimum, 0.0..=100.0, "%", width)
                 })
                 .inner
                 .on_hover_text(tl!("Minimum"))
@@ -267,8 +274,9 @@ fn parameter(
             {
                 d.minimum = minimum / 100.0;
             }
-            if widgets::value_field(
+            if widgets::value_field_named(
                 ui,
+                &format!("{label} {}", tl!("Maximum")),
                 &mut maximum,
                 *range.start() * scale..=*range.end() * scale,
                 if percent {
@@ -288,7 +296,14 @@ fn parameter(
             ui.add_space(12.0);
             if ui
                 .add_enabled_ui(dynamics_enabled, |ui| {
-                    widgets::value_field(ui, &mut jitter, 0.0..=if angle { 360.0 } else { 100.0 }, if angle { "°" } else { "%" }, width)
+                    widgets::value_field_named(
+                        ui,
+                        &format!("{label} {}", tl!("Jitter")),
+                        &mut jitter,
+                        0.0..=if angle { 360.0 } else { 100.0 },
+                        if angle { "°" } else { "%" },
+                        width,
+                    )
                 })
                 .inner
                 .on_hover_text(tl!("Jitter"))
@@ -783,7 +798,7 @@ pub(crate) fn lane_strength(ui: &mut egui::Ui, value: &mut f32) -> bool {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     field_ui.set_clip_rect(field_ui.clip_rect().union(row));
-    widgets::value_field(&mut field_ui, value, 0.0..=100.0, "%", LANE_VALUE).changed()
+    widgets::value_field_named(&mut field_ui, tl!("Strength"), value, 0.0..=100.0, "%", LANE_VALUE).changed()
 }
 
 fn color_dynamics(ui: &mut egui::Ui, b: &mut BrushSettings) {
@@ -846,7 +861,10 @@ fn material_control(ui: &mut egui::Ui, id: &str, control: &mut Control, fade_ste
         widgets::dropdown(ui, id, "", control, &reference_controls(id), (ui.available_width() - if *control == Control::Fade { 64.0 } else { 0.0 }).max(60.0));
         if *control == Control::Fade {
             let mut n = *fade_steps as f32;
-            if widgets::value_field(ui, &mut n, 1.0..=9999.0, "", 56.0).on_hover_text(tl!("Fade steps")).changed() {
+            if widgets::value_field_named(ui, tl!("Fade steps"), &mut n, 1.0..=9999.0, "", 56.0)
+                .on_hover_text(tl!("Fade steps"))
+                .changed()
+            {
                 *fade_steps = n as u32;
             }
         }

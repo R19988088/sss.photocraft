@@ -79,6 +79,9 @@ pub struct Panels {
     /// Window › Brushes: dockable panel, like Photoshop's.
     #[serde(default)]
     pub brushes: bool,
+    /// Window › Tool Presets: dockable beside Brushes (it used to float).
+    #[serde(default)]
+    pub tool_presets: bool,
     /// Window › Character / Paragraph: the Character | Paragraph dock group (#150).
     #[serde(default)]
     pub character: bool,
@@ -146,6 +149,7 @@ impl Default for Panels {
             status_bar: true,
             brush_settings: false,
             brushes: false,
+            tool_presets: false,
             character: false,
             toolbar_double: false,
             toolbar_side: ToolbarSide::Start,
@@ -695,7 +699,7 @@ impl Default for UiState {
             dialogs: Vec::new(),
             windows: Vec::new(),
             theme: crate::theme::ThemeKind::ProMedium,
-            workspace: "Essentials".into(),
+            workspace: crate::workspace_ui::DEFAULT.into(),
             palette_open: false,
             dock_tabs: DockTabs::default(),
             dock: Default::default(),

@@ -37,11 +37,14 @@ pub enum Group {
     Layers,
     /// Brushes presets.
     Brushes,
+    /// Tool presets (Window › Tool Presets), docked like Brushes.
+    ToolPresets,
 }
 
 impl Group {
     /// Photoshop Essentials order, top to bottom.
-    pub const ALL: [Group; 7] = [Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History, Group::Layers, Group::Brushes];
+    pub const ALL: [Group; 8] =
+        [Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History, Group::Layers, Group::Brushes, Group::ToolPresets];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -52,6 +55,7 @@ impl Group {
             Group::History => "history",
             Group::Layers => "layers",
             Group::Brushes => "brushes",
+            Group::ToolPresets => "toolPresets",
         }
     }
 
@@ -66,6 +70,7 @@ impl Group {
             Group::History => 200.0,
             Group::Layers => 320.0,
             Group::Brushes => 200.0,
+            Group::ToolPresets => 240.0,
         }
     }
 
@@ -80,6 +85,7 @@ impl Group {
             Group::History => 130.0,
             Group::Layers => 200.0,
             Group::Brushes => 150.0,
+            Group::ToolPresets => 170.0,
         }
     }
 
@@ -98,6 +104,7 @@ impl Group {
         match self {
             Group::Layers => 140.0,
             Group::Brushes => 100.0,
+            Group::ToolPresets => 120.0,
             _ => 80.0,
         }
     }
@@ -113,6 +120,7 @@ impl Group {
             Group::History => &["History", "Actions", "Layer Comps"],
             Group::Layers => &["Layers", "Channels", "Paths"],
             Group::Brushes => &["Brushes"],
+            Group::ToolPresets => &["Tool Presets"],
         }
     }
 
@@ -134,6 +142,7 @@ impl Group {
             Group::History => &mut tabs.history,
             Group::Layers => &mut tabs.layers,
             Group::Brushes => &mut tabs.brushes,
+            Group::ToolPresets => &mut tabs.tool_presets,
         }
     }
 
@@ -151,6 +160,7 @@ impl Group {
             Group::History => panels.history,
             Group::Layers => panels.layers,
             Group::Brushes => panels.brushes,
+            Group::ToolPresets => panels.tool_presets,
         }
     }
 
@@ -163,6 +173,7 @@ impl Group {
             Group::History => &mut panels.history,
             Group::Layers => &mut panels.layers,
             Group::Brushes => &mut panels.brushes,
+            Group::ToolPresets => &mut panels.tool_presets,
         }
     }
 }
@@ -474,20 +485,34 @@ pub(crate) fn persist_pending(app: &mut PhotocraftApp, ctx: &egui::Context) {
     set_panels_pending(ctx, false);
 }
 
-/// Restore the remembered layout at launch. Unreadable parts keep their defaults.
+/// The workspace a launch without a remembered layout starts on: the author's template D.
+///
+/// Tests keep the upstream starter workspace. They check panel behaviour rather than the template
+/// a person opens with, and D's arrangement (no Properties card) would move every fixture that
+/// reads the Properties panel; [`crate::workspace_ui`]'s own tests cover D itself.
+pub fn launch_template() -> &'static str {
+    if cfg!(test) { "Essentials" } else { crate::workspace_ui::DEFAULT }
+}
+
+/// Restore the remembered layout at launch. Without one the default template is applied.
 pub fn restore(app: &mut PhotocraftApp) {
-    if !app.session.prefs().workspace.remember_workspace_changes {
-        return;
-    }
     let saved = app.session.prefs().panel_layout.clone();
-    apply(app, &saved);
+    let remembered = app.session.prefs().workspace.remember_workspace_changes && saved.as_object().is_some_and(|o| !o.is_empty());
+    if remembered {
+        apply(app, &saved);
+        if let Some(ws) = saved.get("workspace").and_then(Value::as_str) {
+            app.ui.workspace = ws.to_string();
+        }
+    } else {
+        // First launch, or nothing remembered: the default template D shows Color → Layers →
+        // Brushes → Tool Presets down the right dock, like the reference's opening workspace.
+        app.ui.workspace = launch_template().to_string();
+        crate::menus::apply_workspace(app);
+    }
     // The floating Brush Settings window is transient, not a dock panel: remembering the
     // workspace must not leave it open on a fresh launch, especially with no document.
     // Explicit workspace switches still use `apply` and keep their stored panel visibility.
     app.ui.panels.brush_settings = false;
-    if let Some(ws) = saved.get("workspace").and_then(Value::as_str) {
-        app.ui.workspace = ws.to_string();
-    }
 }
 
 /// Apply the `panels`, `dockTabs`, `dock` and `timelineOpen` parts of a saved layout

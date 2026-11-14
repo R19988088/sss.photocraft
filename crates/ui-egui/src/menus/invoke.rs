@@ -13,6 +13,7 @@ pub(crate) fn panel_alias(id: &str) -> Option<&'static str> {
         "contextualTaskBar" => "window.toggle.contextualTaskBar",
         "brushSettings" => "window.toggle.brushSettings",
         "brushes" => "window.toggle.brushes",
+        "toolPresets" => "window.toggle.toolPresets",
         _ => return None,
     })
 }
@@ -29,7 +30,10 @@ pub(super) fn proof_preset(id: &str) -> Option<&'static str> {
 /// Window › Workspace presets by id.
 pub(super) fn workspace_name(id: &str) -> Option<&'static str> {
     Some(match id.strip_prefix("window.workspace.")? {
-        "essentials" | "resetWorkspace" => "",
+        "essentials" => "",
+        // Reset Workspace returns to the template a launch opens on (D in the app).
+        "resetWorkspace" => crate::dock::launch_template(),
+        "d" => "D",
         "photography" => "Photography",
         "painting" => "Painting",
         "graphicAndWeb" => "Graphic and Web",
@@ -131,7 +135,7 @@ fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     if let Some(r) = crate::workspace_ui::menu(app, id, params) {
         return Some(r);
     }
-    // Window › Gradients, Patterns, Styles, Shapes, Tool Presets, Clone Source.
+    // Window › Gradients, Patterns, Styles, Shapes, Clone Source.
     if let Some(r) = crate::preset_panels::menu(app, id, params) {
         return Some(r);
     }
@@ -827,6 +831,7 @@ fn toggle_panel(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
         "contextualTaskBar" => &mut panels.context_task_bar,
         "brushSettings" => &mut panels.brush_settings,
         "brushes" => &mut panels.brushes,
+        "toolPresets" => &mut panels.tool_presets,
         "dock" => &mut panels.dock,
         _ => return Err(format!("unknown panel in {id}")),
     };
@@ -853,6 +858,9 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     app.ui.docking_collapsed.clear();
     app.ui.dock_tabs = Default::default();
     let p = &mut app.ui.panels;
+    // Template D: Color → Layers → Brushes → Tool Presets, the reference's right dock, with
+    // nothing above Color. It is the default workspace and the one Reset returns to.
+    let d = app.ui.workspace == crate::workspace_ui::DEFAULT;
     let (nav, color, layers, history, props) = match app.ui.workspace.as_str() {
         "Photography" => (true, false, true, true, true),
         "Painting" => (false, true, true, false, false),
@@ -861,6 +869,7 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
         // Color includes Swatches; Navigator keeps the pixel canvas easy to inspect.
         "Pixel Art" => (true, true, true, false, false),
         "Motion" => (false, false, true, false, true),
+        "D" => (false, true, true, false, false),
         _ => (false, true, true, false, true),
     };
     p.navigator = nav;
@@ -869,6 +878,10 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     p.history = history;
     p.properties = props;
     p.character = app.ui.workspace == "Graphic and Web";
+    // Brushes and Tool Presets belong to the default template; every other preset closes them,
+    // as before, so switching away and back reads the same as picking the preset fresh.
+    p.brushes = d;
+    p.tool_presets = d;
     // Timeline is a floating panel, not a dock group. Showing it does not create or edit
     // a document timeline; changing away from Motion closes it just like its Close button.
     app.ui.timeline.open = app.ui.workspace == "Motion";

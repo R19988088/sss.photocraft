@@ -69,6 +69,7 @@ pub fn switcher_options(app: &PhotocraftApp) -> Vec<(String, String)> {
     // Keys stay English (`apply_workspace` matches them); the dropdown shows the preset labels
     // in the UI language.
     let presets = [
+        ("D", tl!("D")),
         ("Essentials", tl!("Essentials")),
         ("Photography", tl!("Photography")),
         ("Painting", tl!("Painting")),
@@ -130,7 +131,11 @@ fn open(app: &mut PhotocraftApp, kind: &str, f: Value) -> Result<Value, String> 
 }
 
 /// Built-in workspace names (Window › Workspace presets).
-const PRESETS: [&str; 6] = ["Essentials", "Photography", "Painting", "Pixel Art", "Graphic and Web", "Motion"];
+const PRESETS: [&str; 7] = ["D", "Essentials", "Photography", "Painting", "Pixel Art", "Graphic and Web", "Motion"];
+
+/// The default template: Color → Layers → Brushes → Tool Presets down the right dock. It is what
+/// a launch without a remembered layout applies, and what a new install starts in.
+pub const DEFAULT: &str = "D";
 
 /// Run a shell command, or open its dialog. `None` when `id` isn't ours.
 pub fn menu(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
@@ -533,6 +538,28 @@ mod tests {
         (PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default()), egui::Context::default())
     }
 
+    /// Template D, the default workspace: Color → Layers → Brushes → Tool Presets down the right
+    /// dock, with no Properties card above Color.
+    #[test]
+    fn the_default_template_d_orders_the_right_dock() {
+        let (mut app, ctx) = app();
+        assert_eq!(DEFAULT, "D", "the built-in default template is the author's D");
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.d", json!({})).unwrap();
+        let p = &app.ui.panels;
+        assert!(p.color && p.layers && p.brushes && p.tool_presets);
+        assert!(!p.properties && !p.navigator && !p.history && !p.character);
+        let shown: Vec<crate::dock::Group> = app.ui.dock.order().into_iter().filter(|g| g.shown(&app.ui.panels)).collect();
+        assert_eq!(shown, vec![crate::dock::Group::Color, crate::dock::Group::Layers, crate::dock::Group::Brushes, crate::dock::Group::ToolPresets]);
+        assert_eq!(crate::menus::checked(&app, "window.workspace.d"), Some(true));
+        assert_eq!(crate::menus::checked(&app, "window.workspace.essentials"), Some(false));
+        // The menu lists it ahead of Essentials, and the switcher offers it.
+        let items = crate::menus::menu_items(&app);
+        let d = items.iter().position(|i| i.id == "window.workspace.d").unwrap();
+        assert_eq!(items[d + 1].id, "window.workspace.essentials");
+        assert_eq!(switcher_options(&app).first().map(|(k, _)| k.as_str()), Some(DEFAULT));
+        assert!(!PRESETS.is_empty() && PRESETS.contains(&DEFAULT));
+    }
+
     #[test]
     fn saved_workspaces_preserve_host_chrome_on_select_and_reset() {
         for (menu_bar, rail) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -670,7 +697,7 @@ mod tests {
         let motion = items.iter().position(|i| i.id == "window.workspace.motion").unwrap();
         let saved: Vec<(&str, Option<bool>, bool)> = items[motion + 1..].iter().take(2).map(|i| (i.label.as_str(), i.checked, i.enabled)).collect();
         assert_eq!(saved, [("Comp", Some(true), true), ("Retouch", Some(false), true)]);
-        assert!(items.iter().filter(|i| !i.id.starts_with(SAVED)).all(|i| i.checked != Some(true) || i.id == "window.workspace.lockWorkspace"));
+        assert!(items.iter().filter(|i| !i.id.starts_with(SAVED)).all(|i| i.checked != Some(true) || i.id == "window.workspace.lockWorkspace" || i.id == "window.workspace.d"));
         assert!(crate::menus::is_live(&format!("{SAVED}1")));
         // Switch to a preset, then back through the menu item.
         crate::menus::invoke(&mut app, &ctx, "window.workspace.painting", json!({})).unwrap();
@@ -684,9 +711,9 @@ mod tests {
         for bad in ["9", "-1", "x", ""] {
             assert!(crate::menus::invoke(&mut app, &ctx, &format!("{SAVED}{bad}"), json!({})).is_err(), "{bad}");
         }
-        // The top-bar switcher lists them after the presets.
+        // The top-bar switcher lists them after the presets (D is one of the seven).
         let keys: Vec<String> = switcher_options(&app).into_iter().map(|(k, _)| k).collect();
-        assert_eq!(keys[6..], ["Comp", "Retouch"]);
+        assert_eq!(keys[7..], ["Comp", "Retouch"]);
         assert!(keys.contains(&app.ui.workspace));
     }
 

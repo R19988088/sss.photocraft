@@ -11,7 +11,10 @@ use crate::theme::ThemeKind;
 #[test]
 fn bad_stored_values_are_sanitised() {
     let mut l = DockLayout { order: vec![Group::Layers, Group::Layers, Group::Color], ..Default::default() };
-    assert_eq!(l.order(), vec![Group::Layers, Group::Brushes, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]);
+    assert_eq!(
+        l.order(),
+        vec![Group::Layers, Group::Brushes, Group::ToolPresets, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]
+    );
     for bad in [f32::NAN, -10.0, f32::INFINITY, 1e12] {
         l.heights.insert(Group::Color, bad);
         let h = l.height(Group::Color);
@@ -19,7 +22,10 @@ fn bad_stored_values_are_sanitised() {
     }
     // Unknown fields, wrong types and old UI state all load.
     let back: DockLayout = serde_json::from_value(json!({"order": ["layers"], "bogus": 1})).unwrap();
-    assert_eq!(back.order(), vec![Group::Layers, Group::Brushes, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]);
+    assert_eq!(
+        back.order(),
+        vec![Group::Layers, Group::Brushes, Group::ToolPresets, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]
+    );
     let mut ui = serde_json::to_value(crate::state::UiState::default()).unwrap();
     ui.as_object_mut().unwrap().remove("dock");
     let ui: crate::state::UiState = serde_json::from_value(ui).unwrap();
@@ -261,14 +267,43 @@ fn the_rail_and_window_menu_never_lose_a_panel() {
     app.ui.dock.set_collapsed(Group::History, true);
     crate::menus::invoke(&mut app, &ctx, "window.panel.actions", json!({})).unwrap();
     assert!(app.ui.panels.history && !app.ui.dock.is_collapsed(Group::History) && app.ui.dock_tabs.history == 1);
-    // Reset Workspace brings back everything the preset shows.
+    // Reset Workspace brings the launch template's own panels back.
     app.ui.panels = crate::state::Panels { layers: false, properties: false, color: false, ..Default::default() };
     app.ui.dock_tabs.layers = 2;
     app.ui.dock.set_collapsed(Group::Properties, true);
     crate::menus::invoke(&mut app, &ctx, "window.workspace.resetWorkspace", json!({})).unwrap();
-    assert!(app.ui.panels.layers && app.ui.panels.properties && app.ui.panels.color);
+    assert_eq!(app.ui.workspace, launch_template(), "Reset goes back to the template a launch opens");
+    assert!(app.ui.panels.layers && app.ui.panels.color, "the template's own panels come back");
     assert_eq!(app.ui.dock, DockLayout::default());
     assert_eq!(app.ui.dock_tabs.layers, 0);
+}
+
+/// Window › Tool Presets is a dock panel beside Brushes (it used to be a floating window), so it
+/// drags, floats and closes like the Brushes panel; template D shows it under Brushes.
+#[test]
+fn tool_presets_docks_below_brushes() {
+    let (mut app, _, _) = app_with_layers();
+    app.ui.workspace = crate::workspace_ui::DEFAULT.into();
+    crate::menus::apply_workspace(&mut app);
+    let mut h = harness(app, vec2(1200.0, 1000.0), ThemeKind::ProMedium);
+    h.run_steps(3);
+    let brushes = rect_of(&h, Group::Brushes);
+    let presets = rect_of(&h, Group::ToolPresets);
+    assert!(presets.top() >= brushes.bottom() - 1.0, "Tool Presets below Brushes: {presets:?} vs {brushes:?}");
+    assert!(
+        crate::panel_docking::last_bodies(&h.ctx).iter().any(|(id, _)| id == "toolPresets"),
+        "the tool preset list draws as a dock body"
+    );
+    // The Window item toggles the group, not a floating window.
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "window.panel.toolPresets", json!({})).unwrap();
+    h.run_steps(3);
+    assert!(!h.state().ui.panels.tool_presets);
+    assert!(probe::native_group_rect(h.state(), &h.ctx, Group::ToolPresets).is_none());
+    crate::menus::invoke(h.state_mut(), &ctx, "window.toggle.toolPresets", json!({})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().ui.panels.tool_presets);
+    assert!(probe::native_group_rect(h.state(), &h.ctx, Group::ToolPresets).is_some());
 }
 
 /// #129: clicking around the whole UI (layers, canvas, tools, options bar) never switches,
@@ -554,7 +589,11 @@ fn defaults_give_way_to_layers_but_user_sizes_stay() {
 #[test]
 fn window_character_opens_its_own_group_and_keeps_properties() {
     for theme in [ThemeKind::ProMedium, ThemeKind::Studio] {
-        let (app, _, _) = app_with_layers();
+        let (mut app, _, _) = app_with_layers();
+        // Essentials keeps Properties in the dock; the default template D does not.
+        app.ui.workspace = "Essentials".into();
+        crate::menus::apply_workspace(&mut app);
+        app.ui.panels.character = false;
         let mut h = harness(app, vec2(1440.0, 900.0), theme);
         let ctx = h.ctx.clone();
         crate::menus::invoke(h.state_mut(), &ctx, "window.panel.character", json!({})).unwrap();
@@ -587,7 +626,10 @@ fn window_character_opens_its_own_group_and_keeps_properties() {
     let old = DockLayout { order: vec![Group::Color, Group::Properties, Group::Navigator, Group::History, Group::Layers], ..Default::default() };
     assert_eq!(old.order(), Group::ALL.to_vec());
     let moved = DockLayout { order: vec![Group::Layers, Group::Color], ..Default::default() };
-    assert_eq!(moved.order(), vec![Group::Layers, Group::Brushes, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]);
+    assert_eq!(
+        moved.order(),
+        vec![Group::Layers, Group::Brushes, Group::ToolPresets, Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History]
+    );
 }
 
 #[test]
@@ -910,6 +952,27 @@ fn a_panel_window_the_os_moves_is_saved_once_it_keeps_still() {
     frame(&mut app);
     let native = app.session.prefs().panel_layout["docking"]["layout"]["floating"][0]["native"].clone();
     assert_eq!(native, json!([519.0, 100.0, 300.0, 200.0]), "saved once it keeps still");
+}
+
+#[test]
+fn a_launch_without_a_remembered_layout_applies_the_launch_template() {
+    let (mut app, _, _) = app_with_layers();
+    app.session.prefs.edit(|p| p.workspace.remember_workspace_changes = true);
+    restore(&mut app);
+    assert_eq!(app.ui.workspace, launch_template(), "the launch names the template it used");
+    assert!(!app.ui.panels.brush_settings, "the floating Brush Settings window never survives a launch");
+}
+
+#[test]
+fn the_default_template_d_shows_color_layers_brushes_and_tool_presets() {
+    let (mut app, _, _) = app_with_layers();
+    app.ui.workspace = crate::workspace_ui::DEFAULT.to_string();
+    crate::menus::apply_workspace(&mut app);
+    assert_eq!(app.ui.workspace, crate::workspace_ui::DEFAULT);    let p = &app.ui.panels;
+    assert!(p.color && p.layers && p.brushes && p.tool_presets, "template D shows these");
+    assert!(!p.properties && !p.navigator && !p.history && !p.character);
+    let shown: Vec<Group> = app.ui.dock.order().into_iter().filter(|g| g.shown(&app.ui.panels)).collect();
+    assert_eq!(shown, vec![Group::Color, Group::Layers, Group::Brushes, Group::ToolPresets]);
 }
 
 #[test]

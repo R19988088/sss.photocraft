@@ -254,8 +254,14 @@ pub(crate) fn color_readout(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4
 /// sets `color` and returns `true`. While it has focus it shows exactly what is typed, so partial
 /// or invalid input isn't overwritten by the colour; an invalid entry snaps back when focus leaves.
 fn hex_edit(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4]) -> bool {
+    hex_field(ui, id, color, vec2(64.0, 24.0))
+}
+
+/// [`hex_edit`] at a given box size: the C2 panel puts the colour value over the hue strip, so
+/// the field shrinks with the panel.
+pub(crate) fn hex_field(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4], size: egui::Vec2) -> bool {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(64.0, 24.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     widgets::surface(ui, rect, t.field, false);
     if !t.bevel {
         ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);

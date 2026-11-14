@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
+# craft-libs' `crates/ui`, patched (docking's tab menu): `vendor/craft-ui/VENDOR.md`.
+exclude = ["vendor/craft-ui"]
 default-members = ["crates/*", "apps/photocraft", "apps/photocraft-cli", "xtask"]
 
 [workspace.package]
@@ -210,3 +212,8 @@ hayro = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e6213
 hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
 hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
 hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d" }
+
+# craft-ui is vendored (`vendor/craft-ui`) so its docking patch (a tab menu's stock tail) ships
+# with this repository. `vendor/craft-ui/VENDOR.md` lists the patch and the follow steps.
+[patch."https://github.com/storytold/craft-libs"]
+craft-ui = { path = "vendor/craft-ui" }

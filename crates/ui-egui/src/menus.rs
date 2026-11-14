@@ -36,7 +36,9 @@ pub use search::{search_items, search_rank};
 pub use state::is_enabled;
 pub(crate) use state::reveal_label;
 #[cfg(test)]
-use state::{checked, translated_menu_label};
+use state::translated_menu_label;
+#[cfg(test)]
+pub(crate) use state::checked;
 
 /// Shared gate for native menu clicks and control-channel `ui.menu.invoke`.
 /// Dialogs and unsaved-changes prompts block edits, but allow the four view-navigation

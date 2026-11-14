@@ -209,7 +209,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             ui.add_enabled_ui(!block, |ui| {
                 // The bar carries the size itself; the brush picker lives in the panel (F5).
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0).accessible_name(tl!("Size"));
             });
             widgets::vline(ui, 22.0);
             // The Eraser has no blend mode: its Mode is Brush, Pencil or Block (#2662).
@@ -262,7 +262,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             widgets::vline(ui, 22.0);
             if !t.pro {
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0).accessible_name(tl!("Size"));
                 widgets::vline(ui, 22.0);
             }
             opt_label(ui, tl!("Mode"));
@@ -280,7 +280,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let block = crate::eraser_ui::block_mode(app, app.ui.tool);
             ui.add_enabled_ui(!block, |ui| {
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0).accessible_name(tl!("Size"));
             });
             widgets::vline(ui, 22.0);
             // The Brush's own tooltips here too (#11813); the Eraser keeps its texts.

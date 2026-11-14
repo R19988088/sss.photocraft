@@ -3164,6 +3164,7 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Right-to-left paragraph direction	从右到左的段落方向
 	Not rendered: this adjustment ({key}) is kept as imported.	未渲染：此调整（{key}）按导入时的原样保留。
 	Print preview image	打印预览图像
+	Page	页
 	Hue Cube	色相立方体
 	Brightness Cube	亮度立方体
 	Color Wheel	色轮

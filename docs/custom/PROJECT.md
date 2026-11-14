@@ -74,10 +74,14 @@
 - 右侧面板自上而下固定为：**颜色（C2 布局）→ 图层 → 画笔 → 工具预设**，颜色之上不再有属性卡。
 - `D` 是内置工作区模板（`Window › Workspace` 列表首位、顶栏工作区切换器第一项），也是
   **启动默认**：没有记忆布局（首次启动、新装、Reset Workspace）时一律应用 D
-  （`crate::workspace_ui::DEFAULT`，`dock::restore`）。
+  （`crate::workspace_ui::DEFAULT`，`dock::launch_template` + `dock::restore`）。
+  测试进程保留上游起始工作区（`launch_template` 在 `cfg(test)` 下返回 Essentials），否则 D
+  不显示属性卡会让所有读属性面板的既有用例整片移位。
 - 工具预设从浮动窗口改为**可停靠面板**（`dock::Group::ToolPresets`，面板 id `toolPresets`），
   与画笔面板同一套行为：拖到右侧停靠区、合并成 tab、拖出浮动、Close 关闭都能用；
   `Window › Tool Presets` 走 `window.panel.toolPresets → window.toggle.toolPresets`。
+- 画笔面板与颜色面板滑块行原本没有无障碍名的数值框补了 `value_field_named`（如「Size Maximum」
+  「Red」）：画笔画板随 D 显示后，`egui_kittest` 的无障碍检查在约 600 个既有用例上整片报错。
 - 旧版布局里没有 `panels.tool_presets` 字段，按关闭处理（serde 默认 false）。
 
 ---
@@ -108,6 +112,11 @@
 | HEIC/HEIF 打开能力默认开启（`default = ["heif"]`，纯 Rust heic-rs，无需系统 libheif） | ✅ | 2026-11-14 |
 | Windows 绿色版：默认 `portable-default`，数据跟着 exe（`PhotoCraftData\`），不写 `%APPDATA%` | ✅ | 2026-11-14 |
 | 右侧面板模板 D（颜色→图层→画笔→工具预设）+ 工具预设改为可停靠面板 | ✅ | 未提交（工作区） |
+| 便携包 `dist\photocraft-0.24.0-windows-x64-portable-panels-d.zip`（静态 CRT，含上述改动） | ✅ | 2026-11-14 |
+| 颜色面板菜单恢复显示模式（C2/色相立方体/亮度立方体/色轮/灰度·RGB·HSB·CMYK·Lab·Web 滑块，选择记入偏好） | ✅ | 未提交（工作区） |
+| 便携包 `dist\photocraft-0.24.0-windows-x64-portable-panels-d2.zip`（含显示模式菜单） | ✅ | 2026-11-14 |
+| 颜色面板菜单改为窄版两页（第一页十种显示模式，第二页混合强度/复制/色谱，底部圆点翻页） | ✅ | 未提交（工作区） |
+| 便携包 `dist\photocraft-0.24.0-windows-x64-portable-panels-d3.zip`（含两页窄菜单） | ✅ | 2026-11-14 |
 
 **pm.lut 底层细节**（对照 `sssp_c3/backup/minimal_20261020_131735`，Swift/Metal 的 C3）：
 

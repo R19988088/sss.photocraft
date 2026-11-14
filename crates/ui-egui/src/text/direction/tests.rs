@@ -106,7 +106,8 @@ fn the_shell_mirrors_in_a_right_to_left_ui() {
         let _dir = direction_scope(dir);
         let h = harness();
         let mid = 600.0;
-        let (file, help, toolbar, dock, workspace) = (x_of(&h, "File"), x_of(&h, "Help"), x_of(&h, "Toolbar"), dock_x(&h), text_x(&h, "Essentials"));
+        let (file, help, toolbar, dock, workspace) =
+            (x_of(&h, "File"), x_of(&h, "Help"), x_of(&h, "Toolbar"), dock_x(&h), text_x(&h, crate::workspace_ui::DEFAULT));
         if dir == Dir::Rtl {
             assert!(file > help, "File starts the menu bar at the right: {file} vs {help}");
             assert!(toolbar > mid && dock < mid, "toolbox right, dock left: {toolbar}, {dock}");

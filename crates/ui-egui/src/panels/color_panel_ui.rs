@@ -186,6 +186,27 @@ pub(crate) fn rgb32(c: [f32; 3]) -> Color32 {
     Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]))
 }
 
+/// The accessible name of a slider row's number field. Its channel letter alone ("R", "a") says
+/// nothing when it is read out, so the model's own word names the field.
+fn channel_name(model: Model, label: &'static str) -> String {
+    let full = match (model, label) {
+        (Model::Gray, _) => tl!("Black"),
+        (Model::Hsb, "H") => tl!("Hue"),
+        (Model::Hsb, "S") => tl!("Saturation"),
+        (Model::Hsb, "B") => tl!("Brightness"),
+        (_, "R") => tl!("Red"),
+        (_, "G") => tl!("Green"),
+        (_, "B") => tl!("Blue"),
+        (_, "C") => tl!("Cyan"),
+        (_, "M") => tl!("Magenta"),
+        (_, "Y") => tl!("Yellow"),
+        (_, "K") => tl!("Black"),
+        (_, "L") => tl!("Lightness"),
+        (_, other) => other,
+    };
+    full.to_string()
+}
+
 /// The slider rows of `model`. Returns the edited values, if any.
 fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool) -> Option<[f32; 4]> {
     let t = Tokens::get(ui.ctx());
@@ -214,7 +235,7 @@ fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, d
             resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(x), label));
             if model == Model::Web {
                 changed |= hex_pair(ui, ui.scope_id().with(("web-field", i, background)), &mut x);
-            } else if widgets::value_field(ui, &mut x, lo..=hi, "", FIELD_W).changed() {
+            } else if widgets::value_field_named(ui, &channel_name(model, label), &mut x, lo..=hi, "", FIELD_W).changed() {
                 changed = true;
             }
             let (ur, _) = ui.allocate_exact_size(vec2(UNIT_W, ROW_H), Sense::hover());
@@ -758,35 +779,76 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 }
 
 /// The Color panel's panel menu, Photoshop's: the modes, the mixing strength, the copy commands,
-/// the ramps.
+/// the ramps. Two narrow pages — the faces, then the commands — with a page dot under them, so
+/// the menu never grows into a column taller than the panel it belongs to.
 pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    // Wide enough for the mixing strength row's slider and field, as the reference menu is.
-    ui.set_min_width(220.0);
-    // No display picker: the reference layout is the panel's only face, so there is no way back
-    // to the traditional modes from the menu.
-    // 混合强度: the brush's pigment mixing, one value for every brush, beside the colour field
-    // as the reference application keeps it. The slider writes the `painting.pigmentMixStrength`
-    // preference and the engine copies it onto the brush, so it survives a restart with the rest
-    // of the preferences.
-    let mut strength = app.session.prefs().painting.pigment_mix_strength;
-    if widgets::slider_row(ui, tl!("Mixing Strength"), &mut strength, 0.0..=100.0, "%", None).changed() {
-        if let Err(e) = app.run("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})) {
-            app.ui.status = e;
-            app.ui.status_error = true;
+    const PAGES: usize = 2;
+    // The page the menu is on, kept across frames while it stays open.
+    let page_id = ui.make_persistent_id("color_panel_menu_page");
+    let page = ui.data(|d| d.get_temp::<usize>(page_id)).unwrap_or(0);
+    if page == 0 {
+        // The display: Photoshop's ten faces, the reference layout (C2) first and the default. The
+        // mode is remembered in the preferences, so a pick survives a restart.
+        for mode in ColorPanelMode::ALL {
+            if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
+                app.ui.color_panel.mode = mode;
+                ui.close();
+            }
         }
+    } else {
+        // Wide enough for the mixing strength row's slider and field, as the reference menu is.
+        ui.set_min_width(220.0);
+        // 混合强度: the brush's pigment mixing, one value for every brush, beside the colour field
+        // as the reference application keeps it. The slider writes the `painting.pigmentMixStrength`
+        // preference and the engine copies it onto the brush, so it survives a restart with the rest
+        // of the preferences.
+        let mut strength = app.session.prefs().painting.pigment_mix_strength;
+        if widgets::slider_row(ui, tl!("Mixing Strength"), &mut strength, 0.0..=100.0, "%", None).changed() {
+            if let Err(e) = app.run("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+        }
+        ui.separator();
+        let rgb = active(app);
+        if ui.button(tl!("Copy Color as HTML")).clicked() {
+            ui.ctx().copy_text(html_color(rgb));
+            ui.close();
+        }
+        if ui.button(tl!("Copy Color's Hex Code")).clicked() {
+            ui.ctx().copy_text(hex_code(rgb));
+            ui.close();
+        }
+        ui.separator();
+        ramp_menu(app, ui);
     }
+    page_dots(ui, page_id, page, PAGES);
+}
+
+/// The page dots under a paged panel menu: one dot per page, the current one filled. A click
+/// turns the menu to that page.
+fn page_dots(ui: &mut egui::Ui, id: egui::Id, page: usize, pages: usize) {
+    let t = crate::theme::Tokens::get(ui.ctx());
     ui.separator();
-    let rgb = active(app);
-    if ui.button(tl!("Copy Color as HTML")).clicked() {
-        ui.ctx().copy_text(html_color(rgb));
-        ui.close();
-    }
-    if ui.button(tl!("Copy Color's Hex Code")).clicked() {
-        ui.ctx().copy_text(hex_code(rgb));
-        ui.close();
-    }
-    ui.separator();
-    ramp_menu(app, ui);
+    ui.horizontal(|ui| {
+        let dot = 9.0;
+        let gap = 6.0;
+        let total = pages as f32 * dot + (pages.saturating_sub(1)) as f32 * gap;
+        ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+        for i in 0..pages {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(dot, dot), egui::Sense::click());
+            let on = i == page;
+            ui.painter().circle_filled(rect.center(), dot / 2.0, if on { t.text } else { t.text_faint });
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &format!("{} {}", tl!("Page"), i + 1)));
+            if response.clicked() {
+                ui.data_mut(|d| d.insert_temp(id, i));
+                ui.ctx().request_repaint();
+            }
+            if i + 1 < pages {
+                ui.add_space(gap);
+            }
+        }
+    });
 }
 
 /// Remember the Color panel's options in the preferences when they change, so they survive a
@@ -807,13 +869,9 @@ pub fn persist(app: &mut PhotocraftApp) {
 }
 
 /// Restore the remembered Color panel options (at launch, or after a preference change made
-/// outside the panel); none stored (a reset) or unreadable ones are the defaults.
-///
-/// The reference layout is the panel's only face: whatever mode the preferences record — an
-/// older build's default, a hand-edited file, `ui.set colorPanel.mode` — the panel comes back
-/// as C2, so there is no way to fall back to the traditional layouts.
+/// outside the panel); none stored (a reset) or unreadable ones are the defaults. The display
+/// mode is whatever the panel menu last picked — C2 (the reference layout) until then.
 pub fn restore(app: &mut PhotocraftApp) {
-    let mut state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
-    state.mode = ColorPanelMode::C2;
+    let state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
     app.ui.color_panel = state;
 }

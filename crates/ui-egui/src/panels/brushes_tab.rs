@@ -974,7 +974,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             r
         });
         let mut s = b.size;
-        if widgets::value_field(ui, &mut s, 1.0..=MAX_BRUSH_SIZE, "px", 74.0).changed() {
+        if widgets::value_field_named(ui, tl!("Size"), &mut s, 1.0..=MAX_BRUSH_SIZE, "px", 74.0).changed() {
             b.size = s.round().clamp(1.0, MAX_BRUSH_SIZE);
         }
     });

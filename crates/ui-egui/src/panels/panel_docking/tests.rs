@@ -94,6 +94,25 @@ fn brushes_menu_action_uses_the_shared_docking_layout() {
 }
 
 #[test]
+fn tool_presets_menu_action_uses_the_shared_docking_layout() {
+    let mut app = app();
+    // Template D docks Tool Presets below Brushes; the test starts from it.
+    app.ui.workspace = crate::workspace_ui::DEFAULT.into();
+    crate::menus::apply_workspace(&mut app);
+    let before = app.ui.docking.clone();
+    assert!(crate::menus::invoke(&mut app, &egui::Context::default(), "window.panel.toolPresets", json!({})).is_ok());
+    let layout = app.ui.docking.as_ref().map(|w| &w.layout).expect("tool presets must be registered in docking");
+    assert!(layout.contains(&"toolPresets".to_string()));
+    assert!(app.ui.panels.tool_presets);
+    assert_ne!(app.ui.docking, before);
+
+    app.run("window.panel.float", json!({"panel":"toolPresets"})).unwrap();
+    assert!(lay(&app).floating.iter().any(|group| group.contains("toolPresets")));
+    app.run("window.panel.dock", json!({"panel":"toolPresets"})).unwrap();
+    assert!(!lay(&app).floating.iter().any(|group| group.contains("toolPresets")));
+}
+
+#[test]
 fn invalid_panel_requests_are_atomic_and_do_not_enter_a_custom_workspace() {
     let mut app = app();
     for (id, params) in [
@@ -330,6 +349,97 @@ fn capture_custom_panel_docking_visual_fixtures() {
                 harness.render().unwrap().save(directory.join(format!("photocraft-shared-docking-{}-{width}-{scale}x.png", theme.id()))).unwrap();
             }
         }
+    }
+}
+
+/// The Color tab's menu is the panel's own: the float, move, close and group rows are gestures
+/// (a tab drag, a drop, the Window menu), so they stay out of it (craft-ui's `tab_menu_tail`,
+/// `vendor/craft-ui/VENDOR.md`). Other tabs keep them.
+#[test]
+fn the_color_tabs_menu_is_the_panels_own_only() {
+    let mut app = app();
+    app.run("file.new", json!({})).unwrap();
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(1280.0, 800.0)).with_accessibility_check(false).build_ui_state(
+        move |ui, app: &mut PhotocraftApp| {
+            if !ready {
+                PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::Studio);
+                ready = true;
+                return;
+            }
+            crate::panels::dock_area(app, ui);
+        },
+        app,
+    );
+    h.run_steps(5);
+    let at = tab_rect(&h, "color").center();
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.step();
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    // The check-mark rows carry Photoshop's mark column: "✔ " when chosen, blanks when not.
+    let offers = |h: &Harness<'static, PhotocraftApp>, label: &str| {
+        ["✔ ", "   ", ""].iter().any(|mark| h.query_all_by_label(&format!("{mark}{label}")).count() > 0)
+    };
+    for label in ["Mixing Strength", "Copy Color as HTML", "Copy Color's Hex Code"] {
+        assert!(h.query_all_by_label(label).count() > 0, "the Color tab's menu offers {label}");
+    }
+    for label in ["RGB Spectrum", "CMYK Spectrum", "Grayscale Ramp", "Current Colors", "Make Ramp Web Safe"] {
+        assert!(offers(&h, label), "the Color tab's menu offers {label}");
+    }
+    for label in ["Float Panel", "Group with", "Close Panel", "Close Tab Group", "Float Tab Group", "Move Group To", "Minimize", "Collapse to Icons"] {
+        assert_eq!(h.query_all_by_label(label).count(), 0, "the Color tab's menu keeps {label} out");
+    }
+   }
+
+/// Explicit offscreen evidence for the C2 Color panel: the colour value over the hue strip, and
+/// the tab's menu carrying the panel's own rows only (no stock float/move/close/group tail).
+#[test]
+fn capture_c2_colour_value_and_panel_menu_fixtures() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some(directory) = std::env::var_os("CRAFT_UI_C2_FIXTURES").map(std::path::PathBuf::from) else { return };
+    std::fs::create_dir_all(&directory).unwrap();
+    for theme in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::ProMedium] {
+        let mut app = app();
+        app.run("file.new", json!({})).unwrap();
+        app.session.tools.foreground = [0.92, 0.55, 0.2, 1.0];
+        app.ui.color_panel.mode = crate::state::ColorPanelMode::C2;
+        app.run("window.panel.activate", json!({"panel": "color"})).unwrap();
+        let mut ready = false;
+        let mut h = Harness::builder()
+            .with_size(vec2(1280.0, 800.0))
+            .with_pixels_per_point(2.0)
+            .with_accessibility_check(false)
+            .wgpu()
+            .build_ui_state(
+                move |ui, app: &mut PhotocraftApp| {
+                    if !ready {
+                        PhotocraftApp::setup_context(ui.ctx(), theme);
+                        app.ui.theme = theme;
+                        ready = true;
+                        return;
+                    }
+                    crate::panels::dock_area(app, ui);
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        ui.label("Custom panel workspace");
+                    });
+                },
+                app,
+            );
+        h.input_mut().max_texture_side = Some(8192);
+        h.run_steps(5);
+        h.render().unwrap().save(directory.join(format!("photocraft-c2-color-value-{}.png", theme.id()))).unwrap();
+        // The Color tab's own menu: the panel's rows, then nothing from the dock's chrome.
+        let at = tab_rect(&h, "color").center();
+        h.hover_at(at);
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+        h.step();
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(20);
+        h.render().unwrap().save(directory.join(format!("photocraft-c2-tab-menu-{}.png", theme.id()))).unwrap();
     }
 }
 
@@ -716,7 +826,10 @@ fn customized_panel_menus_and_rail_remain_reachable_after_float_and_restore() {
         h.run_steps(1);
     }
     h.run_steps(2);
-    assert!(h.query_all_by_label("Close Tab Group").count() > 0);
+    // The Color group's menu is the host's alone: the stock tail (Float / Move to group /
+    // Close Tab Group) repeated the tab drag and the Window menu, so `tab_menu_tail` removes it
+    // for this group (craft-ui patch, `vendor/craft-ui/VENDOR.md`). Its own items stay.
+    assert_eq!(h.query_all_by_label("Close Tab Group").count(), 0);
     assert!(h.query_all_by_label("New Swatch…").count() > 0);
     // Panel-specific menu body is shared by both its context and group menu seams.
     let mut ready = false;
@@ -737,7 +850,7 @@ fn customized_panel_menus_and_rail_remain_reachable_after_float_and_restore() {
 /// A floated Color panel's menu still picks its mode (#6000): the shared docking renderer has
 /// its own panel menu, separate from the legacy dock's.
 #[test]
-fn floated_color_panel_menu_offers_no_mode_picker() {
+fn floated_color_panel_menu_offers_the_mode_picker() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"color","x":20,"y":40})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
@@ -749,9 +862,12 @@ fn floated_color_panel_menu_offers_no_mode_picker() {
         h.run_steps(1);
     }
     h.run_steps(2);
-    // The floating panel's menu carries no display picker: the reference layout is its only face.
-    assert!(h.query_all_by_label("   RGB Sliders").count() == 0);
-    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::C2);
+    // The floating panel's menu lists Photoshop's faces like the docked one, C2 checked first.
+    assert!(h.query_all_by_label("✔ C2 Color").count() > 0);
+    assert!(h.query_all_by_label("   RGB Sliders").count() > 0);
+    h.get_by_label("   RGB Sliders").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::RgbSliders);
 }
 
 #[test]

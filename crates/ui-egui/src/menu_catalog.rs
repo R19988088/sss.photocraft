@@ -762,6 +762,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Window", "Arrange"], "Match Location", None, "window.arrange.matchLocation"),
     (&["Window", "Arrange"], "Match Rotation", None, "window.arrange.matchRotation"),
     (&["Window", "Arrange"], "Match All", None, "window.arrange.matchAll"),
+    (&["Window", "Workspace"], "D", None, "window.workspace.d"),
     (&["Window", "Workspace"], "Essentials", None, "window.workspace.essentials"),
     (&["Window", "Workspace"], "Photography", None, "window.workspace.photography"),
     (&["Window", "Workspace"], "Painting", None, "window.workspace.painting"),

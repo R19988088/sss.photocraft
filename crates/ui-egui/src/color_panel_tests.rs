@@ -352,13 +352,13 @@ fn color_wheel_ring_sets_hue_and_triangle_sets_saturation_and_brightness() {
     assert!((hsv[0] - 90.0).abs() < 4.0 && hsv[1] < 0.9 && hsv[2] < 0.95, "{after:?} {hsv:?}");
 }
 
-/// The panel menu has no display picker — the reference layout is the panel's only face — and
-/// a theme change never touches the mode; the ramp and copy commands still work.
+/// The panel menu lists Photoshop's ten faces with the reference layout checked first; picking
+/// one switches the panel and a theme change keeps it; the ramp and copy commands still work.
 #[test]
-fn panel_menu_has_no_display_picker_and_picks_the_ramp() {
+fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = [0.2, 0.6, 0.8, 1.0];
-    let mut h = Harness::builder().with_size(vec2(260.0, 700.0)).build_ui_state(
+    let mut h = Harness::builder().with_size(vec2(260.0, 760.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 crate::color_panel_ui::panel_menu(app, ui);
@@ -368,11 +368,18 @@ fn panel_menu_has_no_display_picker_and_picks_the_ramp() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    // One face: no display picker, so no traditional mode can be chosen (or restored) here.
+    // Every face is offered, the reference layout (C2) checked.
     for mode in ColorPanelMode::ALL {
-        assert!(h.query_all_by_label(&mode.label()).count() == 0, "{mode:?} is not offered");
+        let label = format!("{}{}", if mode == ColorPanelMode::C2 { "✔ " } else { "   " }, mode.label());
+        assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
     }
     assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
+    h.get_by_label("   HSB Sliders").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::HsbSliders);
+    // The commands live on the menu's second page, reached from the dot under the first.
+    h.get_by_label("Page 2").click();
+    h.run_steps(2);
     h.get_by_label("   Current Colors").click();
     h.run_steps(2);
     assert_eq!(h.state().ui.color_panel.ramp, ColorRamp::CurrentColors);
@@ -384,11 +391,11 @@ fn panel_menu_has_no_display_picker_and_picks_the_ramp() {
     let copied: Vec<_> =
         h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(s) = c { Some(s.clone()) } else { None }).collect();
     assert_eq!(copied, ["3399cc"]);
-    // Switching theme keeps the mode: still the reference layout, no traditional fallback.
+    // Switching theme keeps the mode the author picked.
     let ctx = h.ctx.clone();
     h.state_mut().set_theme(&ctx, ThemeKind::Pro);
     h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::HsbSliders);
 }
 
 /// `ui.set colorPanel` merges, so setting the mode keeps the edited chip; bad values change nothing.
