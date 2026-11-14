@@ -15,7 +15,7 @@
 | 本仓库（自定义合并版） | https://github.com/R19988088/sss.photocraft |
 | 推送分支 | `custom-merged`（`main` 保持原样） |
 | 合并前的自研分支 | 原 `code/` 目录，分支 `liquify-on-023`，HEAD `d0deb14`，版本 0.23.6 |
-| 合并工作副本 | `photocraft-custom-0.24/` |
+| 合并工作副本 | 工作区 `E:\000 app\s.PhotoCraft\` 下的 `source/sss.photocraft/`（即本仓库工作树） |
 
 ### 当前基线
 
@@ -242,7 +242,7 @@ smoothing.enabled &= smoothing.pulled_string
 ## 6. 目录结构
 
 ```
-photocraft-custom-0.24/          ← 本仓库
+source/sss.photocraft/           ← 本仓库工作树（工作区 = E:\000 app\s.PhotoCraft\）
 ├── UPSTREAM.lock                跟随上游的锁文件
 ├── docs/custom/
 │   ├── README.md                快速索引
@@ -334,3 +334,6 @@ codesign --force --sign - --options runtime \
 ### 备份
 
 旧版 0.23.6 完整源码：`../backup/PhotoCraft-source-20261110-v0.23.6-final.zip`（22MB，不入库）
+
+2026-11-14 换版本时，被替换的上一版 0.23.6 WinTab 工作树整目录留档在工作区
+`backup/photocraft-winTab-source-20261114-1442/`（约 16.9 GB，含 `target/`，不入库）。
