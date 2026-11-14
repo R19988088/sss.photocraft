@@ -1170,6 +1170,7 @@
 	Cyan	青色
 	Cyan  ·  Red	青色  ·  紅色
 	Darken	變暗
+	Shade	陰影
 	Darks	暗部
 	Data Sets	資料組
 	Default	預設
@@ -1660,6 +1661,7 @@
 	Stop playing/recording	停止播放/錄製
 	Straighten	拉直
 	Straighten Layer	拉直圖層
+	Strength	強度
 	Strength:	強度：
 	Strikethrough	刪除線
 	Stroke	筆畫
@@ -2658,6 +2660,7 @@ fontWeight	Italic	斜體
 	Color Dodge (Paint.NET)	加亮顏色 (Paint.NET)
 	Stroke Options	筆畫選項
 	Solid	實線
+	Mixing Strength	混合強度
 	Dashed	虛線
 	Dotted	點線
 	Alignment	對齊
@@ -3284,3 +3287,260 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 # RAW Develop feature labels
 	RAW Develop	RAW 顯影
 	RAW Develop Filter	RAW 顯影濾鏡
+	Tilt Angle	傾斜角度
+	Tilt Size	傾斜大小
+	Tilt Opacity	傾斜不透明度
+	Follow Azimuth	隨方位旋轉
+	Wet Edge V4	濕邊 V4
+	Backdrop Opacity	背景不透明度
+	Scales the whole field toward zero	將整個場向零收縮
+	Freeze every pixel	凍結所有像素
+	Mask Options: Mask None	遮色片選項：無遮色片
+
+# Halftone (網點) adjustment layer
+	Halftone…	網點…
+	Screen:	網屏：
+	Dot	圓點
+	Screen Size	網屏大小
+	Screen Angle	網屏角度
+	Dot Gain	網點增益
+	Preserve White	保留白色
+	White Strength	白色強度
+	Black Strength	黑色強度
+
+# 2026-11-14：本目錄尚未譯出的訊息、面板標籤與選單項目，由英文原文轉寫，採本檔慣用
+# 術語（遮色片、選取範圍、筆刷、檔案、偏好設定…）；待母語審閱。
+	A command was canceled or stopped during batch processing. Continue with the next file or stop?	批處理過程中有命令被取消或中斷。繼續處理下一個檔案，還是停止？
+	A file is still being placed; try again when it has finished.	還有檔案正在置入，等它完成後再試。
+	Advanced Blending	高級混合
+	Allow Tool Recording	允許記錄工具
+	Allows rotation and scaling of selection	允許旋轉和縮放選取範圍
+	Always use Pressure for Opacity. When off, Brush Preset controls pressure	始終用壓感控制不透明度。關閉時由畫筆預設控制壓感
+	Always use Pressure for Size. When off, Brush Preset controls pressure	始終用壓感控制大小。關閉時由畫筆預設控制壓感
+	Anchor Delay	錨點延遲
+	Anchor X	錨點 X
+	Anchor Y	錨點 Y
+	Answer the open import question first, then import this file again.	請先回答尚未處理的導入問題，然後再次導入此檔案。
+	Anti-alias brush application	畫筆套用抗鋸齒
+	Apply to All	套用到全部
+	Are you sure you want to delete all notes?	確定要刪除所有注釋嗎？
+	Arrowhead options	箭頭選項
+	Arrowheads	箭頭
+	Artboards	畫板
+	Attribute	屬性
+	Batch	批處理
+	Batch preview	批處理預覽
+	Blend Attribute	混合屬性
+	Blur Strength	模糊強度
+	Bottom align text	底端對齊文字
+	CPU Rendering	CPU 渲染
+	Calculating…	正在計算…
+	Cancelled placing {name}	已取消置入 {name}
+	Choose Pattern	選擇圖樣
+	Choose a menu command. Playback asks for its settings when needed.	請選擇一個菜單命令。播放時會在需要時詢問它的設定。
+	Choose a remix mode	選擇重混模式
+	Click and move left or right to scale using the Zoom Tool (OpenGL only)	使用縮放工具時，按住並左右移動即可縮放（僅 OpenGL）
+	Click to open the Brush Preset picker	點擊打開畫筆預設選取器
+	Click to refresh histogram with uncached data	點擊用未緩存的數據刷新直方圖
+	Color Attribute	顏色屬性
+	Complementary Color	互補色
+	Concavity	凹陷度
+	Confirm or cancel the pending Record Again editor first.	請先確認或取消待處理的「重新記錄」編輯器。
+	Confirm or cancel the pending menu item first.	請先確認或取消待處理的菜單項。
+	Coordinates:	坐標：
+	Copy CSS	複製 CSS
+	Could not use the type tool because the layer is locked.	無法使用文字工具，因爲圖層已鎖定。
+	Count:	計數：
+	Create new set	新建集
+	Darkening	變暗
+	Data Sets as Files is unavailable on the web	網頁版不提供「數據組爲檔案」
+	Delete Note	刪除注釋
+	Delete this note?	刪除此注釋？
+	Determines the spread of replaced color	決定替換顏色的擴散範圍
+	Do not erase the foreground swatch color	不要擦掉前景色板的顏色
+	Drag panels	拖動面板
+	Drawn on the CPU: {reason}. Click for System Info.	由 CPU 繪製：{reason}。點擊查看系統資訊。
+	Draws background color over foreground colors	用背景色覆蓋前景色
+	Dropped files weren't placed: their document was closed.	拖入的檔案沒有置入：它們的檔案已關閉。
+	Dropped files weren't placed: too many are waiting for their document.	拖入的檔案沒有置入：等待同一檔案的檔案太多。
+	Duplicate	複製
+	Edge Control	邊緣控制
+	Effect	效果
+	Empty	空白
+	Enable to remix all layers	啓用後重混所有圖層
+	End	終點
+	Erase range of similar colors	擦除相近顏色的範圍
+	Expansion	擴展
+	Filter for embedded smart objects	篩選嵌入的智慧型物件
+	Filter for linked smart objects that are missing	篩選缺失的鏈接智慧型物件
+	Filter for smart objects linked locally	篩選本機鏈接的智慧型物件
+	Fixed Width	固定寬度
+	Flow Algorithm:	流量算法：
+	Grain Density	顆粒密度
+	Grain Size	顆粒大小
+	Halftone	網點
+	High Memory Photoshop Document	高內存 Photoshop 檔案
+	Highlight Brightness	高光亮度
+	Highlight Ratio	高光比例
+	Highlight Strength	高光強度
+	How far to let the erasing spread	擦除可以擴散多遠
+	Image Compression	圖像壓縮
+	Image Palette Color	圖像調色板顏色
+	Import a C3 preset with a packaged canvas pattern.	導入帶打包畫布圖樣的 C3 預設。
+	Import as New Group	作爲新組導入
+	Import as New Group keeps “{group}” and adds the file as a new group beside it.	「作爲新組導入」會保留「{group}」，並把檔案作爲新組加在它旁邊。
+	Inertia	慣性
+	Insert Menu Item…	插入菜單項…
+	Insert Path	插入路徑
+	Jitter	抖動
+	LZW	LZW
+	Layer Effects	圖層效果
+	Length	長度
+	Level:	色階：
+	Lining	等高
+	Linked	已鏈接
+	Little memory would be left after opening this file. Close other apps first, or PhotoCraft may run out of memory.	打開此檔案後可用內存將所剩無幾。請先關閉其他套用，否則 PhotoCraft 可能會內存不足。
+	Locked	已鎖定
+	Minimizes clipping in shadows and highlights, and keeps colors from shifting hue	儘量減少陰影和高光的截斷，並避免顏色發生色相偏移
+	No Adv. Blending	無高級混合
+	No Layer Effects	無圖層效果
+	No Layer Mask	無圖層遮色片
+	No Vector Mask	無向量遮色片
+	No document.	沒有檔案。
+	No import is waiting. Import the file again.	沒有等待中的導入。請重新導入該檔案。
+	No matching fonts	沒有匹配的字體
+	No menu item belongs to this chooser.	沒有菜單項屬於此選擇器。
+	No menu item is waiting.	沒有等待中的菜單項。
+	No note to delete	沒有可刪除的注釋
+	No path to make a shape from: draw one with the Pen tool or select one in the Paths panel.	沒有可用來創建形狀的路徑：請用鋼筆工具繪製一條，或在「路徑」面板中選擇一條。
+	No pixels are selected.	沒有選取像素。
+	No recorded step belongs to this editor.	沒有記錄步驟屬於此編輯器。
+	No slices are selected. Click a slice in the preview to select it.	沒有選取切片。請在預覽中單擊切片來選取它。
+	No step is waiting.	沒有等待中的步驟。
+	Not Clipped	未剪裁
+	Not Empty	非空白
+	Not Linked	未鏈接
+	Not Locked	未鎖定
+	Not Visible	不可見
+	Note deleted, but the preference could not be saved: {error}	注釋已刪除，但偏好設定無法保存：{error}
+	Nudge	微移
+	Numerals	數字形式
+	Open anyway	仍然打開
+	Open as Smart Object…	作爲智慧型物件打開…
+	Opening this document uses more memory and may slow down your computer or other running applications.	打開此檔案會佔用更多內存，可能使電腦或其他運行中的套用變慢。
+	Opening “{name}” requires an estimated {est} GiB of memory ({avail} GiB available).	打開「{name}」估計需要 {est} GiB 內存（可用 {avail} GiB）。
+	Opening “{name}” requires an estimated {est} GiB of memory. The available memory could not be measured.	打開「{name}」估計需要 {est} GiB 內存。無法測出可用內存。
+	Outline	輪廓
+	Painting Mode	繪畫模式
+	Pattern:	圖樣：
+	Percentile:	百分位：
+	Pick Color From Image	從圖像中取色
+	Preparing Free Transform	正在準備自由變換
+	Pressure Controls Anchor Delay	壓感控制錨點延遲
+	Pressure calibration	壓力校準
+	Primary Brush	主畫筆
+	Proportional	比例
+	Proportional Lining	比例等高
+	Proportional Oldstyle	比例舊體
+	Record Again	重新記錄
+	Replace deletes everything in “{group}” first, including presets you edited or moved there. This can't be undone.	「替換」會先刪除「{group}」中的所有內容，包括您編輯過或移過去的預設。此操作無法復原。
+	Resize windows when zooming using the Zoom Tool	使用縮放工具縮放時調整窗口大小
+	Retained peak	保留峯值
+	Saturation Boost	飽和度增強
+	Save Image Pyramid	存儲圖像金字塔
+	Save Transparency	存儲透明度
+	Scroll all open document windows when using the hand tool	使用抓手工具時滾動所有打開的檔案窗口
+	Search and select fonts	搜尋並選擇字體
+	Secondary Brush	副畫筆
+	Select Pixels	選擇像素
+	Select an action first.	請先選擇一個動作。
+	Select an action step first.	請先選擇一個動作步驟。
+	Selected Slices	選取的切片
+	Set 	樣式集 
+	Set 1	樣式集 1
+	Set 10	樣式集 10
+	Set 11	樣式集 11
+	Set 12	樣式集 12
+	Set 13	樣式集 13
+	Set 14	樣式集 14
+	Set 15	樣式集 15
+	Set 16	樣式集 16
+	Set 17	樣式集 17
+	Set 18	樣式集 18
+	Set 19	樣式集 19
+	Set 2	樣式集 2
+	Set 20	樣式集 20
+	Set 3	樣式集 3
+	Set 4	樣式集 4
+	Set 5	樣式集 5
+	Set 6	樣式集 6
+	Set 7	樣式集 7
+	Set 8	樣式集 8
+	Set 9	樣式集 9
+	Set as default	設爲預設
+	Set exposure for stroke	設定筆觸的曝光
+	Set flow rate for stroke	設定筆觸的流量
+	Set font size	設定字體大小
+	Set font style	設定字體樣式
+	Set opacity for stroke	設定筆觸的不透明度
+	Set symmetry options for Painting	設定繪畫的對稱選項
+	Set text color	設定文字顏色
+	Set the brush angle	設定畫筆角度
+	Show Channels in Color	以彩色顯示通道
+	Show Statistics	顯示統計數據
+	Single Tip	單一筆尖
+	Smoothing Options	平滑選項
+	Soft Coverage	柔邊覆蓋
+	Softness	柔和度
+	Source:	源：
+	Start	起點
+	Stroke Jitter	筆觸抖動
+	Stylistic Sets	樣式集
+	Tablet input mode	數位板輸入模式
+	Tablet…	數位板…
+	Tabular	表格
+	Tabular Lining	表格等高
+	Tabular Oldstyle	表格舊體
+	The Record Again command changed.	「重新記錄」命令已變更。
+	The action or insertion command changed. Request Insert Menu Item again.	動作或插入命令已變更。請再次請求「插入菜單項」。
+	The actions changed. Request Record Again again.	動作已變更。請再次請求「重新記錄」。
+	The command permissions changed. Request Insert Menu Item again.	命令權限已變更。請再次請求「插入菜單項」。
+	The command permissions changed. Request Record Again again.	命令權限已變更。請再次請求「重新記錄」。
+	The current scratch directory ({path}) doesn't report its free space, so PhotoCraft can't stop before it fills up, and large files get no extra room from it without a Scratch Size Limit. This warning applies to the current configuration; changes above take effect on Apply or OK. Set a limit or use a local disk.	目前暫存磁碟目錄（{path}）不回報可用空間，因此 PhotoCraft 無法在它寫滿前停下來；沒有設定暫存磁碟大小限制時，大檔案也無法從它那裡獲得額外空間。此警告針對目前設定，上面的變更在點「套用」或「確定」後生效。請設定一個限制，或改用本機磁碟。
+	The document changed. Please choose Clear All again.	檔案已變更。請重新選擇「全部清除」。
+	The document changed. Request Record Again again.	檔案已變更。請再次請求「重新記錄」。
+	The document or its notes changed. Please delete the note again.	檔案或其注釋已變更。請重新刪除該注釋。
+	The preference could not be saved: {error}	偏好設定無法保存：{error}
+	The step editor could not be opened.	無法打開步驟編輯器。
+	The step has no command editor.	該步驟沒有命令編輯器。
+	Tilt Delay	傾斜延遲
+	Tolerance for choosing related colors	選擇相關顏色的容差
+	Top align text	頂端對齊文字
+	Uncached Refresh	未緩存刷新
+	Unknown	未知
+	Use Sampled Pattern	使用採樣圖樣
+	Use relative positioning for reference point	對參考點使用相對定位
+	Use the eyedropper on the canvas to sample a pattern.	在畫布上用吸管採樣圖樣。
+	Use these settings for new arrows	新箭頭使用這些設定
+	Useful mixer brush combinations	實用的混合畫筆組合
+	Watercolor	水彩
+	Watercolor 2	水彩 2
+	Wet Edge Mode	溼邊模式
+	Whole Stroke	整條筆觸
+	Width Mode	寬度模式
+	WinTab	WinTab
+	Windows Ink	Windows Ink
+	ZIP	ZIP
+	Zoom current window to 1:1	將目前窗口縮放到 1:1
+	Zoom current window to fill the screen	將目前窗口縮放到填滿屏幕
+	Zoom current window to screen size	將目前窗口縮放到屏幕大小
+	brush tool	畫筆工具
+	{message} into “{group}”	{message}到「{group}」中
+	{ok} written to {dir}	{ok} 已寫入 {dir}
+@plural	The brush group “{group}” already has {n} brush of yours.|The brush group “{group}” already has {n} brushes of yours.	畫筆組「{group}」中已有您的 {n} 支畫筆。
+@plural	The gradient group “{group}” already exists ({n} gradient).|The gradient group “{group}” already exists ({n} gradients).	漸層組「{group}」已存在（{n} 個漸層）。
+@plural	{what}: {n} Image Assets output failed|{what}: {n} Image Assets outputs failed	{what}：{n} 個圖像資源輸出失敗
+@plural	{what}: {n} file failed|{what}: {n} files failed	{what}：{n} 個檔案失敗
+	Liquify closed: the document changed. Open Liquify again to start over.	液化已關閉：檔案已變更。請重新打開液化再操作。
+	Preferences can't be saved	偏好設定無法保存
+	The recovered document is no longer open	恢復的檔案已不再打開

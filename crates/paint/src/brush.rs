@@ -199,6 +199,15 @@ pub struct ShapeDynamics {
     /// squashes the tip's height (before the tip angle is applied). At full tilt the height is
     /// scaled by `1 − tiltScale / 2`, so 0 leaves the tip alone and 200 % flattens it.
     pub tilt_scale: f32,
+    /// The tilt dial (0..1 of a quarter turn): where tilt controls start to act (ProCraft's
+    /// Tilt Angle; see [`crate::dynamics::tilt_reach`]). 0 starts at 34° from upright.
+    pub tilt_angle: f32,
+    /// What leaning adds to the stamp's diameter at the most lean, as a share of it (0..2).
+    pub tilt_size: f32,
+    /// How much the stamp fades as the pen leans (0..1), by the square root of how far it has gone.
+    pub tilt_opacity: f32,
+    /// Turn the stamp with the direction the pen leans (ProCraft's Follow Azimuth).
+    pub follow_azimuth: bool,
     /// Angle jitter (fraction of ±180°) / control.
     pub angle: Dynamic,
     /// Roundness jitter / control; `minimum` is Minimum Roundness.
@@ -246,20 +255,24 @@ impl Default for Scattering {
     }
 }
 
-/// How a grayscale mask (texture or dual tip) combines with the brush coverage.
+/// How a grayscale mask (texture or dual tip) combines with the brush coverage, and how a dual
+/// brush's second lane blends into the first: the mode list ProCraft's brush studio offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MaskMode {
     Normal,
     #[default]
     Multiply,
-    Subtract,
     Darken,
-    Overlay,
-    ColorDodge,
     ColorBurn,
     LinearBurn,
+    Lighten,
+    ColorDodge,
+    Overlay,
     HardMix,
+    Difference,
+    Subtract,
+    Divide,
     LinearHeight,
     Height,
 }
@@ -829,7 +842,10 @@ impl Default for BrushSettings {
             flip_y: false,
             aliased: false,
             triangle: false,
-            c3_tip_math: false,
+            // C3 has one tip maths (SimpleShaders.metal carries no switch), so a new brush —
+            // and one saved before the flag existed — renders like the reference. Brushes that
+            // carry the flag off keep the fork's legacy tips.
+            c3_tip_math: true,
             square: false,
             shape_dynamics: ShapeDynamics::default(),
             scattering: Scattering::default(),
@@ -901,10 +917,12 @@ impl BrushSettings {
         brush.saturation_preserve_output = 0.0;
         brush.flip_x = false;
         brush.flip_y = false;
+        // Tilt Scale and Brush Projection are this fork's own legacy options, with no counterpart
+        // in ProCraft: the render copy pins them off so older presets cannot change a stroke.
         brush.shape_dynamics.brush_projection = false;
         brush.contour = None;
-        brush.noise = brush.grain.is_some();
         brush.shape_dynamics.tilt_scale = 0.0;
+        brush.noise = brush.grain.is_some();
         brush.build_up = false;
         // Pulled string is an explicit Motion control; legacy exponential settings stay inert.
         brush.smoothing.enabled &= brush.smoothing.pulled_string;

@@ -187,6 +187,14 @@ pub fn tool_icon(t: Tool) -> &'static str {
     }
 }
 
+/// The idle outline of a square icon button: the theme's own border colour at 20 % opacity, so a
+/// button that is only a glyph still reads as clickable before the pointer reaches it. Derived from
+/// the theme's border rather than a fixed colour, so every theme gets its own tint.
+pub fn idle_stroke(t: &Tokens) -> egui::Stroke {
+    let c = t.card_border;
+    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 51))
+}
+
 /// Selected and hover fill shared by square icon buttons. Returns the icon tint.
 pub fn button_chrome(ui: &egui::Ui, rect: Rect, selected: bool, hovered: bool) -> Color32 {
     let t = Tokens::get(ui.ctx());
@@ -195,6 +203,8 @@ pub fn button_chrome(ui: &egui::Ui, rect: Rect, selected: bool, hovered: bool) -
         ui.painter().rect_stroke(rect, t.radius_sm, egui::Stroke::new(1.0, t.accent_border), egui::StrokeKind::Inside);
     } else if hovered {
         ui.painter().rect_filled(rect, t.radius_sm, t.hover);
+    } else {
+        ui.painter().rect_stroke(rect, t.radius_sm, idle_stroke(&t), egui::StrokeKind::Inside);
     }
     if selected {
         t.accent_text
@@ -220,7 +230,7 @@ pub fn button_with_icon_size(ui: &mut egui::Ui, name: &str, box_size: f32, icon_
 pub fn button_with_icon_size_tip(ui: &mut egui::Ui, name: &str, box_size: f32, icon_size: f32, selected: bool, tooltip: &str, show_tip: bool) -> Response {
     let t = Tokens::get(ui.ctx());
     let style = IconButtonStyle {
-        normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: egui::Stroke::NONE, icon: t.icon },
+        normal: ButtonVisuals { fill: Color32::TRANSPARENT, stroke: idle_stroke(&t), icon: t.icon },
         hovered: ButtonVisuals { fill: t.hover, stroke: egui::Stroke::NONE, icon: t.text },
         pressed: None,
         selected: ButtonVisuals { fill: t.accent_soft, stroke: egui::Stroke::new(1.0, t.accent_border), icon: t.accent_text },

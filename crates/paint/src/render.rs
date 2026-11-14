@@ -129,6 +129,17 @@ fn wet_factor(rn: f32) -> f32 {
     0.5 + 0.5 * smoothstep(0.5, 1.0, rn)
 }
 
+/// Colour Divide on coverages: `p / s`, clipped. A black secondary (s = 0) divides by nothing and
+/// gives full coverage, as ProCraft's divide does.
+#[inline]
+fn divide(p: f32, s: f32) -> f32 {
+    if s <= 0.0 {
+        1.0
+    } else {
+        (p / s).min(1.0)
+    }
+}
+
 /// Combine brush coverage `v` with a mask value `t` (texture/dual tip) at `depth`.
 /// Every mode maps `v = 0` to 0 (a mask never adds paint where the brush has none).
 pub fn mask_combine(mode: MaskMode, v: f32, t: f32, d: f32) -> f32 {
@@ -140,6 +151,9 @@ pub fn mask_combine(mode: MaskMode, v: f32, t: f32, d: f32) -> f32 {
         MaskMode::Normal => v + d * t - v * d * t,
         MaskMode::Multiply => v * (1.0 - d + d * t),
         MaskMode::Subtract => (v - d * (1.0 - t)).max(0.0),
+        MaskMode::Lighten => lerp(v, v.max(t)),
+        MaskMode::Difference => lerp(v, (v - t).abs()),
+        MaskMode::Divide => lerp(v, divide(v, t)),
         MaskMode::Darken => v.min(1.0 - d + d * t),
         MaskMode::Overlay => {
             let o = if v < 0.5 { 2.0 * v * t } else { 1.0 - 2.0 * (1.0 - v) * (1.0 - t) };
@@ -165,7 +179,7 @@ pub fn mask_combine(mode: MaskMode, v: f32, t: f32, d: f32) -> f32 {
 pub fn dual_blend(mode: MaskMode, p: f32, s: f32) -> f32 {
     let p = p.clamp(0.0, 1.0);
     let s = s.clamp(0.0, 1.0);
-    let lifts = matches!(mode, MaskMode::Normal | MaskMode::Darken | MaskMode::Overlay | MaskMode::LinearBurn | MaskMode::HardMix);
+    let lifts = matches!(mode, MaskMode::Normal | MaskMode::Lighten | MaskMode::Darken | MaskMode::Overlay | MaskMode::LinearBurn | MaskMode::HardMix);
     if p <= 0.001 {
         return if lifts { s } else { 0.0 };
     }
@@ -173,6 +187,9 @@ pub fn dual_blend(mode: MaskMode, p: f32, s: f32) -> f32 {
         MaskMode::Normal => p + s - p * s,
         MaskMode::Multiply => p * s,
         MaskMode::Darken => p.min(s),
+        MaskMode::Lighten => p.max(s),
+        MaskMode::Difference => (p - s).abs(),
+        MaskMode::Divide => divide(p, s),
         MaskMode::Overlay => {
             if p < 0.5 {
                 2.0 * p * s
@@ -203,7 +220,8 @@ pub fn dual_blend(mode: MaskMode, p: f32, s: f32) -> f32 {
             }
         }
         MaskMode::LinearHeight => p * (0.5 + 0.5 * s),
-        MaskMode::Subtract | MaskMode::Height => mask_combine(mode, p, s, 1.0),
+        MaskMode::Subtract => (p - s).max(0.0),
+        MaskMode::Height => mask_combine(mode, p, s, 1.0),
     };
     if lifts { alpha } else { alpha.min(p) }
 }
@@ -2291,7 +2309,8 @@ fn c3_tip_falloff(distance: f32, radius: f32, hardness: f32, subpixel: bool) -> 
     let h = hardness.clamp(0.0, 0.999);
     let t = ((distance / radius.max(0.0005) - h) / (1.0 - h)).clamp(0.0, 1.0);
     let tail = (-2.5f32).exp();
-    ((-2.5 * t * t).exp() - tail) / (1.0 - tail)
+    // metal 940: `max(0.0, (exp(-k t²) - exp(-k)) / (1 - exp(-k)))`.
+    (((-2.5 * t * t).exp() - tail) / (1.0 - tail)).max(0.0)
 }
 
 /// Tip coverage at a pixel, shared by the fast path and the reference oracle so the two cannot
@@ -2305,7 +2324,7 @@ pub(crate) fn tip_coverage(c3: bool, aliased: bool, dd: f32, rm: f32, ro: f32, r
     if c3 { c3_tip_falloff(dd / ro, r, hardness, false) } else { dab_coverage(dd, rm, hardness) }
 }
 
-fn c3_sampled_mask(m: &Mips, u: f32, v: f32, hardness: f32) -> f32 {
+pub(crate) fn c3_sampled_mask(m: &Mips, u: f32, v: f32, hardness: f32) -> f32 {
     if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
         return 0.0;
     }
@@ -2332,8 +2351,9 @@ fn c3_sampled_mask(m: &Mips, u: f32, v: f32, hardness: f32) -> f32 {
 }
 
 fn triangle_mask(u: f32, v: f32, radius: f32, roundness: f32, hardness: f32, subpixel: bool) -> f32 {
-    let qx = u / radius.max(0.1);
-    let qy = -v / (radius * roundness).max(0.1);
+    // metal 1016: `q = local / max(halfExtent, float2(0.0001))`; Rust `v` is y-up, hence the `-v`.
+    let qx = u / radius.max(0.0001);
+    let qy = -v / (radius * roundness).max(0.0001);
     let edge = ((qy + 1.0 - 2.0 * qx) / 5.0f32.sqrt()).min(1.0 - qy).min((qy + 2.0 * qx + 1.0) / 5.0f32.sqrt());
     if edge <= 0.0 {
         return 0.0;
@@ -2568,6 +2588,27 @@ mod material_regression {
     }
 
     #[test]
+    fn wet_v4_pools_the_coverage_like_the_studio() {
+        // ProCraft's wet edge: a = a·(1−s) + s·(1 − |sin(4.5a)/(4.5a)|). At full strength paint
+        // laid at 1.0 settles to about 0.78 (pooling), and where it thins out at about 0.7 it comes
+        // back to full — the rim.
+        let pooled = |a: f32| {
+            let x = 4.5 * a.max(1e-4);
+            1.0 - (x.sin() / x).abs()
+        };
+        let settings = WetEdgeSettings { style: WetStyle::V4, strength: 2.0, ..Default::default() };
+        let wet = settings.resolve(1.0, 40.0);
+        let full = settings.alpha(1.0, 1.0, wet);
+        assert!((full - pooled(1.0)).abs() < 1e-3, "{full}");
+        assert!((full - 0.783).abs() < 0.002, "pooled to {full}");
+        let rim = settings.alpha(0.7, 1.0, wet);
+        assert!(rim > 0.99, "the rim comes back to full: {rim}");
+        // Strength 0 leaves coverage alone.
+        let off = WetEdgeSettings { strength: 0.0, ..settings.clone() };
+        assert!((off.alpha(0.7, 1.0, off.resolve(0.0, 40.0)) - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
     fn dual_brush_opacity_controls_mask_strength() {
         // Secondary Strength scales the dual coverage, Opacity the mask strength: both must be
         // set for the secondary tip to contribute at all.
@@ -2579,7 +2620,7 @@ mod material_regression {
 
     #[test]
     fn material_single_filters_each_dab_before_accumulating_color() {
-        for style in [WetStyle::Photoshop, WetStyle::Watercolor, WetStyle::Watercolor2] {
+        for style in [WetStyle::Photoshop, WetStyle::Watercolor, WetStyle::Watercolor2, WetStyle::V4] {
             let settings = WetEdgeSettings { style, outline: WetOutline::Single, color_mode: WetColorMode::Hsl, ..Default::default() };
             let brush = BrushSettings { hardness: 0.2, wet_edges: true, wet_edge: Some(settings.clone()), ..Default::default() };
             let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::F32, true);

@@ -454,6 +454,13 @@ impl LiquifyField {
         self.walk_segment_live(s, a, b, ms, true)
     }
 
+    /// Ends the stroke held in the field: takes back its provisional closing dab, so the field
+    /// holds exactly the dabs the recorded points repeat. Returns the rectangle that changed.
+    pub fn finish_stroke(&mut self) -> Rect {
+        self.cursor = None;
+        self.undo_tail()
+    }
+
     /// Takes back the provisional closing dab of the last live segment, if any. Returns the
     /// document rectangle that changed.
     fn undo_tail(&mut self) -> Rect {

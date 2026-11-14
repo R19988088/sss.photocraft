@@ -207,8 +207,9 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let brush = app.ui.tool == Tool::Brush;
             let tip = |r: egui::Response, text: &str| if brush { r.on_hover_text(text) } else { r };
             ui.add_enabled_ui(!block, |ui| {
-                brush_preset_chip(ui, b, &mut app.ui);
-                crate::brush_picker::settings_toggle(app, ui);
+                // The bar carries the size itself; the brush picker lives in the panel (F5).
+                opt_label(ui, tl!("Size"));
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
             });
             widgets::vline(ui, 22.0);
             // The Eraser has no blend mode: its Mode is Brush, Pencil or Block (#2662).
@@ -248,23 +249,16 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
                     b.build_up = !b.build_up;
                 }
             });
-            opt_label(ui, tl!("Smoothing"));
-            if brush {
-                tip(smoothing_field(ui, b, 58.0), tl!("Set smoothing for stroke\nUse higher values to reduce the shakiness of brush strokes"));
-            } else if super::brush_controls::smoothing_field_alerting(ui, b, 58.0).1 {
-                range_alert(&mut app.ui, ZERO_TO_100);
-            }
-            smoothing_options(ui, b, brush);
             widgets::vline(ui, 22.0);
             let pressure = pressure_button(ui, b.pressure_size, tl!("Always use pressure for size"), brush);
             if tip(pressure, tl!("Always use Pressure for Size. When off, Brush Preset controls pressure")).clicked() {
                 b.pressure_size = !b.pressure_size;
             }
+            // The panel's toggle sits at the bar's tail.
+            crate::brush_picker::settings_toggle(app, ui);
         }
         // Pencil: Photoshop's options (no hardness or flow: the pencil is always hard).
         Tool::Pencil => {
-            brush_preset_chip(ui, b, &mut app.ui);
-            crate::brush_picker::settings_toggle(app, ui);
             widgets::vline(ui, 22.0);
             if !t.pro {
                 opt_label(ui, tl!("Size"));
@@ -275,15 +269,12 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let held = app.held_erase;
             paint_mode_dropdown(ui, "pencil-mode", b, &mut app.ui.tool_options.pencil_clear, held);
             whole_percent_field(ui, tl!("Opacity"), &mut b.opacity, 1.0..=100.0, if t.pro { 62.0 } else { 66.0 });
-            opt_label(ui, tl!("Smoothing"));
-            smoothing_field(ui, b, if t.pro { 58.0 } else { 66.0 });
             widgets::vline(ui, 22.0);
             widgets::checkbox(ui, &mut app.ui.tool_options.pencil_auto_erase, tl!("Auto Erase"))
                 .on_hover_text(tl!("Draws background color over foreground colors"));
+            crate::brush_picker::settings_toggle(app, ui);
         }
         Tool::Brush | Tool::Eraser => {
-            brush_preset_chip(ui, b, &mut app.ui);
-            crate::brush_picker::settings_toggle(app, ui);
             widgets::vline(ui, 22.0);
             // A Block-mode Eraser has a fixed size, opacity and flow (Photoshop, #2770).
             let block = crate::eraser_ui::block_mode(app, app.ui.tool);
@@ -312,8 +303,6 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             tip(opacity, tl!("Set opacity for stroke"));
             let flow = ui.add_enabled_ui(!fixed, |ui| percent_field(ui, tl!("Flow"), &mut b.flow, 1.0..=100.0, 66.0)).inner;
             tip(flow, tl!("Set flow rate for stroke"));
-            opt_label(ui, tl!("Smoothing"));
-            tip(smoothing_field(ui, b, 66.0), tl!("Set smoothing for stroke\nUse higher values to reduce the shakiness of brush strokes"));
             widgets::vline(ui, 22.0);
             tip(
                 widgets::toggle(ui, &mut b.pressure_size, tl!("Pressure for Size")),
@@ -323,6 +312,8 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
                 widgets::toggle(ui, &mut b.pressure_opacity, tl!("Pressure for Opacity")),
                 tl!("Always use Pressure for Opacity. When off, Brush Preset controls pressure"),
             );
+            // The panel's toggle sits at the bar's tail.
+            crate::brush_picker::settings_toggle(app, ui);
         }
         Tool::MixerBrush => {
             brush_preset_chip(ui, b, &mut app.ui);
@@ -536,7 +527,7 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
             if classic {
                 widgets::vline(ui, 22.0);
                 opt_label(ui, tl!("Mode"));
-                let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
+                let opts: Vec<(BlendMode, &str)> = BlendMode::MENU_MODES.iter().map(|m| (*m, m.label())).collect();
                 // The wheel over it steps the mode, as over the Layers panel's (#2061).
                 widgets::dropdown_wheel_grouped(ui, "gradient-blend-mode", tl!("Blend Mode"), &mut app.ui.tool_options.gradient_blend_mode, &opts, 96.0, |m| {
                     starts_blend_group(*m)

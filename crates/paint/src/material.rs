@@ -26,7 +26,7 @@ macro_rules! choices {
         pub enum $name { #[default] $default, $($variant),* }
     };
 }
-choices!(WetStyle, Photoshop, Watercolor, Watercolor2);
+choices!(WetStyle, Photoshop, Watercolor, Watercolor2, V4);
 choices!(WetWidthMode, Ratio, Fixed);
 choices!(WetOutline, Stroke, Single);
 choices!(WetEdgeControl, Expansion, SoftCoverage);
@@ -98,7 +98,7 @@ fn continuous(v: f32) -> f32 {
 
 impl WetEdgeSettings {
     pub fn resolve(&self, control: f32, diameter: f32) -> ResolvedWet {
-        let watercolor = self.style != WetStyle::Photoshop;
+        let watercolor = matches!(self.style, WetStyle::Watercolor | WetStyle::Watercolor2);
         let strength = self.minimum_strength.min(self.strength).max(0.0);
         let raw_width = match self.width_mode {
             WetWidthMode::Ratio => self.width.clamp(0.0, 5.0),
@@ -115,19 +115,20 @@ impl WetEdgeSettings {
         }
     }
     fn width01(&self, w: f32) -> f32 {
-        if self.style == WetStyle::Photoshop { unit(w) } else { continuous(w.clamp(0.0, 5.0)) }
+        if matches!(self.style, WetStyle::Photoshop | WetStyle::V4) { unit(w) } else { continuous(w.clamp(0.0, 5.0)) }
     }
     fn strength01(&self, s: f32) -> f32 {
-        let s = s.clamp(0.0, if self.style == WetStyle::Photoshop { 2.0 } else { 2.8 });
+        let s = s.clamp(0.0, if matches!(self.style, WetStyle::Photoshop | WetStyle::V4) { 2.0 } else { 2.8 });
         let e = s * (0.6 + 0.4 * smooth(0.3, 0.7, s));
-        if self.style == WetStyle::Photoshop { unit(e) } else { continuous(e) }
+        if matches!(self.style, WetStyle::Photoshop | WetStyle::V4) { unit(e) } else { continuous(e) }
     }
     pub fn color_mask(&self, a: f32, w: f32) -> f32 {
         let t = self.width01(w);
         match self.style {
             WetStyle::Watercolor => smooth(0.008, mix(0.04, 0.12, t), a) * (1.0 - smooth(mix(0.45, 0.72, t), mix(0.78, 0.96, t), a)),
             WetStyle::Photoshop => smooth(0.01, mix(0.06, 0.14, t), a) * (1.0 - smooth(mix(0.32, 0.58, t), mix(0.66, 0.90, t), a)),
-            WetStyle::Watercolor2 => 1.0,
+            // V4 has no width mask: its pooling makes the rim from the coverage itself.
+            WetStyle::Watercolor2 | WetStyle::V4 => 1.0,
         }
     }
     pub fn dab_edge(&self, a: f32, rn: f32, wet: ResolvedWet) -> f32 {
@@ -135,6 +136,8 @@ impl WetEdgeSettings {
             smooth((1.0 - wet.stamp_width).max(0.0), 1.0, rn)
         } else if self.style == WetStyle::Watercolor2 {
             smooth(1.0 - mix(0.10, 0.32, self.width01(wet.stamp_width)), 1.0, rn)
+        } else if self.style == WetStyle::V4 {
+            1.0
         } else {
             self.color_mask(a, wet.stamp_width)
         }
@@ -143,16 +146,29 @@ impl WetEdgeSettings {
         if a <= 0.0 || wet.strength <= 0.0001 {
             return a;
         }
+        // ProCraft's wet edge (this fork's V4): paint pools, settling back to about 0.78 where it is
+        // full, rising back to full where it thins out and shows about 0.7 — a rim. The pooling is
+        // `1 − |sin(4.5a)/(4.5a)|` over the coverage, mixed in by the strength.
+        if self.style == WetStyle::V4 {
+            let s = unit(self.strength01(wet.strength));
+            if s <= 0.0 {
+                return unit(a);
+            }
+            let x = 4.5 * a.max(1e-4);
+            let pooled = 1.0 - (x.sin() / x).abs();
+            return unit(a * (1.0 - s) + s * (a * pooled / a.max(1e-4)));
+        }
         let t = self.width01(wet.width);
         let lift_max = match self.style {
             WetStyle::Photoshop => mix(0.55, 0.85, t),
             WetStyle::Watercolor => mix(0.40, 0.70, t),
             WetStyle::Watercolor2 => mix(0.50, 0.85, t),
+            WetStyle::V4 => 0.0,
         };
         let lift = self.strength01(wet.strength) * lift_max * edge;
         let t = self.width01(if self.outline == WetOutline::Single { wet.stamp_width } else { wet.width });
         let soften = match self.style {
-            WetStyle::Watercolor2 => edge,
+            WetStyle::Watercolor2 | WetStyle::V4 => edge,
             WetStyle::Watercolor => smooth(0.008, mix(0.03, 0.10, t), a) * (1.0 - smooth(mix(0.24, 0.42, t), mix(0.42, 0.68, t), a)),
             WetStyle::Photoshop => smooth(0.01, mix(0.04, 0.11, t), a) * (1.0 - smooth(mix(0.18, 0.34, t), mix(0.34, 0.60, t), a)),
         };
@@ -194,7 +210,7 @@ impl WetEdgeSettings {
     pub(crate) fn color_strength(&self, strength: f32) -> f32 {
         if strength <= 0.0001 {
             0.0
-        } else if self.style == WetStyle::Photoshop {
+        } else if matches!(self.style, WetStyle::Photoshop | WetStyle::V4) {
             unit(strength)
         } else {
             self.strength01(strength)
@@ -204,7 +220,7 @@ impl WetEdgeSettings {
         if self.color_mode == WetColorMode::Normal || effect <= 0.0 {
             return paint;
         }
-        let watercolor = self.style != WetStyle::Photoshop;
+        let watercolor = matches!(self.style, WetStyle::Watercolor | WetStyle::Watercolor2);
         if watercolor && base[3] <= 0.0001 {
             return paint;
         }
@@ -212,7 +228,7 @@ impl WetEdgeSettings {
         let effect = if watercolor { effect * unit(base[3]) } else { effect };
         let (h, s, l) = rgb_to_hsl([c[0], c[1], c[2]]);
         let (sat, drop) = match self.style {
-            WetStyle::Photoshop => (0.05, 0.10),
+            WetStyle::Photoshop | WetStyle::V4 => (0.05, 0.10),
             WetStyle::Watercolor => (0.27, 0.45),
             WetStyle::Watercolor2 => (0.33, 0.54),
         };

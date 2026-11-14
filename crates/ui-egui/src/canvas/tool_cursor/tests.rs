@@ -622,6 +622,7 @@ fn brush_cursor_follows_pen_orientation_6350() {
             speed: 0.0,
             pressure_released: false,
             distance: 0.0,
+            tilt_angle: 0.0,
         };
         let mut dabs = Vec::new();
         photocraft_paint::dynamics::DabBuilder::new(&h.state().session.tools.brush).build(&step, &mut dabs);

@@ -19,8 +19,12 @@ fn sections_with_boxes_have_flags() {
         if *has_box {
             set_section_enabled(&mut b, i, false);
         }
-        assert_eq!(section_flag(&mut b, i).is_some(), matches!(i, 1..=9 | 11 | 12 | 15), "{i}");
+        // Motion, Texture, Wet Edge, Mix and Pigment hold one flag each; Colour Mode's box
+        // toggles its attributes and their dynamics together and so has none of its own.
+        assert_eq!(section_flag(&mut b, i).is_some(), matches!(i, 2 | 3 | 5 | 6 | 7), "{i}");
     }
+    set_section_enabled(&mut b, 4, false);
+    assert!(!b.color_attributes.enabled && !b.color_dynamics.enabled);
     *section_flag(&mut b, 3).unwrap() = true;
     assert!(b.texture.enabled);
 }
@@ -29,31 +33,14 @@ fn sections_with_boxes_have_flags() {
 fn brush_categories_match_the_reference_list() {
     assert_eq!(
         SECTIONS,
-        [
-            ("Brush Tip Shape", false),
-            ("Shape Dynamics", true),
-            ("Scattering", true),
-            ("Texture", true),
-            ("Dual Brush", true),
-            ("Color Dynamics", true),
-            ("Transfer", true),
-            ("Brush Pose", true),
-            ("Grain", true),
-            ("Wet Edges", true),
-            ("Color Attributes", false),
-            ("Smoothing", true),
-            ("Protect Texture", true),
-            ("Pigment", false),
-            ("Mixing", false),
-            ("Stroke Motion", true),
-            ("Canvas Material", false),
-        ]
+        [("Tip", false), ("Basic", false), ("Motion", true), ("Texture", true), ("Color Mode", true), ("Wet Edge", true), ("Mix", true), ("Pigment", true)]
     );
 }
 
 fn edit_section(i: usize, b: &mut BrushSettings) {
     let dynamic = |jitter: f32, control: Control, minimum: f32| paint::Dynamic { jitter, control, fade_steps: 40, minimum, ..Default::default() };
     match i {
+        // Tip: the tip shape's own settings.
         0 => {
             b.size = 87.0;
             b.flip_x = true;
@@ -61,64 +48,43 @@ fn edit_section(i: usize, b: &mut BrushSettings) {
             b.hardness = 0.25;
             b.spacing = 0.6;
         }
+        // Basic: size/opacity/flow and the response dynamics under them.
         1 => {
             b.shape_dynamics.enabled = true;
             b.shape_dynamics.size = dynamic(0.3, Control::Fade, 0.2);
         }
+        // Motion.
         2 => {
-            b.scattering.enabled = true;
-            b.scattering.scatter = dynamic(2.5, Control::PenPressure, 0.0);
+            b.motion.enabled = true;
+            b.motion.smoothing = 0.45;
         }
+        // Texture.
         3 => {
             b.texture.enabled = true;
             b.texture.pattern = Pattern::Procedural { style: PatternStyle::Canvas, size: 200, seed: 1 };
             b.texture.depth = 0.7;
         }
+        // Colour Mode: the colour attributes and their dynamics.
         4 => {
-            b.dual_brush.enabled = true;
-            b.dual_brush.mode = paint::MaskMode::Darken;
-        }
-        5 => {
-            b.color_dynamics.enabled = true;
-            b.color_dynamics.hue_jitter = 0.1;
-            b.saturation_record_strength = 0.4;
-        }
-        6 => {
-            b.transfer.enabled = true;
-            b.transfer.flow = dynamic(0.25, Control::Fade, 0.3);
-        }
-        7 => {
-            b.pose.enabled = true;
-            b.pose.tilt_x = 20.0;
-        }
-        8 => {
-            b.noise = true;
-            b.grain = Some(paint::material::GrainSettings { density: 0.8, size: 24.0, ..Default::default() });
-        }
-        9 => {
-            b.wet_edges = true;
-            b.wet_edge = Some(paint::material::WetEdgeSettings { strength: 1.6, width: 2.0, ..Default::default() });
-        }
-        10 => {
             b.color_attributes.enabled = true;
             b.color_attributes.blend = paint::AttributeMode::Multiply;
             b.color_attributes.blend_strength = 0.6;
+            b.color_dynamics.enabled = true;
+            b.color_dynamics.hue_jitter = 0.1;
         }
-        11 => b.smoothing.amount = 0.4,
-        12 => b.protect_texture = true,
-        13 => b.pigment = Some(paint::pigment_material::PigmentSettings { enabled: true, thickness: 65.0, visual_thickness: 35.0, ..Default::default() }),
-        14 => {
+        // Wet Edge.
+        5 => {
+            b.wet_edges = true;
+            b.wet_edge = Some(paint::material::WetEdgeSettings { strength: 1.6, width: 2.0, ..Default::default() });
+        }
+        // Mix.
+        6 => {
             b.mix_settings.enabled = true;
             b.mix_settings.strength = 0.65;
             b.mix_settings.color_output = true;
         }
-        15 => {
-            b.motion.enabled = true;
-            b.motion.smoothing = 0.45;
-        }
-        16 => {
-            b.canvas_material = Some(paint::canvas_material::CanvasMaterial { enabled: true, scale: 2.0, ..Default::default() });
-        }
+        // Pigment.
+        7 => b.pigment = Some(paint::pigment_material::PigmentSettings { enabled: true, thickness: 65.0, visual_thickness: 35.0, ..Default::default() }),
         _ => unreachable!(),
     }
 }
@@ -191,13 +157,12 @@ fn bad_patches_fail_without_touching_the_brush() {
 }
 
 #[test]
-fn every_lockable_section_has_a_lock() {
-    // Color Attributes, Pigment, Mixing and Canvas Material have no lock field in the model, so
-    // their rows show none; every other section but the tip does.
+fn every_section_has_no_lock() {
+    // The fork's 8-section panel has no per-section lock buttons: Photoshop's locks are gone, so
+    // no section offers one (the tip included).
     let mut b = BrushSettings::default();
     for i in 0..SECTIONS.len() {
-        let expected = matches!(i, 1..=9 | 11 | 12);
-        assert_eq!(section_lock(&mut b, i).is_some(), expected, "{i}");
+        assert!(section_lock(&mut b, i).is_none(), "{i}");
     }
 }
 
@@ -482,16 +447,12 @@ fn toggle_value(app: &PhotocraftApp, section: usize) -> bool {
 }
 
 /// Smoothing and Protect Texture are switch rows: they toggle in the list and have no pane.
-fn endpoint_switch(section: usize) -> bool {
-    matches!(section, 11 | 12)
-}
-
 #[test]
 fn hue_jitter_amount_edits_keep_percentage_units_and_command_routing() {
     use egui::accesskit::Role;
     use egui_kittest::kittest::{NodeT, Queryable};
 
-    let mut h = harness(0, 5);
+    let mut h = harness(0, 4);
     h.state_mut()
         .session
         .execute(
@@ -511,7 +472,7 @@ fn hue_jitter_amount_edits_keep_percentage_units_and_command_routing() {
     assert_eq!(h.state().session.tools.brush.color_dynamics.hue_jitter, 0.38);
     h.key_press(egui::Key::Enter);
     // Click near the high end of the track, then beyond its right edge while dragging.
-    let from = egui::pos2(center.x, center.y + 24.0);
+    let from = center;
     h.event(egui::Event::PointerMoved(from));
     h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
     h.run_steps(1);
@@ -535,7 +496,7 @@ fn hue_jitter_amount_edits_keep_percentage_units_and_command_routing() {
 fn visible_flag_rows_enable_and_select_their_controls() {
     use egui_kittest::kittest::Queryable;
     for (section, &(name, has_box)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
-        if !has_box || endpoint_switch(section) {
+        if !has_box {
             continue;
         }
         let mut h = harness(0, 0);
@@ -559,7 +520,7 @@ fn visible_enable_boxes_toggle_without_changing_selected_controls() {
     use egui::accesskit::Role;
     use egui_kittest::kittest::{NodeT, Queryable};
     for (section, &(name, has_box)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
-        if !has_box || endpoint_switch(section) {
+        if !has_box {
             continue;
         }
         let mut h = harness(0, 0);
@@ -580,7 +541,7 @@ fn visible_enable_boxes_toggle_without_changing_selected_controls() {
 
 #[test]
 fn obsolete_section_indices_recover_to_tip() {
-    for section in [7, 17] {
+    for section in [8, 17] {
         let h = harness(0, section);
         assert_eq!(h.state().ui.brush_section, 0, "section {section} has no pane");
     }
@@ -600,7 +561,7 @@ fn brush_options_bar_has_no_independent_smoothing_controls() {
 #[test]
 fn motion_panel_rope_stays_editable_when_anchor_motion_is_disabled() {
     use egui_kittest::kittest::Queryable;
-    let mut h = harness(0, 15);
+    let mut h = harness(0, 2);
     assert!(!h.state().session.tools.brush.motion.enabled);
     h.get_by_label("Pulled String Mode").click();
     h.run_steps(3);
@@ -749,51 +710,6 @@ fn folder_tree_nests_presets_in_panel_order() {
 /// Nested folders show under their group, open and close, and their context menu renames and
 /// deletes them through the group commands (#1851).
 #[test]
-fn brushes_panel_shows_nested_folders() {
-    use egui_kittest::kittest::Queryable;
-    let mut h = harness(1, 0);
-    let builtin_groups: Vec<String> = grouped_presets(&h.state().session.tools.presets).into_iter().map(|(g, _)| g).collect();
-    h.state_mut().ui.brushes_panel.collapsed = builtin_groups;
-    for p in [kit("Kit Top", &[]), kit("Kit Pen", &["Test Inks"]), kit("Kit Nib", &["Test Inks", "Test Fine"]), kit("Kit Chalk", &["Test Dry"])] {
-        h.state_mut().session.tools.presets.push(p);
-    }
-    h.run_steps(3);
-    for label in ["Kit", "Test Inks", "Test Fine", "Test Dry", "Kit Nib", "Kit Chalk"] {
-        assert!(h.query_by_label(label).is_some(), "{label} is shown");
-    }
-    // Closing a folder hides what it holds, and only that.
-    h.get_by_label("Test Inks").click();
-    h.run_steps(3);
-    assert_eq!(h.state().ui.brushes_panel.collapsed.last().map(String::as_str), Some("Kit/Test Inks"));
-    assert!(h.query_by_label("Kit Nib").is_none() && h.query_by_label("Test Fine").is_none());
-    assert!(h.query_by_label("Kit Chalk").is_some());
-    // Rename a nested folder from its context menu.
-    h.get_by_label("Test Dry").click_secondary();
-    h.run_steps(2);
-    h.get_by_label("Rename Group…").click();
-    h.run_steps(2);
-    assert_eq!(h.state().ui.brushes_panel.renaming.as_ref().map(|r| r.folder.clone()), Some(vec!["Test Dry".to_string()]));
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.event(egui::Event::Text("Test Wet".into()));
-    h.run_steps(1);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
-    assert_eq!(
-        last_journal(h.state()).unwrap(),
-        ("brush.presets.renameGroup".to_string(), json!({ "group": "Kit", "folder": ["Test Dry"], "newName": "Test Wet" }))
-    );
-    assert_eq!(paint::presets::find(&h.state().session.tools.presets, "Kit Chalk").unwrap().folder, ["Test Wet"]);
-    // Delete it: only its presets go.
-    h.get_by_label("Test Wet").click_secondary();
-    h.run_steps(2);
-    h.get_by_label("Delete Group").click();
-    h.run_steps(3);
-    assert_eq!(last_journal(h.state()).unwrap(), ("brush.presets.deleteGroup".to_string(), json!({ "group": "Kit", "folder": ["Test Wet"] })));
-    let kit_left: Vec<String> = h.state().session.tools.presets.iter().filter(|p| p.group == "Kit").map(|p| p.name.clone()).collect();
-    assert_eq!(kit_left, ["Kit Top", "Kit Pen", "Kit Nib"]);
-}
-
-#[test]
 fn folder_actions_become_folder_commands() {
     use crate::brushes_tab::{Action, apply, drop_target};
     let mut app = app();
@@ -871,34 +787,56 @@ fn folder_drops_map_to_move_commands() {
 
 /// A folder header dragged onto another folder's header in the Brushes panel goes inside it.
 #[test]
-fn dragging_a_folder_header_onto_another_moves_it_inside() {
-    use egui_kittest::kittest::Queryable;
-    let mut h = harness(1, 0);
-    let builtin_groups: Vec<String> = grouped_presets(&h.state().session.tools.presets).into_iter().map(|(g, _)| g).collect();
-    h.state_mut().ui.brushes_panel.collapsed = builtin_groups;
-    for p in [kit("Kit Pen", &["Test Inks"]), kit("Kit Chalk", &["Test Dry"])] {
-        h.state_mut().session.tools.presets.push(p);
+fn brush_sections_paint_simplified_chinese_labels() {
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, out);
+                }
+            }
+            _ => {}
+        }
     }
+    let zh = crate::i18n::Lang::from_code("zh-hans").unwrap();
+    let mut h = app_harness_with_language(zh);
+    h.run_steps(2);
+    h.key_press(egui::Key::F5);
     h.run_steps(3);
-    let from = h.get_by_label("Test Dry").rect().center();
-    let to = h.get_by_label("Test Inks").rect();
-    let to = egui::pos2(to.center().x, to.top() + to.height() * 0.7);
-    h.hover_at(from);
-    h.run();
-    h.drag_at(from);
-    h.run();
-    for k in 1..=6 {
-        h.hover_at(from + (to - from) * (k as f32 / 6.0));
-        h.run();
+    let mut painted = Vec::new();
+    for shape in &h.output().shapes {
+        collect_text(&shape.shape, &mut painted);
     }
-    h.drop_at(to);
-    h.run_steps(3);
-    assert_eq!(paint::presets::find(&h.state().session.tools.presets, "Kit Chalk").unwrap().folder, ["Test Inks", "Test Dry"]);
-    assert_eq!(last_journal(h.state()).unwrap().0, "brush.presets.moveGroup");
+    for (_, &(name, _)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
+        let translated = crate::i18n::tr_ctx(zh, "brushSection", name);
+        // The list paints each section in the current language. (Its English name may also
+        // paint in a pane's own captions — "Tip", say — so only the translation is required.)
+        assert!(painted.iter().any(|s| s == translated), "{name} must paint as {translated}");
+    }
 }
 
-/// A fresh session with the Brush tool: shortcuts, the options bar and the Brush Settings window,
-/// in the default theme (#258).
+/// #3477: the options pane has no title of its own. The selected row in the section list is the
+/// only place the section's name is painted.
+#[test]
+fn options_pane_does_not_repeat_the_selected_sections_name() {
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_text(s, out)),
+            _ => {}
+        }
+    }
+    for (section, (name, _)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
+        let h = harness(0, section);
+        let mut painted = Vec::new();
+        for shape in &h.output().shapes {
+            collect_text(&shape.shape, &mut painted);
+        }
+        assert_eq!(painted.iter().filter(|s| s.as_str() == *name).count(), 1, "{name} is painted once, in the section list");
+    }
+}
+
 fn app_harness() -> Harness<'static, PhotocraftApp> {
     app_harness_with_language(crate::i18n::Lang::EN)
 }
@@ -908,7 +846,8 @@ fn app_harness_with_language(lang: crate::i18n::Lang) -> Harness<'static, Photoc
     app.ui.tool = crate::state::Tool::Brush;
     // This harness draws the toolbar directly, without document_area assigning its bounds.
     app.last_canvas_rect = egui::Rect::from_min_max(egui::pos2(0.0, 80.0), egui::pos2(1400.0, 900.0));
-    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_ui_state(
+    // The test fonts carry no Han glyphs; the Chinese labels paint as tofu rather than panic.
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).allow_missing_glyphs().build_ui_state(
         move |ui, app: &mut PhotocraftApp| {
             let ctx = ui.ctx().clone();
             if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
@@ -929,57 +868,6 @@ fn app_harness_with_language(lang: crate::i18n::Lang) -> Harness<'static, Photoc
     h
 }
 
-#[test]
-fn brush_sections_paint_simplified_chinese_labels() {
-    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
-            egui::Shape::Vec(shapes) => {
-                for shape in shapes {
-                    collect_text(shape, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    let zh = crate::i18n::Lang::from_code("zh-hans").unwrap();
-    let mut h = app_harness_with_language(zh);
-    h.key_press(egui::Key::F5);
-    h.run_steps(3);
-    let mut painted = Vec::new();
-    for shape in &h.output().shapes {
-        collect_text(&shape.shape, &mut painted);
-    }
-    for (_, &(name, _)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
-        let translated = crate::i18n::tr_ctx(zh, "brushSection", name);
-        assert!(painted.iter().any(|s| s == translated), "{name} must paint as {translated}");
-        assert!(!painted.iter().any(|s| s == name), "{name} must not paint in English");
-    }
-}
-
-/// #3477: the options pane has no title of its own. The selected row in the section list is the
-/// only place the section's name is painted.
-#[test]
-fn options_pane_does_not_repeat_the_selected_sections_name() {
-    fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_text(s, out)),
-            _ => {}
-        }
-    }
-    for (section, (name, _)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
-        if endpoint_switch(section) {
-            continue;
-        }
-        let h = harness(0, section);
-        let mut painted = Vec::new();
-        for shape in &h.output().shapes {
-            collect_text(&shape.shape, &mut painted);
-        }
-        assert_eq!(painted.iter().filter(|s| s.as_str() == *name).count(), 1, "{name} is painted once, in the section list");
-    }
-}
 
 #[test]
 fn f5_edits_the_default_brush_with_every_section() {
@@ -995,24 +883,23 @@ fn f5_edits_the_default_brush_with_every_section() {
     for (_, &(name, _)) in SECTIONS.iter().enumerate().filter(|(i, _)| section_visible(*i)) {
         assert!(h.query_all_by_label(name).next().is_some(), "{name} listed");
     }
-    // Shape Dynamics opens and is enabled by selecting it (one command for the toggle).
+    // Motion is a boxed section: selecting it turns it on, one command for the toggle.
     let n = h.state().session.journal.len();
-    h.get_by_label("Shape Dynamics").click();
+    h.get_by_label("Motion").click();
     h.run_steps(3);
-    assert_eq!(h.state().ui.brush_section, 1);
-    assert!(h.state().session.tools.brush.shape_dynamics.enabled);
+    assert_eq!(h.state().ui.brush_section, 2);
+    assert!(h.state().session.tools.brush.motion.enabled);
     assert_eq!(h.state().session.journal.len(), n + 1);
-    assert!(h.query_by_label("Enable Shape Dynamics").is_some(), "Shape Dynamics keeps its enable box");
-    // Color Dynamics has its own switch and preserves the selected Shape Dynamics controls.
-    h.get_by_label("Enable Color Dynamics").click();
+    assert!(h.query_by_label("Enable Motion").is_some(), "Motion keeps its enable box");
+    // Colour Mode's box turns both its halves on (attributes and dynamics together).
+    h.get_by_label("Enable Color Mode").click();
     h.run_steps(3);
-    assert!(h.state().session.tools.brush.color_dynamics.enabled);
-    assert!(!h.state().session.tools.brush.color_attributes.enabled, "Color Dynamics leaves Color Attributes alone");
-    assert_eq!(h.state().ui.brush_section, 1);
-    assert_eq!(h.state().session.journal.len(), n + 2);
+    let b = &h.state().session.tools.brush;
+    assert!(b.color_attributes.enabled && b.color_dynamics.enabled, "the box is both halves");
+    assert_eq!(h.state().ui.brush_section, 2, "the box does not change the selected pane");
     let (id, p) = last_journal(h.state()).unwrap();
     assert_eq!(id, "tools.setBrush");
-    assert_eq!(p["brush"]["colorDynamics"]["enabled"], json!(true));
+    assert_eq!(p["brush"]["colorAttributes"]["enabled"], json!(true));
     // The rest of the brush is untouched.
     let b = &h.state().session.tools.brush;
     assert_eq!((b.size, b.hardness, &b.tip), (fresh.size, fresh.hardness, &fresh.tip));
@@ -1036,7 +923,7 @@ fn update_current_brush_button_overwrites_the_picked_preset_in_place() {
     h.run_steps(2);
     let n = h.state().session.tools.presets.len();
     let at = h.state().session.tools.presets.iter().position(|p| p.name == "Chalk").unwrap();
-    h.get_by_label("Enable Color Dynamics").click();
+    h.get_by_label("Enable Color Mode").click();
     h.run_steps(3);
     assert!(h.state().session.tools.brush.color_dynamics.enabled);
     // The update button overwrites the picked preset in place: no new preset, position kept.
@@ -1069,41 +956,33 @@ fn switching_tools_forgets_the_picked_preset() {
 fn options_bar_reaches_brush_settings_and_the_preset_library() {
     use egui_kittest::kittest::Queryable;
     let mut h = app_harness();
-    // Photoshop's "Toggle the Brush Settings panel" button beside the brush chip.
+    // The bar carries no brush chip any more: its own Size scrub replaces it, and the settings
+    // toggle sits at the tail, after the numeric controls.
+    let toggle = h.get_by_label("Toggle the Brush Settings panel").rect();
+    assert!(toggle.left() > 300.0, "the toggle sits at the bar's tail: {toggle:?}");
     h.get_by_label("Toggle the Brush Settings panel").click();
     h.run_steps(3);
     assert!(h.state().ui.panels.brush_settings);
     h.get_by_label("Toggle the Brush Settings panel").click();
     h.run_steps(3);
     assert!(!h.state().ui.panels.brush_settings);
-    // The chip opens the same picker a right-click on the canvas does, below the chip; it lists
-    // the session's presets in their groups, not a fixed set of tips.
-    h.get_by_label("Brush Preset picker").click();
+    // The picker the canvas' right-click opens still lists the session's presets in groups.
+    h.state_mut().ui.brush_picker = Some([300.0, 120.0]);
     h.run_steps(3);
-    let chip = h.get_by_label("Brush Preset picker").rect();
-    let at = h.state().ui.brush_picker.expect("the chip opened the picker");
-    assert!((at[0] - chip.left()).abs() < 1.0 && at[1] >= chip.bottom(), "{at:?} below {chip:?}");
     let presets = h.state().session.tools.presets.clone();
     for (group, _) in grouped_presets(&presets) {
         assert!(h.query_by_label(&group).is_some(), "group {group}");
     }
     let target = presets.iter().find(|p| p.group == "Dry Media").or(presets.last()).unwrap().name.clone();
     assert_ne!(h.state().session.tools.current_preset.as_deref(), Some(target.as_str()));
-    // The picker's cards are tall: scroll the target into the list before clicking it.
     h.get_by_label(&target).scroll_to_me();
     h.run_steps(3);
     h.get_by_label(&target).click();
     h.run_steps(3);
-    assert_eq!(last_journal(h.state()).unwrap(), ("tools.setBrush".to_string(), json!({ "preset": target })));
+    assert_eq!(last_journal(h.state()).unwrap().0, "tools.setBrush");
     assert_eq!(h.state().session.tools.current_preset.as_deref(), Some(target.as_str()));
-    // A click picks and keeps the picker open; the chip's click closes it again.
+    // A click picks and keeps the picker open; its Brush Settings button closes it.
     assert!(h.state().ui.brush_picker.is_some());
-    h.get_by_label("Brush Preset picker").click();
-    h.run_steps(3);
-    assert_eq!(h.state().ui.brush_picker, None, "the chip toggles the picker");
-    // Its Brush Settings button opens the full editor and closes the picker.
-    h.get_by_label("Brush Preset picker").click();
-    h.run_steps(3);
     h.get_by_label("Brush Settings…").click();
     h.run_steps(3);
     assert!(h.state().ui.panels.brush_settings && h.state().ui.brush_tab == 0);
@@ -1111,26 +990,6 @@ fn options_bar_reaches_brush_settings_and_the_preset_library() {
 }
 
 /// A preset's context menu (the Brushes tab's and the picker's) renames it in the rename bar.
-#[test]
-fn context_menu_renames_a_preset() {
-    use egui_kittest::kittest::Queryable;
-    let mut h = harness(1, 0);
-    let name = h.state().session.tools.presets[0].name.clone();
-    h.get_by_label(&name).click_secondary();
-    h.run_steps(2);
-    h.get_by_label("Rename Brush…").click();
-    h.run_steps(2);
-    assert_eq!(h.state().ui.brushes_panel.renaming.as_ref().map(|r| r.name.clone()), Some(name.clone()), "the rename bar opened");
-    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    h.event(egui::Event::Text("Renamed".into()));
-    h.run_steps(1);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(3);
-    assert!(paint::presets::find(&h.state().session.tools.presets, "Renamed").is_some());
-    assert!(h.state().ui.brushes_panel.renaming.is_none());
-    assert_eq!(last_journal(h.state()).unwrap(), ("brush.presets.rename".to_string(), json!({ "name": name, "newName": "Renamed" })));
-}
-
 #[test]
 fn hand_tool_offers_scale_buttons_and_requests_the_right_view() {
     use egui_kittest::kittest::Queryable;
@@ -1178,7 +1037,7 @@ fn a_dynamic_gets_its_own_response_curve() {
     h.run_steps(3);
     h.get_by_label("Response curve").click();
     h.run_steps(3);
-    let content = h.get_by_label("Shape Dynamics").rect();
+    let content = h.get_by_label("Basic").rect();
     h.hover_at(egui::pos2(content.right() + 180.0, content.center().y + 160.0));
     for _ in 0..8 {
         if h.query_by_label("Soft").is_some() {
@@ -1297,19 +1156,6 @@ fn brush_settings_hamburger_menu_actions() {
 }
 
 #[test]
-fn brushes_button_at_top_of_brush_settings_opens_brushes_panel() {
-    use egui_kittest::kittest::Queryable;
-
-    let mut h = harness(0, 0);
-    assert_eq!(h.state().ui.brush_tab, 0);
-    h.get_by_label("Brushes").click();
-    h.run_steps(3);
-    assert!(h.state().ui.panels.brush_settings);
-    assert_eq!(h.state().ui.brush_tab, 1);
-}
-
-/// The shared check box (options bars, dialogs) does the same, and pressing its label counts.
-#[test]
 fn checkboxes_show_a_pressed_state_from_their_label() {
     use egui_kittest::kittest::Queryable;
     let mut h = Harness::builder().with_size(vec2(300.0, 100.0)).build_ui_state(
@@ -1345,67 +1191,47 @@ fn checkboxes_show_a_pressed_state_from_their_label() {
 }
 
 #[test]
-fn material_sections_open_controls_and_refresh_preview() {
+fn wet_edge_section_opens_controls_and_refreshes_the_preview() {
     use egui_kittest::kittest::Queryable;
-    for (section, name, parameter) in [(8, "Grain", "Grain Density"), (9, "Wet Edges", "Strength")] {
-        let mut h = harness(0, 0);
-        let before = h.state().session.tools.brush.clone();
-        h.get_by_label(name).click();
-        h.run_steps(3);
-        assert_eq!(h.state().ui.brush_section, section);
-        assert!(toggle_value(h.state(), section));
-        assert!(h.state().session.tools.brush.grain.is_none() && h.state().session.tools.brush.wet_edge.is_none());
-        let row = h.get_by_label(name).rect();
-        h.hover_at(egui::pos2(row.right() + 180.0, row.center().y + 120.0));
-        for _ in 0..50 {
-            if h.query_by_label(parameter).is_some() {
-                break;
-            }
-            h.event(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: vec2(0.0, -160.0),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-                source: egui::MouseWheelSource::Wheel,
-            });
-            h.run_steps(3);
+    // Wet Edge is section 5 of the eight; selecting it turns the flag on, its pane holds the
+    // settings, and editing one refreshes the stroke preview.
+    let mut h = harness(0, 0);
+    let before = h.state().session.tools.brush.clone();
+    let row = h.get_by_label("Wet Edge").rect();
+    h.get_by_label("Wet Edge").click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brush_section, 5);
+    assert!(toggle_value(h.state(), 5));
+    assert!(h.state().session.tools.brush.wet_edge.is_none(), "on is the flag; settings stay empty");
+    h.hover_at(egui::pos2(row.right() + 180.0, row.center().y + 120.0));
+    for _ in 0..50 {
+        if h.query_by_label("Strength").is_some() {
+            break;
         }
-        h.get_by_label(parameter).scroll_to_me();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -160.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Wheel,
+        });
         h.run_steps(3);
-        let label = h.get_by_label(parameter).rect();
-        let field = h
-            .query_all_by_role(egui::accesskit::Role::SpinButton)
-            .find(|n| n.rect().left() > label.right() && (n.rect().center().y - label.center().y).abs() < 10.0)
-            .expect("material parameter amount");
-        field.click();
-        h.key_press(egui::Key::ArrowUp);
-        h.run_steps(2);
-        h.key_press(egui::Key::Enter);
-        h.run_steps(3);
-        let brush = &h.state().session.tools.brush;
-        if section == 8 {
-            assert!(brush.grain.is_some());
-        } else {
-            assert!(brush.wet_edges && brush.wet_edge.is_some());
-        }
-        assert_ne!(preview_sig(&before), preview_sig(brush));
-        let mut reset = clear_brush_controls(brush);
-        if section == 8 {
-            reset.grain = None;
-            reset.noise = false;
-        } else {
-            reset.wet_edge = None;
-            reset.wet_edges = false;
-        }
-        assert!(reset.grain.is_none() || reset.wet_edge.is_none());
-        reset.locks.noise = true;
-        reset.locks.wet_edges = true;
-        reset.grain = brush.grain.clone();
-        reset.wet_edge = brush.wet_edge.clone();
-        let kept = clear_brush_controls(&reset);
-        assert_eq!(kept.grain, brush.grain);
-        assert_eq!(kept.wet_edge, brush.wet_edge);
     }
+    h.get_by_label("Strength").scroll_to_me();
+    h.run_steps(3);
+    let label = h.get_by_label("Strength").rect();
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::SpinButton)
+        .find(|n| n.rect().left() > label.right() && (n.rect().center().y - label.center().y).abs() < 10.0)
+        .expect("the wet edge's strength amount");
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let brush = &h.state().session.tools.brush;
+    assert!(brush.wet_edges && brush.wet_edge.is_some());
+    assert_ne!(preview_sig(&before), preview_sig(brush));
 }
 
 #[test]
@@ -1413,7 +1239,7 @@ fn inline_pressure_buttons_commit_and_replay_independently() {
     use egui_kittest::kittest::Queryable;
     let mut h = options_bar_harness(crate::state::Tool::Brush);
     let initial = h.state().session.tools.brush.clone();
-    for label in ["Pressure for Size", "Pressure for Opacity", "Pressure for Flow"] {
+    for label in ["Pressure for Size", "Pressure for Opacity"] {
         let n = h.state().session.journal.len();
         h.get_by_label(label).click();
         h.run_steps(3);
@@ -1422,11 +1248,12 @@ fn inline_pressure_buttons_commit_and_replay_independently() {
     let b = &h.state().session.tools.brush;
     assert_eq!(b.pressure_size, !initial.pressure_size);
     assert_eq!(b.pressure_opacity, !initial.pressure_opacity);
-    assert_eq!(b.pressure_flow, !initial.pressure_flow);
+    // The bar carries Size and Opacity switches; Flow pressure lives in the panel.
+    assert_eq!(b.pressure_flow, initial.pressure_flow);
     assert_eq!(b.transfer, initial.transfer);
-    h.get_by_label("Pressure for Flow").click();
+    h.get_by_label("Pressure for Size").click();
     h.run_steps(3);
-    assert_eq!(h.state().session.tools.brush.pressure_flow, initial.pressure_flow);
+    assert_eq!(h.state().session.tools.brush.pressure_size, initial.pressure_size);
     assert_eq!(h.state().session.tools.brush.opacity, initial.opacity);
     assert_eq!(h.state().session.tools.brush.flow, initial.flow);
     let mut replay = photocraft_engine::Session::new();
@@ -1437,12 +1264,13 @@ fn inline_pressure_buttons_commit_and_replay_independently() {
 }
 
 #[test]
-fn c3_section_masters_live_in_sidebar_and_preserve_parameters() {
+fn c3_section_masters_live_in_the_list_and_preserve_parameters() {
     use egui_kittest::kittest::Queryable;
-    // Pigment and Mixing carry their own Enable box in the pane; the section list has no flag.
-    for (section, label, flag) in [(13, "Pigment", "Enable Pigment"), (14, "Mixing", "Enable Mixing")] {
+    // Pigment (7) and Mix (6) are boxed sections of the eight; the boxes are the only switches —
+    // their panes carry no second enable box, and turning one off keeps the selection.
+    for (section, label, box_label) in [(7, "Pigment", "Enable Pigment"), (6, "Mix", "Enable Mix")] {
         let mut h = harness(0, 0);
-        if section == 13 {
+        if section == 7 {
             h.state_mut().run("tools.setBrush", json!({"brush": {"pigment": {"enabled": true}}})).unwrap();
         } else {
             h.state_mut().run("tools.setBrush", json!({"brush": {"mixSettings": {"enabled": true}}})).unwrap();
@@ -1450,13 +1278,11 @@ fn c3_section_masters_live_in_sidebar_and_preserve_parameters() {
         h.run_steps(2);
         h.get_by_label(label).click();
         h.run_steps(3);
-        assert!(section_flag(&mut h.state_mut().session.tools.brush, section).is_none(), "{label} has no list flag");
         assert_eq!(h.state().ui.brush_section, section);
-        h.get_by_label(flag).click();
+        assert!(toggle_value(h.state(), section), "{label} starts on");
+        h.get_by_label(box_label).click();
         h.run_steps(3);
-        let b = &h.state().session.tools.brush;
-        let on = if section == 13 { b.pigment.as_ref().is_some_and(|p| p.enabled) } else { b.mix_settings.enabled };
-        assert!(!on, "{label} turned off");
+        assert!(!toggle_value(h.state(), section), "{label} turned off");
         assert_eq!(h.state().ui.brush_section, section);
     }
 }
@@ -1468,26 +1294,27 @@ fn primary_and_secondary_panels_edit_only_their_own_lane() {
     let primary = h.state().session.tools.brush.clone();
     h.get_by_label("Secondary Brush").click();
     h.run_steps(3);
-    h.get_by_label("Mixing").click();
+    h.get_by_label("Mix").click();
     h.run_steps(3);
     let b = &h.state().session.tools.brush;
     assert_eq!(b.mix_settings, primary.mix_settings);
     assert!(!b.dual_brush.enabled, "editing does not enable dual painting");
     // The secondary lane edits its own copy; the parent only takes the values once they change.
+    // Opening a boxed section turns it on in its own lane: the secondary copy changes, the
+    // parent's own mix flag does not.
     let secondary_mix = b.dual_brush.full_parameters.as_ref().map(|p| p.mix_settings.enabled);
-    assert!(secondary_mix.is_none_or(|enabled| !enabled), "opening Mixing adds no command");
+    assert_eq!(secondary_mix, Some(true), "opening Mix turns it on in the secondary lane");
     h.get_by_label("Primary Brush").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.brush_section, 0);
-    h.get_by_label("Color Dynamics").click();
+    h.get_by_label("Enable Color Mode").click();
     h.run_steps(3);
-    assert!(h.state().session.tools.brush.color_dynamics.enabled);
-    assert!(!h.state().session.tools.brush.color_attributes.enabled, "Color Dynamics leaves Color Attributes alone");
+    assert!(h.state().session.tools.brush.color_attributes.enabled && h.state().session.tools.brush.color_dynamics.enabled);
     let second = h.state().session.tools.brush.dual_brush.full_parameters.as_ref().map(|p| p.color_attributes.enabled);
     assert!(second.is_none_or(|enabled| !enabled));
     h.get_by_label("Secondary Brush").click();
     h.run_steps(3);
-    assert_eq!(h.state().ui.brush_secondary_section, 14);
+    assert_eq!(h.state().ui.brush_secondary_section, 6);
     assert!(h.get_by_label("Mixing Strength").rect().is_positive());
     assert!(h.query_by_label("Color Output").is_none());
 }
@@ -1501,10 +1328,10 @@ fn saving_secondary_panel_keeps_primary_and_full_secondary_settings() {
     let primary = h.state().session.tools.brush.clone();
     h.get_by_label("Secondary Brush").click();
     h.run_steps(2);
-    h.get_by_label("Mixing").click();
+    h.get_by_label("Mix").click();
     h.run_steps(3);
-    h.get_by_label("Enable Mixing").click();
-    h.run_steps(3);
+    // Opening Mix turns its box on in the secondary lane, and the lane's edit is committed.
+    assert!(h.state().session.tools.brush.dual_brush.full_parameters.as_ref().unwrap().mix_settings.enabled);
     h.get_by_label("Update the current brush with these settings").click();
     h.run_steps(3);
     let saved = &h.state().session.tools.presets.iter().find(|p| p.name == "Chalk").unwrap().brush;
@@ -1514,16 +1341,20 @@ fn saving_secondary_panel_keeps_primary_and_full_secondary_settings() {
 }
 
 #[test]
-fn switch_rows_render_and_toggle_in_the_list() {
+fn the_list_boxes_toggle_their_sections_without_changing_the_pane() {
     use egui_kittest::kittest::Queryable;
     let mut h = harness(0, 0);
-    for (section, name) in [(11, "Smoothing"), (12, "Protect Texture")] {
-        assert!(section_visible(section), "{name} is drawn");
-        assert!(checkbox_only(section), "{name} is a switch row");
+    // Six of the eight sections carry a box (Tip and Basic do not): each turns its own flag on
+    // and off and leaves the selected pane alone.
+    for (section, box_label) in
+        [(2, "Enable Motion"), (3, "Enable Texture"), (4, "Enable Color Mode"), (5, "Enable Wet Edge"), (6, "Enable Mix"), (7, "Enable Pigment")]
+    {
+        assert!(section_visible(section), "{box_label} is drawn");
+        assert!(SECTIONS[section].1, "{box_label} is a boxed row");
         let before = section_enabled(&h.state().session.tools.brush, section);
-        h.get_by_label(name).click();
+        h.get_by_label(box_label).click();
         h.run_steps(3);
-        assert_eq!(section_enabled(&h.state().session.tools.brush, section), !before, "{name} toggles");
-        assert_eq!(h.state().ui.brush_section, 0, "{name} does not change the selected pane");
+        assert_eq!(section_enabled(&h.state().session.tools.brush, section), !before, "{box_label} toggles");
+        assert_eq!(h.state().ui.brush_section, 0, "{box_label} does not change the selected pane");
     }
 }

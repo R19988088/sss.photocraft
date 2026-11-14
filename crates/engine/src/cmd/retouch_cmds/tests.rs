@@ -500,6 +500,27 @@ fn smudge_moves_colour_along_the_stroke() {
 }
 
 #[test]
+fn smudge_mixes_the_paint_it_drags_through_the_pigment_lut() {
+    // Blue dragged over yellow: a plain mix moves red and green alike (r == g) and reads grey;
+    // the pigment response reads green. The strength comes from the preference the panel sets.
+    let run = |strength: i64| {
+        let mut s = session(100, 30, 8, "rgb");
+        paint_layer(&mut s, |x, _| if x < 30 { [0.0, 0.0, 1.0, 1.0] } else { [1.0, 1.0, 0.0, 1.0] });
+        if strength > 0 {
+            s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})).unwrap();
+            assert!((s.tools.brush.pigment_mix_strength - strength as f32 / 100.0).abs() < 1e-6, "the preference reaches the brush");
+        }
+        s.execute("paint.smudge", json!({"points": [[20, 15], [70, 15]], "size": 12, "hardness": 100, "strength": 80})).unwrap();
+        (31..70).map(|x| rgba(&s, x, 15)).collect::<Vec<_>>()
+    };
+    let linear = run(0);
+    assert!(linear.iter().all(|p| (p[0] - p[1]).abs() < 1e-4), "a plain mix keeps red and green equal: {linear:?}");
+    assert!(linear.iter().any(|p| p[0] > 0.02 && p[0] < 0.98), "the stroke lands part-way somewhere: {linear:?}");
+    let mixed = run(100);
+    assert!(mixed.iter().any(|p| p[1] > p[0] + 0.02), "blue over yellow mixes green, not grey: {mixed:?}");
+}
+
+#[test]
 fn smudge_uses_the_brush_settings_spacing() {
     // #2140: the Brush Settings spacing (the session brush) drives Smudge dabs when the stroke
     // has no `spacing` param, as it drives the Brush.

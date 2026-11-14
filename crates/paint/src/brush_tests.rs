@@ -5,13 +5,15 @@ use photocraft_geom::{Point, Rect};
 use photocraft_raster::Surface;
 
 use crate::brush::*;
-use crate::dynamics::{DabGenerator, Smoother, smooth_points};
-use crate::render::{BrushContext, StrokeRenderer, mask_combine, render_stroke, texture_combine};
+use crate::dynamics::{DabGenerator, Smoother, smooth_points, tilt_reach};
+use crate::render::{BrushContext, StrokeRenderer, dual_blend, mask_combine, render_stroke, texture_combine};
 use crate::tile::GrayTile;
 use crate::{AttributeMode, Dab, Stroke, StrokePoint, dabs};
 
 fn brush() -> BrushSettings {
-    BrushSettings { pressure_size: false, spacing: 0.25, ..Default::default() }
+    // The legacy tip maths on purpose: these tests pin the fork's own behaviour, while
+    // `Default` now gives the reference application's one tip maths (see `c3_tip_math`).
+    BrushSettings { pressure_size: false, spacing: 0.25, c3_tip_math: false, ..Default::default() }
 }
 
 fn line(x0: f64, x1: f64, y: f64) -> Vec<StrokePoint> {
@@ -366,7 +368,8 @@ fn tilt_direction_and_rotation_drive_angle() {
     q.rotation = 30.0;
     let d = dabs_of(&mk(Control::Rotation), &[q, StrokePoint { x: 20.0, ..q }]);
     assert!((d[0].angle.to_degrees() - 30.0).abs() < 1e-3);
-    // C3 tilt magnitude on size: upright pen minimum, flat pen full size.
+    // Pen Tilt on size goes through ProCraft's tilt ramp, so a pen as flat as it goes reaches half
+    // it (the ramp tops out at 0.5 on its default dial), not the whole size.
     let b = BrushSettings {
         shape_dynamics: ShapeDynamics { enabled: true, size: Dynamic::controlled(Control::PenTilt), ..Default::default() },
         size: 20.0,
@@ -375,7 +378,7 @@ fn tilt_direction_and_rotation_drive_angle() {
     let mut flat = StrokePoint::new(0.0, 0.0, 1.0);
     flat.tilt_x = 90.0;
     let d = dabs_of(&b, &[flat]);
-    assert!((d[0].radius - 10.0).abs() < 1e-6);
+    assert!((d[0].radius - 5.0).abs() < 1e-3, "{}", d[0].radius);
 }
 
 #[test]
@@ -629,6 +632,66 @@ fn texture_modulates_coverage() {
     let d = dabs_of(&b, &line(0.0, 200.0, 0.0));
     assert!(d.iter().all(|x| (0.0..=1.0).contains(&x.depth)));
     assert!(d.iter().any(|x| x.depth < 0.6));
+}
+
+/// The tilt dial's ramp is ProCraft's `Tilt::reach`: a control at 0 starts counting only once the
+/// pen is 34° from upright and reaches half at the most a pen leans; at 1 it counts from upright.
+#[test]
+fn tilt_reach_is_the_studio_ramp() {
+    // The studio's own values for a pen as flat as they go (1.2 rad from upright).
+    assert!((tilt_reach(1.2, 0.0) - 0.5).abs() < 1e-3);
+    assert!((tilt_reach(1.2, 0.1) - 0.622).abs() < 1e-3);
+    assert!((tilt_reach(1.2, 1.0) - 0.882).abs() < 1e-3);
+    // Upright, dial 0: nothing counts yet; dial 1 counts from upright.
+    assert!((tilt_reach(0.0, 0.0) - 1.0 / 1024.0).abs() < 1e-6);
+    assert!(tilt_reach(0.0, 1.0) > 0.0);
+}
+
+/// Leaning a pen grows the stamp by Tilt Size, fades it by Tilt Opacity, and Follow Azimuth turns
+/// it to the direction of the lean.
+#[test]
+fn leaning_grows_fades_and_turns_the_stamp() {
+    let pen = |tilt_x: f32, tilt_y: f32| StrokePoint { tilt_x, tilt_y, ..StrokePoint::new(10.0, 10.0, 1.0) };
+    let last = |b: &BrushSettings, x: f32, y: f32| {
+        let mut points = vec![pen(x, y), pen(x, y)];
+        points[1].x = 60.0;
+        dabs_of(b, &points).pop().unwrap()
+    };
+    let mut b = brush();
+    b.shape_dynamics.tilt_size = 0.5;
+    b.shape_dynamics.tilt_opacity = 0.6;
+    let flat = last(&b, 0.0, 0.0);
+    // 60° off upright is 1.047 rad: altitude 0.333 > 0.286, so the ramp has started.
+    let lean = last(&b, 60.0, 0.0);
+    let reach = tilt_reach(60f32.to_radians(), 0.0);
+    assert!((lean.radius / flat.radius - (1.0 + 0.5 * reach)).abs() < 1e-3, "{} vs {}", lean.radius, flat.radius);
+    assert!((lean.opacity - (1.0 - 0.6 * reach.sqrt())).abs() < 1e-3, "{}", lean.opacity);
+    // Upright is left alone apart from the ramp's own floor (1/1024, so 1/32 after the root).
+    assert!((flat.opacity - (1.0 - 0.6 * (1.0 / 1024.0f32).sqrt())).abs() < 1e-4, "{}", flat.opacity);
+    // Follow Azimuth: leaning right and leaning up turn the stamp a quarter turn apart.
+    b.shape_dynamics.follow_azimuth = true;
+    let across = last(&b, 0.0, 60.0);
+    let along = last(&b, 60.0, 0.0);
+    let turn = (across.angle - along.angle).rem_euclid(std::f32::consts::TAU);
+    assert!((turn - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "{turn}");
+}
+
+/// The dual brush's mode list is ProCraft's: Lighten, Difference and Divide join the studio's
+/// modes, and Subtract is `p − s` there, not the mask's "take the mask away". The dual's own
+/// coverage cap (no mode but a lifting one paints past the first lane's coverage) still applies.
+#[test]
+fn dual_brush_modes_added_to_match_the_studio() {
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    assert!(close(dual_blend(MaskMode::Lighten, 0.3, 0.6), 0.6));
+    assert!(close(dual_blend(MaskMode::Difference, 0.9, 0.4), 0.5), "{}", dual_blend(MaskMode::Difference, 0.9, 0.4));
+    assert!(close(mask_combine(MaskMode::Divide, 0.5, 0.25, 1.0), 1.0));
+    assert!(close(mask_combine(MaskMode::Divide, 0.5, 0.0, 1.0), 1.0), "a black secondary divides by nothing");
+    assert!(close(dual_blend(MaskMode::Divide, 0.5, 0.25), 0.5), "the dual holds it to the first lane");
+    assert!(close(dual_blend(MaskMode::Subtract, 0.4, 0.6), 0.0));
+    assert!(close(dual_blend(MaskMode::Subtract, 0.9, 0.4), 0.5));
+    // A secondary-only footprint shows for the lifting modes (Lighten included), not the rest.
+    assert!(close(dual_blend(MaskMode::Lighten, 0.0, 0.4), 0.4));
+    assert!(close(dual_blend(MaskMode::Difference, 0.0, 0.4), 0.0));
 }
 
 /// Texture Brightness and Contrast as Photoshop applies them, measured by stroking a 0..255 grey
@@ -1480,7 +1543,8 @@ fn a_soft_stroke_keeps_most_of_its_tips_softness() {
     // The default brush (10 % spacing), 100 px, hardness 0. Overlapping dabs build up (Flow); a
     // Gaussian-like tip keeps most of its area faint, so the stroke keeps about two thirds of the
     // tip's soft edge (half with the old smoothstep falloff).
-    let b = BrushSettings { size: 100.0, hardness: 0.0, pressure_size: false, ..Default::default() };
+    // The legacy tips on purpose: this pins the fork's own soft-edge invariant.
+    let b = BrushSettings { size: 100.0, hardness: 0.0, pressure_size: false, c3_tip_math: false, ..Default::default() };
     let stroke = cross_section(&b, &line(0.0, 400.0, 100.5), 200);
     let dab = cross_section(&b, &[StrokePoint::new(200.5, 100.5, 1.0)], 200);
     let (s, d) = (soft_edge_width(&stroke), soft_edge_width(&dab));
@@ -1490,7 +1554,8 @@ fn a_soft_stroke_keeps_most_of_its_tips_softness() {
 #[test]
 fn a_tiny_dabs_coverage_does_not_depend_on_where_it_lands_in_a_pixel() {
     let total = |x: f64, y: f64| {
-        let b = BrushSettings { size: 1.0, hardness: 1.0, pressure_size: false, ..Default::default() };
+        // Legacy tips: the C3 mask trades a little sub-pixel stability at 1 px for its falloff.
+        let b = BrushSettings { size: 1.0, hardness: 1.0, pressure_size: false, c3_tip_math: false, ..Default::default() };
         let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
         render_stroke(&mut s, &b, &[StrokePoint::new(x, y, 1.0)], None, false, 1.0);
         (0..10).flat_map(|py| (0..10).map(move |px| (px, py))).map(|(px, py)| s.rgba(px, py)[3]).sum::<f32>()

@@ -283,7 +283,7 @@ pub(crate) fn pattern_grid(app: &PhotocraftApp, ui: &mut egui::Ui, selected: &st
     let ctx = ui.ctx().clone();
     let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
     let mut picked = None;
-    ui.set_max_width(6.0 * (SWATCH + 4.0));
+    ui.set_max_width(5.0 * (SWATCH + 4.0));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
         for p in &app.session.patterns.items {

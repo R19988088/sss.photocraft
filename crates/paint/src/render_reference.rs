@@ -115,7 +115,14 @@ impl BrushContext {
                         if px < -1.0 || py < -1.0 || px > tw + 1.0 || py > th + 1.0 {
                             continue;
                         }
-                        let s = m.sample_clamped(level, px / tw, py / th);
+                        // render.rs:542; metal:1056 `tipAssetSample(uv, hardness, maskMode)`:
+                        // the fast path goes through the C3 sampled mask when c3_tip_math is on,
+                        // so the oracle must too, or the two disagree on sampled tips.
+                        let s = if b.c3_tip_math {
+                            crate::render::c3_sampled_mask(m, px / tw, py / th, hardness)
+                        } else {
+                            m.sample_clamped(level, px / tw, py / th)
+                        };
                         let val = if aliased { if s >= 0.5 { 1.0 } else { 0.0 } } else { s };
                         (val, 1.0 - s)
                     }

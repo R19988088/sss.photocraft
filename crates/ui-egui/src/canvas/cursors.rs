@@ -220,7 +220,19 @@ pub(super) fn alt_eyedropper(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui:
 
 /// Sample the image or targeted raster mask at (x, y) using the configured Sample Size.
 /// Write a valid sample to the foreground swatch, or to the background swatch with Alt.
+/// With the Color panel's 图案 source on, the sample fills the brush's pattern instead and
+/// leaves the swatch alone (as the reference application's eyedropper does): the patch is the
+/// brush's own size at the sample point, so painting reproduces the pixels exactly.
 pub(super) fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) {
+    // ⌥ samples the colour, not the pattern: the background swatch has no pattern side.
+    if app.session.tools.brush.pattern_enabled && !mods.alt {
+        let layers = app.ui.tool_options.eyedropper_sample.clone();
+        if let Err(e) = app.run("document.samplePattern", json!({"x": x, "y": y, "sampleLayer": layers})) {
+            app.ui.status = e;
+            app.ui.status_error = true;
+        }
+        return;
+    }
     let rgb = if let Some((surface, canvas)) = eyedropper_mask_source(app) {
         sample_layer_mask(surface, canvas, x, y, app.ui.tool_options.eyedropper_size)
     } else {

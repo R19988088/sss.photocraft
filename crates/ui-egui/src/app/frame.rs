@@ -298,9 +298,6 @@ impl PhotocraftApp {
         if ((chrome && self.ui.panels.options_bar) || tabbed_in) && !home {
             panels::options_bar(self, ui);
         }
-        if chrome && self.ui.panels.status_bar && !home {
-            panels::status_bar(self, ui);
-        }
         let toolbar_shown = ((chrome && self.ui.panels.toolbar) || tabbed_in) && !home;
         // craft-ui's layout holds the canvas as its protected `canvas` panel.
         let docking = ((chrome && self.ui.panels.dock) || tabbed_in) && !home;
@@ -322,6 +319,11 @@ impl PhotocraftApp {
             let t = theme::Tokens::get(&ctx);
             let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
+                // The status bar floats over the canvas's bottom, laid out before the canvas so
+                // the two share the frame's rect and the canvas keeps every point of it.
+                if chrome && self.ui.panels.status_bar {
+                    panels::status_bar(self, ui);
+                }
                 canvas::document_area(self, ui);
             });
         } else {
@@ -334,6 +336,9 @@ impl PhotocraftApp {
                 let t = theme::Tokens::get(&ctx);
                 let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
                 egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
+                    if chrome && self.ui.panels.status_bar && !home {
+                        panels::status_bar(self, ui);
+                    }
                     canvas::document_area(self, ui);
                 });
                 if !home {

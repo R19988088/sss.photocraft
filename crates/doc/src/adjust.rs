@@ -17,6 +17,45 @@ pub fn is_identity_curve(points: &[CurvePoint]) -> bool {
     }
 }
 
+/// The dot of a [`Adjustment::Halftone`] screen: Photoshop's Bitmap › Halftone Screen set
+/// (Round, Diamond, Ellipse, Line, Square, Cross) plus the screen shapes the reference app's
+/// comic screentone offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HalftoneShape {
+    /// A round dot growing from the cell's centre.
+    #[default]
+    Round,
+    /// A diamond (a square screen at 45° to its own grid).
+    Diamond,
+    /// An ellipse, wider than tall.
+    Ellipse,
+    /// A square dot filling its cell corner to corner.
+    Square,
+    /// Two bars crossing at the cell's centre.
+    Cross,
+    /// One bar across the cell: a line screen.
+    Line,
+}
+
+impl HalftoneShape {
+    /// The shape's index in the shader's parameter record (declaration order).
+    pub fn index(self) -> u32 {
+        match self {
+            HalftoneShape::Round => 0,
+            HalftoneShape::Diamond => 1,
+            HalftoneShape::Ellipse => 2,
+            HalftoneShape::Square => 3,
+            HalftoneShape::Cross => 4,
+            HalftoneShape::Line => 5,
+        }
+    }
+
+    /// Every shape, in index order.
+    pub const ALL: [HalftoneShape; 6] =
+        [HalftoneShape::Round, HalftoneShape::Diamond, HalftoneShape::Ellipse, HalftoneShape::Square, HalftoneShape::Cross, HalftoneShape::Line];
+}
+
 /// A 3D LUT file format (Photoshop's `LUTFormat`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LutFormat {
@@ -304,6 +343,39 @@ pub enum Adjustment {
         relative: bool,
         adjustments: [[f32; 4]; 9],
     },
+    /// A dot screen (网点 / comic screentone) that turns the tones below into printable halftone
+    /// dots. Photoshopped as an artistic pass on the composite: every pixel picks its dot from the
+    /// tone at its own document position, so the effect is analytic — one screen per channel, no
+    /// neighbourhood read, no extra pass (`photocraft-compose::adjust::halftone` and the shader's
+    /// `halftone` case evaluate the same formula).
+    Halftone {
+        /// Screen period in pixels: the distance between neighbouring dot centres (1..=200).
+        size: f32,
+        /// Screen angle in degrees (the cell grid is rotated about the canvas origin).
+        angle: f32,
+        /// Dot gain in percent: 50 prints the tone as it is, above fatten the dots, below thin them.
+        density: f32,
+        /// Tone contrast about mid-grey in percent (-100..=100).
+        contrast: f32,
+        /// Tone brightness in percent (-100..=100); negative darkens the dots.
+        brightness: f32,
+        /// Per-cell wobble of the dot centres in percent of half a cell (0..=100): a hand-drawn
+        /// screen instead of a mechanically regular one.
+        jitter: f32,
+        shape: HalftoneShape,
+        /// One screen on the grey tone (black dots on white), or one per channel at its own angle.
+        color: bool,
+        /// Leave near-white pixels untouched, so paper stays paper.
+        preserve_white: bool,
+        /// White tolerance in percent of the tone range (0..=100): tones this close to white
+        /// print as bare paper, so highlights carry no stray dots.
+        #[serde(default)]
+        white: f32,
+        /// Black tolerance in percent of the tone range (0..=100): tones this close to black
+        /// print as one solid dot.
+        #[serde(default)]
+        black: f32,
+    },
     /// A PSD adjustment we can't evaluate yet; preserved raw for round-trip, shared between
     /// document snapshots (#4535).
     Unsupported {
@@ -331,6 +403,7 @@ impl Adjustment {
             Adjustment::Threshold { .. } => "Threshold",
             Adjustment::GradientMap { .. } => "Gradient Map",
             Adjustment::SelectiveColor { .. } => "Selective Color",
+            Adjustment::Halftone { .. } => "Halftone",
             Adjustment::Unsupported { .. } => "Adjustment",
         }
     }

@@ -1480,6 +1480,8 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     // The transform preview is image content: it goes under the grid and guides, which
     // stay visible across a layer being transformed (#5086); the box is drawn later.
     crate::transform_tool::draw_content(app, painter, xf);
+    // Liquify's proxy follows this frame's zoom before it is drawn (liquify_brush).
+    crate::distort_ui::prepare_content(app, xf.zoom);
     // So are Puppet Warp's, Perspective Warp's and Vanishing Point's warped pixels (#7781).
     crate::distort_ui::draw_content(app, painter, xf);
     if app.ui.extras.grid && app.ui.view.extras {

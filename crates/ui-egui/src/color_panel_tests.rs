@@ -183,7 +183,11 @@ fn every_mode_works_in_every_theme() {
                     assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 0], "{kind:?} {mode:?}");
                 }
             }
-            assert!(h.query_by_label("Hue").is_none() && h.query_by_label("Saturation").is_none(), "{kind:?} {mode:?}: no old sliders");
+            // The C2 layout is the exception: its hue strip and "Saturation / Brightness" field
+            // are labelled like Photoshop's HSB sliders but are the reference's own controls.
+            if mode != ColorPanelMode::C2 {
+                assert!(h.query_by_label("Hue").is_none() && h.query_by_label("Saturation").is_none(), "{kind:?} {mode:?}: no old sliders");
+            }
         }
     }
 }
@@ -348,9 +352,10 @@ fn color_wheel_ring_sets_hue_and_triangle_sets_saturation_and_brightness() {
     assert!((hsv[0] - 90.0).abs() < 4.0 && hsv[1] < 0.9 && hsv[2] < 0.95, "{after:?} {hsv:?}");
 }
 
-/// Picking a mode from the panel menu changes the panel; the theme never does.
+/// The panel menu has no display picker — the reference layout is the panel's only face — and
+/// a theme change never touches the mode; the ramp and copy commands still work.
 #[test]
-fn panel_menu_picks_the_mode_and_ramp() {
+fn panel_menu_has_no_display_picker_and_picks_the_ramp() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = [0.2, 0.6, 0.8, 1.0];
     let mut h = Harness::builder().with_size(vec2(260.0, 700.0)).build_ui_state(
@@ -363,13 +368,11 @@ fn panel_menu_picks_the_mode_and_ramp() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    assert!(h.query_by_label("✔ C2 Color").is_some(), "the C2 layout is the default");
-    for mode in ColorPanelMode::ALL.into_iter().skip(1).chain([ColorPanelMode::HueCube, ColorPanelMode::WebColorSliders]) {
-        h.get_by_label(&format!("   {}", mode.label())).click();
-        h.run_steps(2);
-        assert_eq!(h.state().ui.color_panel.mode, mode);
-        assert!(h.query_by_label(&format!("✔ {}", mode.label())).is_some());
+    // One face: no display picker, so no traditional mode can be chosen (or restored) here.
+    for mode in ColorPanelMode::ALL {
+        assert!(h.query_all_by_label(&mode.label()).count() == 0, "{mode:?} is not offered");
     }
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
     h.get_by_label("   Current Colors").click();
     h.run_steps(2);
     assert_eq!(h.state().ui.color_panel.ramp, ColorRamp::CurrentColors);
@@ -381,11 +384,11 @@ fn panel_menu_picks_the_mode_and_ramp() {
     let copied: Vec<_> =
         h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(s) = c { Some(s.clone()) } else { None }).collect();
     assert_eq!(copied, ["3399cc"]);
-    // Switching theme keeps the mode.
+    // Switching theme keeps the mode: still the reference layout, no traditional fallback.
     let ctx = h.ctx.clone();
     h.state_mut().set_theme(&ctx, ThemeKind::Pro);
     h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::WebColorSliders);
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
 }
 
 /// `ui.set colorPanel` merges, so setting the mode keeps the edited chip; bad values change nothing.
@@ -575,19 +578,38 @@ fn every_slider_mode_recolours_the_selected_shape() {
 #[test]
 fn color_panel_options_survive_a_restart() {
     let mut first = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    first.ui.color_panel.mode = ColorPanelMode::HsbSliders;
     first.ui.color_panel.ramp = ColorRamp::GrayscaleRamp;
+    first.ui.color_panel.web_safe_ramp = true;
     crate::color_panel_ui::persist(&mut first);
     let saved = first.session.prefs().clone();
 
     let mut next = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     next.session.prefs.edit(|p| *p = saved);
     crate::color_panel_ui::restore(&mut next);
-    assert_eq!((next.ui.color_panel.mode, next.ui.color_panel.ramp), (ColorPanelMode::HsbSliders, ColorRamp::GrayscaleRamp));
+    // The options survive; the display does not, because the panel has only the reference layout.
+    assert_eq!((next.ui.color_panel.ramp, next.ui.color_panel.web_safe_ramp), (ColorRamp::GrayscaleRamp, true));
+    assert_eq!(next.ui.color_panel.mode, ColorPanelMode::C2, "the display never comes back traditional");
 
     let mut fresh = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     crate::color_panel_ui::restore(&mut fresh);
     assert_eq!(fresh.ui.color_panel.mode, ColorPanelMode::C2, "no saved options: the default");
+}
+
+/// Whatever the preferences record — an older file's traditional mode, a hand edit or
+/// `ui.set colorPanel.mode` — the panel comes back as the reference layout, and the preference
+/// is rewritten to match: one face, no traditional fallback.
+#[test]
+fn the_panel_never_falls_back_to_a_traditional_mode() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let hue_cube = serde_json::json!({"background": false, "mode": "hueCube", "ramp": "rgbSpectrum"});
+    app.session.prefs.edit(|p| p.color_panel = hue_cube);
+    crate::color_panel_ui::restore(&mut app);
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the stored traditional mode is dropped");
+    assert_eq!(app.ui.color_panel.ramp, ColorRamp::RgbSpectrum, "the rest of the file is kept");
+    crate::color_panel_ui::persist(&mut app);
+    let stored: crate::state::ColorPanelState =
+        serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap();
+    assert_eq!(stored.mode, ColorPanelMode::C2, "and the preference no longer asks for it");
 }
 
 /// CodeRabbit on #9606: a preference change made outside the panel (`prefs.set`, a reset) is kept.
@@ -595,20 +617,103 @@ fn color_panel_options_survive_a_restart() {
 #[test]
 fn an_outside_preference_change_reaches_the_live_panel() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    app.ui.color_panel.mode = ColorPanelMode::HsbSliders;
     crate::color_panel_ui::persist(&mut app);
     // As prefs.set or a reset to defaults would: the stored options change under the panel.
     let mut other = app.ui.color_panel;
-    other.mode = ColorPanelMode::GrayscaleSlider;
+    other.ramp = ColorRamp::CurrentColors;
     app.session.prefs.edit(|p| p.color_panel = serde_json::to_value(other).unwrap());
     crate::color_panel_ui::persist(&mut app);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::GrayscaleSlider, "the live panel follows the preference");
+    assert_eq!(app.ui.color_panel.ramp, ColorRamp::CurrentColors, "the live panel follows the preference");
     let stored: crate::state::ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap();
-    assert_eq!(stored.mode, ColorPanelMode::GrayscaleSlider, "and the preference isn't overwritten");
+    assert_eq!(stored.ramp, ColorRamp::CurrentColors, "and the preference isn't overwritten");
+    // A stored traditional mode is the one option that never reaches the panel.
+    let mut mode_change = app.ui.color_panel;
+    mode_change.mode = ColorPanelMode::GrayscaleSlider;
+    app.session.prefs.edit(|p| p.color_panel = serde_json::to_value(mode_change).unwrap());
+    crate::color_panel_ui::persist(&mut app);
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the traditional mode is not restored");
     // A reset to defaults clears the stored options: the panel goes back to its defaults too.
     app.session.prefs.edit(|p| p.color_panel = serde_json::Value::Null);
     crate::color_panel_ui::persist(&mut app);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::HueCube, "reset: the default mode");
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "reset: the default mode");
     crate::color_panel_ui::persist(&mut app);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::HueCube, "and it stays reset");
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "and it stays reset");
+}
+
+/// C3 draws its palette at a fixed scale (PaletteLayerPanels: `scale = 1`, core 168): the
+/// picker stays a 168 pt square whatever the dock's width, so the panel's height never follows
+/// the dock.
+#[test]
+fn the_c2_picker_keeps_a_168_pt_square_at_any_dock_width() {
+    let mut sides = Vec::new();
+    for width in [300.0, 420.0] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.tools.foreground = [0.2, 0.4, 0.6, 1.0];
+        app.ui.color_panel.mode = ColorPanelMode::C2;
+        let mut h = Harness::builder().with_size(vec2(width, 400.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    crate::color_panel_ui::panel(app, ui);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+        h.run_steps(3);
+        let field = h.get_by_label("Saturation / Brightness").rect();
+        sides.push((field.width().round(), field.height().round()));
+    }
+    assert_eq!(sides, [(168.0, 168.0), (168.0, 168.0)], "the picker is fixed, not stretched with the dock");
+}
+
+/// The C2 layout's 实线/图案 switch at the top of the panel: 图案 arms the brush for a sampled
+/// pattern, 实线 takes it off again.
+#[test]
+fn the_c2_source_switch_tops_the_panel() {
+    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::C2, [1.0, 0.0, 1.0, 1.0]);
+    assert!(!h.state().session.tools.brush.pattern_enabled, "实线 until asked");
+    h.get_by_label("Pattern").click();
+    h.run_steps(2);
+    assert!(h.state().session.tools.brush.pattern_enabled, "图案 arms the pattern");
+    h.get_by_label("Solid").click();
+    h.run_steps(2);
+    assert!(!h.state().session.tools.brush.pattern_enabled, "实线 turns it off");
+}
+
+/// Picking a solid colour leaves 图案 (the brush paints what was just picked) but keeps the
+/// sampled patch, so 图案 brings it back.
+#[test]
+fn picking_a_solid_colour_leaves_the_pattern_source() {
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, false);
+    h.state_mut().session.tools.foreground = [1.0, 0.0, 0.0, 1.0];
+    h.state_mut().run("document.samplePattern", json!({"x": 4, "y": 4, "size": 4})).unwrap();
+    h.run_steps(2);
+    assert!(h.state().session.tools.brush.pattern_enabled);
+    let patch = h.state().session.tools.brush.sampled_pattern.clone();
+    let field = h.get_by_label("Saturation / Brightness").rect().center();
+    press(&mut h, field, Modifiers::NONE);
+    assert!(!h.state().session.tools.brush.pattern_enabled, "a solid pick leaves the pattern source");
+    assert_eq!(h.state().session.tools.brush.sampled_pattern, patch, "and the patch is kept");
+}
+
+/// 混合强度 lives in the Color tab's panel menu and drives the brush's pigment response
+/// through the `painting.pigmentMixStrength` preference, which survives a restart.
+#[test]
+fn the_panel_menu_sets_the_brush_mixing_strength() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut h = Harness::builder().with_size(vec2(320.0, 500.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::color_panel_ui::panel_menu(app, ui);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+    h.run_steps(3);
+    assert_eq!(h.query_all_by_label("Mixing Strength").count(), 2, "the row: its caption and its slider");
+    assert_eq!(h.state().session.prefs().painting.pigment_mix_strength, 0.0);
+    type_into(&mut h, egui::accesskit::Role::SpinButton, 0, "70");
+    assert_eq!(h.state().session.prefs().painting.pigment_mix_strength, 70.0);
+    assert!((h.state().session.tools.brush.pigment_mix_strength - 0.7).abs() < 1e-6, "the engine copies it onto the brush");
 }

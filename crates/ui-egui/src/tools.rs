@@ -24,6 +24,7 @@ pub mod eyedropper_ui;
 pub mod frame_tool;
 pub mod gradient_ui;
 pub mod lasso_ui;
+pub mod liquify_brush;
 pub mod magnetic_lasso_ui;
 pub mod move_box;
 pub mod move_distance;

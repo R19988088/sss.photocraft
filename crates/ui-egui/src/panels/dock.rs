@@ -226,7 +226,14 @@ pub(crate) fn canvas_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if app.ui.panels.rail && t.pro {
         rail(app, ui, &t);
     }
-    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| crate::canvas::document_area(app, ui));
+    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
+        // The status bar floats over the canvas's bottom, laid out before the canvas so the two
+        // share the panel's rect and the canvas keeps every point of it.
+        if !app.ui.view.hides_chrome() && app.ui.panels.status_bar {
+            super::status_bar(app, ui);
+        }
+        crate::canvas::document_area(app, ui);
+    });
 }
 
 /// The icon rail's width and its buttons' size, in points.

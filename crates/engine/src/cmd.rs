@@ -1258,6 +1258,11 @@ fn build() -> Vec<CommandSpec> {
             "Color Lookup…",
             r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
         ),
+        (
+            "halftone",
+            "Halftone…",
+            r##"{"size":1..200=8,"angle":-180..180=45,"density":0..100=50,"contrast":-100..100=0,"brightness":-100..100=0,"jitter":0..100=0,"shape":"round|diamond|ellipse|square|cross|line"="round","color":bool=false,"preserveWhite":bool=true,"white":0..100=0,"black":0..100=0} (a dot screen over the layers below: size = the screen's period in pixels, angle = screen angle in degrees, density = dot gain in percent (50 prints the tone as it is), brightness negative darkens the dots, jitter wobbles each cell's dot, shape = the dot's shape, color = one screen per channel at its own angle instead of one on the grey tone, preserveWhite keeps near-white pixels untouched, white/black = the white and black tolerances in percent of the tone range: tones that close to white print as bare paper, to black as solid ink)"##,
+        ),
     ];
     for &(kind, label, params) in ADJ {
         let layer_id: &'static str = Box::leak(format!("layer.newAdjustmentLayer.{kind}").into_boxed_str());

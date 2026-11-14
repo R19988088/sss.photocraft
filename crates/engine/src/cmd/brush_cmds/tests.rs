@@ -20,6 +20,25 @@ fn same_pixels(a: &Surface, b: &Surface, r: Rect) -> bool {
 }
 
 #[test]
+fn a_semi_transparent_dab_mixes_with_the_paint_beneath_through_the_pigment_lut() {
+    // A 30% blue dab over dry yellow: a plain over keeps red and green equal and reads grey;
+    // the pigment response reads green. The strength is the preference the Color panel writes.
+    let run = |strength: i64| {
+        let mut s = session(40, 40);
+        s.execute("paint.pencil", json!({"points": [[20, 20]], "size": 30, "hardness": 100, "opacity": 1.0, "color": "#ffff00"})).unwrap();
+        if strength > 0 {
+            s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})).unwrap();
+        }
+        s.execute("paint.pencil", json!({"points": [[20, 20]], "size": 10, "hardness": 100, "opacity": 0.3, "color": "#0000ff"})).unwrap();
+        rgba(&s, 20, 20)
+    };
+    let linear = run(0);
+    assert!((linear[0] - linear[1]).abs() < 1e-3, "a plain over moves red and green alike: {linear:?}");
+    let mixed = run(100);
+    assert!(mixed[1] > mixed[0] + 0.02, "blue over yellow mixes green, not grey: {mixed:?}");
+}
+
+#[test]
 fn stroke_backwards_compatible() {
     let mut s = session(80, 40);
     let r = s.execute("paint.stroke", json!({"points": [[4, 20], [60, 20]], "size": 6, "color": "#0000ff"})).unwrap();

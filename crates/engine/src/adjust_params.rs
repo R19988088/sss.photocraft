@@ -11,7 +11,7 @@
 
 use photocraft_color::ColorMode;
 use photocraft_doc::Adjustment;
-use photocraft_doc::adjust::{CURVE_MAP_LEN, CurvePoint, HueRange, LevelsChannel, ToneSpace, curve_map, curve_map_outputs};
+use photocraft_doc::adjust::{CURVE_MAP_LEN, CurvePoint, HalftoneShape, HueRange, LevelsChannel, ToneSpace, curve_map, curve_map_outputs};
 use serde_json::{Map, Value, json};
 
 use crate::{EngineError, Result};
@@ -204,6 +204,36 @@ pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: Color
             Adjustment::GradientMap { stops, reverse: r.boolean("reverse", rev0)?, dither: r.boolean("dither", dither0)? }
         }
         "selectiveColor" => crate::adjust_cmds::selective_from_params(p, base.filter(|b| matches!(b, Adjustment::SelectiveColor { .. })))?,
+        "halftone" => {
+            // The screen's dot: size and angle of the screen, the tone's response, the dot's
+            // shape, and whether each channel gets its own screen.
+            let (s0, a0, d0, c0, b0, j0, sh0, col0, w0, wt0, bk0) = match base {
+                Some(Adjustment::Halftone { size, angle, density, contrast, brightness, jitter, shape, color, preserve_white, white, black }) => {
+                    (*size, *angle, *density, *contrast, *brightness, *jitter, *shape, *color, *preserve_white, *white, *black)
+                }
+                _ => (8.0, 45.0, 50.0, 0.0, 0.0, 0.0, photocraft_doc::adjust::HalftoneShape::Round, false, true, 0.0, 0.0),
+            };
+            let shape = match r.get("shape") {
+                None => sh0,
+                Some(v) => {
+                    let name = v.as_str().ok_or_else(|| bad(&cmd, "`shape` must be a string"))?;
+                    halftone_shape(name).ok_or_else(|| bad(&cmd, format!("unknown halftone shape `{name}`")))?
+                }
+            };
+            Adjustment::Halftone {
+                size: r.num("size", s0, 1.0, 200.0)?,
+                angle: r.num("angle", a0, -180.0, 180.0)?,
+                density: r.num("density", d0, 0.0, 100.0)?,
+                contrast: r.num("contrast", c0, -100.0, 100.0)?,
+                brightness: r.num("brightness", b0, -100.0, 100.0)?,
+                jitter: r.num("jitter", j0, 0.0, 100.0)?,
+                shape,
+                color: r.boolean("color", col0)?,
+                preserve_white: r.boolean("preserveWhite", w0)?,
+                white: r.num("white", wt0, 0.0, 100.0)?,
+                black: r.num("black", bk0, 0.0, 100.0)?,
+            }
+        }
         "colorLookup" => crate::adjust_cmds::lookup_from_params(p, base.filter(|b| matches!(b, Adjustment::ColorLookup { .. })))?,
         other => return Err(bad("adjustment", format!("unknown adjustment kind `{other}`"))),
     })
@@ -286,6 +316,11 @@ pub fn to_params(adj: &Adjustment) -> Value {
         Adjustment::ColorLookup { tetrahedral, dither, .. } => {
             json!({"interpolation": if *tetrahedral { "tetrahedral" } else { "trilinear" }, "dither": dither})
         }
+        Adjustment::Halftone { size, angle, density, contrast, brightness, jitter, shape, color, preserve_white, white, black } => json!({
+            "size": size, "angle": angle, "density": density, "contrast": contrast, "brightness": brightness,
+            "jitter": jitter, "shape": halftone_shape_name(*shape), "color": color, "preserveWhite": preserve_white,
+            "white": white, "black": black
+        }),
     }
 }
 
@@ -293,6 +328,31 @@ pub fn to_params(adj: &Adjustment) -> Value {
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
+}
+
+/// The [`HalftoneShape`] `name` stands for, as the UI's and the API's string names spell it.
+pub fn halftone_shape(name: &str) -> Option<HalftoneShape> {
+    Some(match name {
+        "round" => HalftoneShape::Round,
+        "diamond" => HalftoneShape::Diamond,
+        "ellipse" => HalftoneShape::Ellipse,
+        "square" => HalftoneShape::Square,
+        "cross" => HalftoneShape::Cross,
+        "line" => HalftoneShape::Line,
+        _ => return None,
+    })
+}
+
+/// The API name of a halftone dot shape (the inverse of [`halftone_shape`]).
+pub fn halftone_shape_name(shape: HalftoneShape) -> &'static str {
+    match shape {
+        HalftoneShape::Round => "round",
+        HalftoneShape::Diamond => "diamond",
+        HalftoneShape::Ellipse => "ellipse",
+        HalftoneShape::Square => "square",
+        HalftoneShape::Cross => "cross",
+        HalftoneShape::Line => "line",
+    }
 }
 
 /// Typed, clamped access to optional params.

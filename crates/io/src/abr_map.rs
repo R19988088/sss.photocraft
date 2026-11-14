@@ -388,6 +388,9 @@ impl Mapper<'_> {
                 tilt_scale: pct(d, "tiltScale").unwrap_or(0.0).clamp(0.0, 2.0),
                 brush_projection: boolean(d, "brushProjection").unwrap_or(false),
                 stroke_jitter: Default::default(),
+                // Tilt Angle / Tilt Size / Tilt Opacity and Follow Azimuth are ProCraft's own tilt
+                // controls: Photoshop's ABR has no keys for them, so they stay at their defaults.
+                ..Default::default()
             };
         }
         // Scattering.

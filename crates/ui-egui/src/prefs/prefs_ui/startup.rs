@@ -173,7 +173,7 @@ fn finish_recovery(app: &mut PhotocraftApp, key: &str, v: &Value) {
         .zip(v.get("revision").and_then(Value::as_u64))
         .and_then(|(id, revision)| app.session.documents().iter().find(|st| st.doc.id.0 == id).map(|st| (st.doc.id, revision, st.doc.name.clone())));
     let Some((id, revision, name)) = recovered else {
-        crate::notices::error(app, "The recovered document is no longer open".into());
+        crate::notices::error(app, tl!("The recovered document is no longer open").into());
         return;
     };
     // Track the admitted snapshot's revision, even if another job has already edited it.

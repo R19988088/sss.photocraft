@@ -116,6 +116,8 @@ fn gray(c: vec3<f32>) -> f32 { return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b; }
 
 const M_NORMAL: i32 = 1;
 const M_DISSOLVE: i32 = 2;
+/// Shade (ProCraft): a premultiplied min, handled in `composite` like `blend` handles it there.
+const M_SHADE: i32 = 34;
 
 // Backdrop extremes within EDGE of 0 / 1 count as exact (psblend::EDGE): composited values that
 // should be 1 come out a rounding step below it, which would flip Color Burn's corner case.
@@ -219,6 +221,8 @@ fn blend_channel(mode: i32, cb: f32, cs: f32) -> f32 {
             if (cs >= 1.0) { return 1.0; }
             return min(cb / (1.0 - cs), 1.0);
         }
+        case 34: { return min(cb, cs); }                       // Shade (straight colour; the
+                                                               // premultiplied form is in composite)
         default: { return cs; }                                 // Normal, Dissolve, PassThrough
     }
 }
@@ -271,6 +275,14 @@ fn composite(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32) -> vec4<f32> {
     let ab = b.a;
     let as_ = s.a * opacity;
     if (as_ <= 0.0) { return b; }
+    // Shade: the darker of the backdrop and the source laid over it, premultiplied and alpha
+    // too (psblend::composite): nothing where there is nothing below.
+    if (mode == M_SHADE) {
+        let ao = min(ab, as_ + ab * (1.0 - as_));
+        if (ao <= 0.0) { return vec4(0.0); }
+        let laid = s.rgb * as_ + b.rgb * ab * (1.0 - as_);
+        return vec4(min(b.rgb * ab, laid) / ao, ao);
+    }
     if ((op.flags & F_LAB) != 0u && mode == M_NORMAL && ab > 0.0) {
         // psblend::composite on Lab documents: Normal mixes in CIELAB.
         let ao = as_ + ab * (1.0 - as_);
@@ -296,7 +308,9 @@ fn text_dec(v: vec3<f32>, g: f32) -> vec3<f32> {
 
 // `psblend::composite_gamma`: coverage mixed in the text blending space (type layers, 1.45).
 fn composite_g(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, gamma_on: bool) -> vec4<f32> {
-    if (!gamma_on) { return composite(mode, b, s, opacity); }
+    // Shade compares premultiplied colour, which the text gamma mix cannot express
+    // (psblend::composite_gamma takes the plain composite for it).
+    if (!gamma_on || mode == M_SHADE) { return composite(mode, b, s, opacity); }
     let ab = b.a;
     let as_ = s.a * opacity;
     if (as_ <= 0.0) { return b; }
@@ -330,6 +344,12 @@ fn composite_fill(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, fill: f32
     var alone = over * f;
     if (!special) { over = alone; }
     if (over <= 0.0) { return b; }
+    if (mode == M_SHADE) {
+        let ao = min(ab, over + ab * (1.0 - over));
+        if (ao <= 0.0) { return vec4(0.0); }
+        let laid = s.rgb * over + b.rgb * ab * (1.0 - over);
+        return vec4(min(b.rgb * ab, laid) / ao, ao);
+    }
     let ao = ab + (1.0 - ab) * alone;
     if (ao <= 0.0) { return vec4(0.0); }
     if (!special && !gamma_on && (op.flags & F_LAB) != 0u && mode == M_NORMAL && ab > 0.0) {
@@ -631,6 +651,95 @@ fn tone_channel(row: i32, v: f32, identity: f32, extrapolate: f32) -> f32 {
     return lut(row, v);
 }
 
+// The cell hash the halftone screen's jitter offsets come from: compose::adjust::halftone::cell_noise,
+// bit for bit, so the CPU and the GPU wobble each cell the same way.
+fn halftone_noise(p: vec2<i32>) -> f32 {
+    var h = (bitcast<u32>(p.x) * 0x8da6b343u) ^ (bitcast<u32>(p.y) * 0xd8163841u) ^ 0x9e3779b9u;
+    h = h ^ (h >> 15u);
+    h = h * 0x2c1b3c6du;
+    h = h ^ (h >> 12u);
+    return f32(h & 0xffffu) / 65536.0;
+}
+
+// The halftone screen axis `i`: 0 red, 1 green, 2 blue (blue's is the layer's own angle, and the
+// mono screen's too). The axes arrive turned already (p0.yz, p1.xy, p1.zw; see
+// compose::adjust::halftone::program_params).
+fn halftone_axis(i: i32) -> vec2<f32> {
+    if (i == 0) { return op.p1.xy; }
+    if (i == 1) { return op.p1.zw; }
+    return op.p0.yz;
+}
+
+// One screen's dot coverage at the document pixel `px`: compose::adjust::halftone::dot, the same
+// cell grid, the same tone and shape maths, and one pixel of antialiasing across the dot's edge.
+// Past the ink dot's merge point the screen turns into the paper the dots leave between them.
+fn halftone_dot(tone: f32, px: vec2<i32>, axis: i32) -> f32 {
+    let period = op.p0.x;
+    let ax = halftone_axis(axis);
+    let u = f32(px.x) * ax.x + f32(px.y) * ax.y;
+    let v = f32(px.y) * ax.x - f32(px.x) * ax.y;
+    let iu = floor(u / period);
+    let iv = floor(v / period);
+    let fu = u - iu * period;
+    let fv = v - iv * period;
+    let cell = vec2<i32>(i32(iu), i32(iv));
+    let ox = (halftone_noise(cell) - 0.5) * op.p2.z * period;
+    let oy = (halftone_noise(cell + vec2<i32>(7919, 104729)) - 0.5) * op.p2.z * period;
+    let dx = fu - 0.5 * period - ox;
+    let dy = fv - 0.5 * period - oy;
+    let da = abs(dx);
+    let db = abs(dy);
+    var t = clamp((tone - 0.5) * (1.0 + op.p2.x) + 0.5 + op.p2.y, 0.0, 1.0);
+    // White and black tolerance (op.p3.y, op.p3.z): the ends of the tone range print as pure
+    // paper and pure ink. White first, as a tone can only be clipped from one end.
+    if (t >= 1.0 - op.p3.y) {
+        t = 1.0;
+    } else if (t <= op.p3.z) {
+        t = 0.0;
+    }
+    let area = clamp((1.0 - t) * op.p0.w, 0.0, 1.0);
+    let cell_area = period * period;
+    let shape = i32(op.p2.w);
+    // The ink fraction at which the shape reaches its cell's edges (a circle at π/4, a diamond
+    // and the ellipse at half their cell); a square, line and cross tile and never merge.
+    var merge_at = 1.0;
+    if (shape == 0) {
+        merge_at = 0.7853982;
+    } else if (shape == 1 || shape == 2) {
+        merge_at = 0.5;
+    }
+    if (area <= merge_at) {
+        let a = max(area, 0.0001);
+        var sd = 0.0;
+        if (shape == 0) {
+            sd = sqrt(dx * dx + dy * dy) - period * sqrt(a / 3.1415927);
+        } else if (shape == 1) {
+            sd = (da + db - period * sqrt(a * 0.5)) * 0.70710678;
+        } else if (shape == 2) {
+            let r = period * sqrt(a / 3.1415927);
+            let ea = r * 1.4;
+            let eb = r * 0.7;
+            sd = (sqrt((dx * dx) / (ea * ea) + (dy * dy) / (eb * eb)) - 1.0) * eb;
+        } else if (shape == 3) {
+            sd = max(da, db) - period * sqrt(a) * 0.5;
+        } else if (shape == 4) {
+            sd = min(da, db) - period * (1.0 - sqrt(1.0 - a)) * 0.5;
+        } else {
+            sd = db - period * a * 0.5;
+        }
+        // A dot smaller than a pixel covers no more than its own area, which keeps near-white
+        // paper clean; the 1px edge keeps dots and line screens smooth at any angle.
+        return min(clamp(0.5 - sd, 0.0, 1.0), area * cell_area);
+    }
+    // The paper between four merged dots: at full ink there is none, so black prints solid.
+    let paper = 1.0 - area;
+    let r2 = period * sqrt(paper / 3.1415927);
+    let cx = da - 0.5 * period;
+    let cy = db - 0.5 * period;
+    let hole = min(clamp(0.5 - (sqrt(cx * cx + cy * cy) - r2), 0.0, 1.0), paper * cell_area);
+    return 1.0 - hole;
+}
+
 fn adjust(c: vec3<f32>) -> vec3<f32> {
     let hdr = (op.flags & F_HDR) != 0u;
     let p0 = op.p0;
@@ -777,6 +886,16 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
             return o;
         }
         case 15: { return selective_color(c, p0.x > 0.5); }                       // Selective color
+        case 18: {                                                              // Halftone (compose::adjust::halftone)
+            // p3 = (flags, white, black, 0): bit 0 one screen per channel, bit 1 Preserve White.
+            let ht_flags = i32(p3.x + 0.5);
+            if ((ht_flags & 2) != 0 && min(min(c.r, c.g), c.b) >= 252.0 / 255.0) { return c; }
+            if ((ht_flags & 1) != 0) {
+                return vec3(1.0 - halftone_dot(c.r, adj_px, 0), 1.0 - halftone_dot(c.g, adj_px, 1), 1.0 - halftone_dot(c.b, adj_px, 2));
+            }
+            let tone = 0.3 * c.r + 0.59 * c.g + 0.11 * c.b;
+            return vec3(1.0 - halftone_dot(tone, adj_px, 2));
+        }
         case 16: {                                                             // Color lookup (3D LUT)
             var o = color_lookup(c, i32(p0.x), p0.y > 0.5);
             if (p0.z > 0.5) { o = clamp(o + bayer4(adj_px) / 255.0, vec3(0.0), vec3(1.0)); }

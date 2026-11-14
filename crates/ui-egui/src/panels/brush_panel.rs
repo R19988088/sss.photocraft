@@ -42,8 +42,12 @@ pub(crate) fn section_visible(section: usize) -> bool {
 
 /// Panel width and the stroke strip's size.
 pub(crate) const WIDTH: f32 = 340.0;
+const PANEL_PAD: f32 = 10.0;
 const LIST_WIDTH: f32 = 120.0;
 const STRIP: (u32, u32) = (368, 60);
+
+/// The blend mode picker in the lane-tab row: narrow enough for the two tabs to keep their place.
+const MODE_PICKER_WIDTH: f32 = 82.0;
 
 /// Height the panel opens at, and the shortest it can be pulled with the bottom grip.
 const DEFAULT_HEIGHT: f32 = 640.0;
@@ -308,8 +312,9 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
                 if box_resp.clicked() {
                     set_section_enabled(b, i, !enabled);
                 }
-                x += 20.0;
             }
+            // The rows without a box pad to the same column, as Photoshop does.
+            x += 20.0;
             let color = if sel { t.text } else { t.text_dim };
             let font = if i == 0 { theme::semibold(12.0) } else { theme::medium(12.0) };
             let mut job = egui::text::LayoutJob::simple_singleline(section_label(name).to_string(), font, color);
@@ -331,13 +336,8 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
     });
 }
 
-fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    let before = app.session.tools.brush.clone();
-    let mut brush = before.clone();
-    crate::brush_sections::dual_brush_header(ui, &mut brush, &mut app.ui.brush_lane);
-    commit_gesture(app, ui.ctx(), &before, &brush);
-    ui.add_space(6.0);
-    ui.push_id(("brush-lane", app.ui.brush_lane), |ui| settings_lane(app, ui));
+fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui, width: f32) {
+    ui.push_id(("brush-lane", app.ui.brush_lane), |ui| settings_lane(app, ui, width));
 }
 
 fn brush_with_secondary(parent: &BrushSettings, secondary: &BrushSettings) -> BrushSettings {
@@ -358,14 +358,19 @@ fn brush_with_secondary(parent: &BrushSettings, secondary: &BrushSettings) -> Br
     brush
 }
 
-fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui, width: f32) {
     let t = Tokens::get(ui.ctx());
     let before = app.session.tools.brush.clone();
+    let mut base = before.clone();
     let secondary = app.ui.brush_lane == 1;
     if secondary {
         std::mem::swap(&mut app.ui.brush_section, &mut app.ui.brush_secondary_section);
     }
-    let mut b = if secondary { crate::brush_sections::secondary_defaults(&before) } else { before.clone() };
+    // Each lane's percentage lives on the parent brush (the secondary's inside `dual_brush`), not
+    // on the lane's working copy, so the box in the list column edits `base` directly.
+    let mut strength = if secondary { base.dual_brush.secondary_strength } else { base.dual_brush.primary_strength } * 100.0;
+    let mut strength_changed = false;
+    let mut b = if secondary { crate::brush_sections::secondary_defaults(&base) } else { base.clone() };
     let lane_before = secondary.then(|| b.clone());
     let mut secondary_flip = before.dual_brush.flip;
     // Older UI state and control clients could select any of the previous section entries.
@@ -381,11 +386,23 @@ fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // bottom edge is pulled up.
     let lane_height = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("brush-settings-lane"))).unwrap_or(480.0);
     ui.horizontal_top(|ui| {
-        section_list(app, ui, &mut b);
+        ui.vertical(|ui| {
+            ui.set_width(LIST_WIDTH);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            strength_changed = crate::brush_sections::lane_strength(ui, &mut strength);
+            ui.add_space(5.0);
+            section_list(app, ui, &mut b);
+        });
         widgets::vline(ui, lane_height);
         ui.vertical(|ui| {
-            let lane_width = (WIDTH - 190.0).max(240.0);
-            let controls_width = (lane_width - 14.0).max(220.0);
+            // Derived, not taken from the available width: the column's own content (the tip grid,
+            // the strip) sizes itself from this value, so reading the layout back would feed any
+            // off-by-a-few into the window's width and leave a gutter on the right.
+            let lane_width = (width - LIST_WIDTH - 9.0 - 2.0 * ui.spacing().item_spacing.x).max(140.0);
+            // The controls run to the panel's right margin. The bars float over the content instead
+            // of reserving a strip, so the pane's edges line up with the panel's on both sides.
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::floating();
+            let controls_width = lane_width;
             ui.set_width(lane_width);
             egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(lane_height).auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_width(controls_width);
@@ -422,40 +439,65 @@ fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The strip spans the panel and its buttons sit in a row beneath it: three 24-point buttons do
     // not fit in a column as tall as the strip, and the third was clipped by the panel's bottom
     // edge. The strip is rendered at twice its point size so it stays sharp on a Retina display.
-    let (strip, _) = ui.allocate_exact_size(vec2(STRIP.0 as f32, STRIP.1 as f32), Sense::hover());
+    // The panel's content width, not the ui's available width: this row sits outside the
+    // `set_width` scope, and its available width runs wider than the panel, which grew the window.
+    let strip_w = width;
+    let (strip, _) = ui.allocate_exact_size(vec2(strip_w, STRIP.1 as f32), Sense::hover());
     ui.painter().rect_filled(strip, t.radius_sm, t.field);
-    let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, STRIP.0 * 2, STRIP.1 * 2, t.text);
+    let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, (strip_w * 2.0) as u32, STRIP.1 * 2, t.text);
     ui.painter().image(tex.id(), strip, full_uv(), Color32::WHITE);
-    ui.horizontal(|ui| {
-        ui.add_space((STRIP.0 as f32 - 3.0 * 24.0).max(0.0));
-        let new = icons::button(ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
-        if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
-            let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
-            crate::brush_preset_dialog::open(app, Some(&preset));
-        }
-        if icons::button(ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
-            b = BrushSettings { color: b.color, background: b.background, locks: b.locks.clone(), ..Default::default() };
-        }
-        // Overwrite the preset the current brush was picked from (Photoshop's "update the
-        // selected brush"): no new preset, the brush keeps its place in the list.
-        let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
-        let update =
-            ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
-        update.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, current.is_some(), "Update the current brush with these settings"));
-        if update.clicked() {
-            let preset = if secondary { brush_with_secondary(&before, &b) } else { b.clone() };
-            run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&preset).unwrap_or(Value::Null) }));
-        }
-    });
+    // The three buttons sit in a row under the strip, right-aligned to the strip's own edge: this
+    // column's available width runs past the panel's margin, so padding by width overshoots.
+    ui.add_space(8.0);
+    let (bar, _) = ui.allocate_exact_size(vec2(strip.width(), 24.0), Sense::hover());
+    let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    // Overwrite the preset the current brush was picked from (Photoshop's "update the selected
+    // brush"): no new preset, the brush keeps its place in the list. Laid out right to left, so
+    // this one is added first and ends at the panel's margin.
+    let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
+    let update =
+        bar_ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
+    update.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, current.is_some(), "Update the current brush with these settings"));
+    if update.clicked() {
+        let preset = if secondary { brush_with_secondary(&base, &b) } else { b.clone() };
+        run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&preset).unwrap_or(Value::Null) }));
+    }
+    if icons::button(&mut bar_ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
+        b = BrushSettings { color: b.color, background: b.background, locks: b.locks.clone(), ..Default::default() };
+    }
+    let new = icons::button(&mut bar_ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
+    if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
+        let preset = if secondary { brush_with_secondary(&base, &b) } else { b.clone() };
+        crate::brush_preset_dialog::open(app, Some(&preset));
+    }
     if secondary {
         std::mem::swap(&mut app.ui.brush_section, &mut app.ui.brush_secondary_section);
-        if lane_before.as_ref().is_some_and(|previous| *previous != b) || secondary_flip != before.dual_brush.flip {
-            let mut parent = brush_with_secondary(&before, &b);
+    }
+    // The edited percentage goes onto the parent brush; the lane's working copy already took the
+    // section edits, and the parent is what the command carries.
+    if strength_changed {
+        let rounded = strength.round();
+        if secondary {
+            base.dual_brush.enabled = rounded > 0.0;
+            base.dual_brush.secondary_strength = rounded / 100.0;
+        } else {
+            base.dual_brush.primary_strength = rounded / 100.0;
+        }
+    }
+    if secondary {
+        if strength_changed || lane_before.as_ref().is_some_and(|previous| *previous != b) || secondary_flip != base.dual_brush.flip {
+            let mut parent = brush_with_secondary(&base, &b);
             parent.dual_brush.flip = secondary_flip;
             commit_gesture(app, ui.ctx(), &before, &parent);
         }
     } else {
-        commit_gesture(app, ui.ctx(), &before, &b);
+        let mut after = b;
+        // The lane's copy carries the sections' edits; the percentage came from the parent, so it
+        // is only put back when the box above was what changed (a reset keeps its own default).
+        if strength_changed {
+            after.dual_brush.primary_strength = base.dual_brush.primary_strength;
+        }
+        commit_gesture(app, ui.ctx(), &before, &after);
     }
 }
 
@@ -552,6 +594,87 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
+/// A full-width row placed at the cursor: `allocate_exact_size` clips its width to the space egui
+/// reports as available, which comes out narrower than the panel's content and left the end of a
+/// row short of the right margin.
+fn row_rect(ui: &egui::Ui, width: f32, height: f32) -> egui::Rect {
+    egui::Rect::from_min_size(ui.next_widget_position(), vec2(width, height))
+}
+
+/// The panel menu button's box, and the gap before each item of the lane row.
+const MENU_BOX: f32 = 20.0;
+/// How far the menu icon sits inside its own box.
+const MENU_GLYPH_INSET: f32 = 4.0;
+const LANE_GAP: f32 = 8.0;
+
+/// The lane tabs on the left, the blend mode picker and the panel menu on the right. Both ends are
+/// laid out in their own child rect: the tabs from the panel's left edge, the other two from its
+/// right edge, so the two margins come out equal however wide the translations make the tabs.
+fn lane_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings, open: &mut bool, width: f32) {
+    let row = row_rect(ui, width, 26.0);
+    ui.allocate_rect(row, Sense::hover());
+    let group = LANE_GAP + MENU_BOX + LANE_GAP + MODE_PICKER_WIDTH;
+    let tabs = egui::Rect::from_min_max(row.min, egui::pos2(row.right() - group, row.max.y));
+    let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    tabs_ui.spacing_mut().item_spacing.x = LANE_GAP;
+    crate::brush_sections::dual_brush_header(&mut tabs_ui, &mut app.ui.brush_lane);
+    // Both end items get their own rect against the row's right edge: a right-to-left layout left
+    // them short of the margin by a few points.
+    // The icon inside its 20-point box is drawn a few points in, so the box is hung past the row's
+    // edge by that much: the glyph, not its invisible box, lands on the same inset as the tab.
+    let anchor = row.right() + MENU_GLYPH_INSET;
+    let menu_rect = egui::Rect::from_min_size(
+        egui::pos2(anchor - MENU_BOX, row.center().y - MENU_BOX / 2.0),
+        egui::vec2(MENU_BOX, MENU_BOX),
+    );
+    let mut menu_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let menu_btn = widgets::panel_menu_button(&mut menu_ui);
+    egui::Popup::menu(&menu_btn).show(|ui| {
+        widgets::style_spectrum_popup_menu(ui);
+        ui.set_min_width(180.0);
+        panel_menu(app, ui);
+        ui.separator();
+        if ui.button(tl!("Close")).clicked() {
+            *open = false;
+            ui.close();
+        }
+        if ui.button(tl!("Close Tab Group")).clicked() {
+            *open = false;
+            ui.close();
+        }
+    });
+    let picker_rect = egui::Rect::from_min_size(
+        egui::pos2(anchor - group + LANE_GAP, row.min.y),
+        egui::vec2(MODE_PICKER_WIDTH, row.height()),
+    );
+    let mut picker_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(picker_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    widgets::dropdown(
+        &mut picker_ui,
+        "brush-dual-mode",
+        tl!("Mode:"),
+        &mut b.dual_brush.mode,
+        &crate::brush_sections::DUAL_MODES,
+        MODE_PICKER_WIDTH,
+    );
+}
+
+/// The panel's title row: the name centred across the panel, the close button at the row's end.
+fn panel_title(ui: &mut egui::Ui, t: &Tokens, open: &mut bool, width: f32) {
+    let bar = row_rect(ui, width, 22.0);
+    ui.allocate_rect(bar, Sense::hover());
+    let galley = ui.painter().layout_no_wrap(tl!("Brush Settings").to_string(), theme::medium(12.5), t.text);
+    ui.painter().galley(egui::pos2(bar.center().x - galley.size().x / 2.0, bar.center().y - galley.size().y / 2.0), galley, t.text);
+    let close = egui::Rect::from_center_size(egui::pos2(bar.right() - 10.0, bar.center().y), vec2(20.0, 20.0));
+    let mut close_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(close).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    close_ui.set_clip_rect(close_ui.clip_rect().union(bar));
+    if icons::button(&mut close_ui, "x", 20.0, false, tl!("Close")).clicked() {
+        *open = false;
+    }
+}
+
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.brush_settings {
         return;
@@ -562,7 +685,7 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .stroke(Stroke::new(1.0, t.card_border))
         .corner_radius(CornerRadius::same(t.radius_lg as u8))
         .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: t.shadow })
-        .inner_margin(egui::Margin::same(10));
+        .inner_margin(egui::Margin::same(PANEL_PAD as i8));
     let canvas = app.last_canvas_rect;
     let mut open = true;
     // The panel's height is ours to keep, not the content's: a bottom grip pulls it shorter and
@@ -576,11 +699,25 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     egui::Window::new(tl!("Brush Settings"))
         .id(egui::Id::new("brush-settings"))
         .title_bar(false)
+        .resizable(false)
+        .scroll(false)
         .fixed_size([WIDTH + 20.0, panel_height])
         .frame(frame)
         .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0))
         .show(ctx, |ui| {
-            ui.set_width(WIDTH);
+            // Fill the window's inner width rather than forcing WIDTH: the contents then end at the
+            // panel's own margin on both sides instead of leaving a gutter on the right.
+            // The vertical scroll area in the body reserves a bar's width from the parent ui, so
+            // the available width came out 15 points short of the panel's content and the header
+            // rows ended inside the right margin. Floating bars reserve nothing.
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::floating();
+            // The body is the panel's own width: measuring it back from the layout picks up the
+            // vertical bar's reserve (which comes and goes with the panel's height) and leaves the
+            // contents ending inside the right margin by that much.
+            let body = WIDTH;
+            ui.set_width(body);
+            ui.set_max_width(body);
+            ui.set_max_width(body);
             // No title and no brush-selection tab in the header: right-aligned, the colour
             // attribute's mode picker sits just left of the close button. The brush list itself
             // lives in the Brushes panel (the toolbar's brush button opens it).
@@ -594,40 +731,28 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("brush-settings-lane"), lane_height));
             let before = app.session.tools.brush.clone();
             let mut b = before.clone();
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, "x", 20.0, false, tl!("Close")).clicked() {
-                        open = false;
-                    }
-                    widgets::dropdown(ui, "brush-dual-mode", tl!("Mode:"), &mut b.dual_brush.mode, &crate::brush_sections::DUAL_MODES, 96.0);
-                    let menu_btn = widgets::panel_menu_button(ui);
-                    egui::Popup::menu(&menu_btn).show(|ui| {
-                        widgets::style_spectrum_popup_menu(ui);
-                        ui.set_min_width(180.0);
-                        panel_menu(app, ui);
-                        ui.separator();
-                        if ui.button(tl!("Close")).clicked() {
-                            open = false;
-                            ui.close();
-                        }
-                        if ui.button(tl!("Close Tab Group")).clicked() {
-                            open = false;
-                            ui.close();
-                        }
-                    });
-                });
-            });
-            commit_gesture(app, ui.ctx(), &before, &b);
-            ui.add_space(4.0);
-            widgets::hairline(ui);
+            // The title sits centred on the row, the close button at its end.
+            panel_title(ui, &t, &mut open, body);
             ui.add_space(6.0);
-            settings_tab(app, ui);
+            // The lane tabs lead the row; the blend mode picker and the panel menu end it, flush
+            // with the panel's right edge so the margins match the left one's.
+            lane_row(app, ui, &mut b, &mut open, body);
+            commit_gesture(app, ui.ctx(), &before, &b);
+            ui.add_space(6.0);
+            {
+                let hair = row_rect(ui, body, 1.0);
+                ui.allocate_rect(hair, Sense::hover());
+                ui.painter().line_segment([hair.left_center(), hair.right_center()], Stroke::new(1.0, t.separator));
+            }
+            ui.add_space(6.0);
+            settings_tab(app, ui, body);
             let content_height = ui.min_rect().height();
             ctx.data_mut(|d| d.insert_temp(overhead_id, (content_height - lane_height).max(0.0)));
             // Grip along the bottom edge: drag it up to shorten the panel (the controls scroll
             // instead of pushing the panel back open).
             ui.add_space(2.0);
-            let (grip_rect, grip) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::drag());
+            let grip_rect = row_rect(ui, body, 10.0);
+            let grip = ui.allocate_rect(grip_rect, egui::Sense::drag());
             if grip.hovered() || grip.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }

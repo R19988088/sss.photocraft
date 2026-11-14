@@ -127,7 +127,7 @@ pub fn brush_tool_mode(tool: Tool, mode: BlendMode) -> BlendMode {
 /// A painting tool's options-bar Mode menu in order, `None` being Clear (after Dissolve, on the
 /// tools Photoshop offers it on). `None` for a tool without a blend mode control.
 pub fn tool_modes(tool: Tool) -> Option<Vec<Option<BlendMode>>> {
-    let layer = || BlendMode::LAYER_MODES.iter().copied().map(Some).collect::<Vec<_>>();
+    let layer = || BlendMode::MENU_MODES.iter().copied().map(Some).collect::<Vec<_>>();
     Some(match tool {
         Tool::Brush | Tool::Pencil | Tool::PaintBucket => {
             let mut modes = layer();
@@ -259,7 +259,7 @@ pub fn press(app: &mut PhotocraftApp, step: i32) {
             if crate::doc_props_ui::is_background(&st.doc, layer) {
                 return;
             }
-            let modes: Vec<BlendMode> = std::iter::once(BlendMode::PassThrough).filter(|_| layer.is_group()).chain(BlendMode::LAYER_MODES).collect();
+            let modes: Vec<BlendMode> = std::iter::once(BlendMode::PassThrough).filter(|_| layer.is_group()).chain(BlendMode::MENU_MODES).collect();
             if let Some(mode) = stepped(&modes, layer.blend, step) {
                 set_layers_mode(app, mode);
             }

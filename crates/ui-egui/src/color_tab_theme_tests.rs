@@ -76,3 +76,4 @@ fn every_theme_stretches_the_field_over_the_group() {
         assert!((r - g).abs() < 0.02 && (g - b).abs() < 0.02 && r < 0.25, "{kind:?}: the stretched field picks a dark grey, got {r} {g} {b}");
     }
 }
+

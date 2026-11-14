@@ -165,6 +165,8 @@ pub struct StepInput {
     pub speed: f32,
     pub pressure_released: bool,
     pub distance: f32,
+    /// The brush's tilt dial (0..1 of a quarter turn): where Pen Tilt controls start to act.
+    pub tilt_angle: f32,
 }
 
 /// Walks a polyline and emits steps every `step_len(point)` pixels, plus airbrush steps in time.
@@ -260,6 +262,7 @@ impl PathWalker {
             speed: self.sensor_speed,
             pressure_released: self.pressure_released,
             distance: self.sensor_distance,
+            tilt_angle: 0.0,
         }
     }
 
@@ -348,6 +351,27 @@ impl PathWalker {
 // Dynamics
 // ---------------------------------------------------------------------------
 
+/// The lowest altitude a tilt control counts from, and the ramp's span at a tilt dial of 0 and 1,
+/// as shares of a quarter turn (ProCraft's `Tilt::reach`): at 0 a lean starts to count 25.8° above
+/// the surface and reaches 0.5 at the most a pen leans; at 1 it counts from upright and reaches
+/// 0.88.
+const TILT_LOWEST: f32 = 0.28648;
+const TILT_SPAN_LOW: f32 = 0.19099;
+const TILT_SPAN_HIGH: f32 = 0.80901;
+
+/// How far a pen leaning `lean` radians from upright has gone for a tilt control whose dial is
+/// `theta` (0..1 of a quarter turn). Nothing while the pen stands up, then a ramp to the most a
+/// pen leans: ProCraft's `Tilt::reach`, which every tilt control goes through.
+pub fn tilt_reach(lean: f32, theta: f32) -> f32 {
+    if !lean.is_finite() {
+        return 0.0;
+    }
+    let altitude = (1.0 - lean / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0);
+    let theta = if theta.is_finite() { theta.clamp(0.0, 1.0) } else { 0.0 };
+    let span = TILT_SPAN_LOW + (TILT_SPAN_HIGH - TILT_SPAN_LOW) * theta;
+    (1.0 - (altitude.max(TILT_LOWEST) - TILT_SPAN_LOW) / span).clamp(1.0 / 1024.0, 1.0)
+}
+
 /// Scalar control value in 0..1.
 pub fn control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
     let p = &s.point;
@@ -367,7 +391,7 @@ pub fn control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
                 0.0
             }
         }
-        Control::PenTilt => (p.tilt_x.hypot(p.tilt_y) / 90.0).clamp(0.0, 1.0),
+        Control::PenTilt => tilt_reach(p.tilt_x.hypot(p.tilt_y).to_radians(), s.tilt_angle),
         Control::StylusWheel => p.wheel.clamp(0.0, 1.0),
         Control::Rotation => (p.rotation.rem_euclid(360.0)) / 360.0,
     }
@@ -376,7 +400,7 @@ pub fn control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
 /// Material controls use tilt magnitude and normalized travel direction, as in the reference.
 fn material_control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
     match c {
-        Control::PenTilt => (s.point.tilt_x.hypot(s.point.tilt_y) / 90.0).clamp(0.0, 1.0),
+        Control::PenTilt => tilt_reach(s.point.tilt_x.hypot(s.point.tilt_y).to_radians(), s.tilt_angle),
         Control::Direction => s.direction.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU,
         Control::InitialDirection => s.initial_direction.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU,
         _ => control_value(c, fade_steps, s),
@@ -537,8 +561,9 @@ impl DabBuilder {
     }
 
     fn diameter_at(&self, s: &StepInput, index: u64) -> f32 {
-        let sd = &self.brush.shape_dynamics;
-        let jitter = if sd.enabled { sd.size.jitter.clamp(0.0, 1.0) } else { 0.0 };
+        // Size jitter is not gated by Shape Dynamics: the reference applies it to the dab size
+        // regardless of the angle/roundness/stroke-jitter section switch.
+        let jitter = self.brush.shape_dynamics.size.jitter.clamp(0.0, 1.0);
         base_diameter(&self.brush, s) * (1.0 + jitter * (rand01(self.seed, index, stream::SIZE) * 2.0 - 1.0))
     }
 
@@ -558,6 +583,8 @@ impl DabBuilder {
         let b = &self.brush;
         let seed = self.seed;
         let sd = &b.shape_dynamics;
+        // The tilt dial is the brush's, so every tilt control starts where its panel says.
+        let s = &StepInput { tilt_angle: sd.tilt_angle, ..*s };
         let sc = &b.scattering;
         let count = if sc.enabled {
             let n = sc.count.clamp(1, 16) as f32;
@@ -574,8 +601,11 @@ impl DabBuilder {
             let i = self.next_index;
             self.next_index += 1;
             let r = |st: u64| rand01(seed, i, st);
-            // Shape.
-            let diameter = self.diameter_at(s, i);
+            // Shape. The lean grows the stamp by the tilt size, as far as the tilt dial's ramp has
+            // gone (ProCraft's Tilt::reach, through `tilt_reach`).
+            let lean = s.point.tilt_x.hypot(s.point.tilt_y).clamp(0.0, 90.0);
+            let reach = tilt_reach(lean.to_radians(), sd.tilt_angle);
+            let diameter = self.diameter_at(s, i) * (1.0 + sd.tilt_size.clamp(0.0, 2.0) * reach);
             let mut angle = b.angle;
             let mut roundness = b.roundness.clamp(0.01, 1.0);
             let (mut fx, mut fy) = (b.flip_x, b.flip_y);
@@ -603,6 +633,11 @@ impl DabBuilder {
                     fy = !fy;
                 }
             }
+            // Follow Azimuth: the stamp turns to the direction the pen leans (ProCraft adds the
+            // pen's azimuth to the tip angle).
+            if sd.follow_azimuth && lean > 1e-3 {
+                angle += s.point.tilt_y.atan2(s.point.tilt_x).to_degrees().rem_euclid(360.0);
+            }
             // Tilt Scale and Brush Projection (Shape Dynamics).
             let (mut proj_angle, mut proj_scale) = (0.0, 1.0);
             if sd.enabled {
@@ -619,7 +654,9 @@ impl DabBuilder {
                     }
                 }
             }
-            let radius = (diameter / 2.0).max(0.5);
+            // Reference keeps sub-pixel radii (max(0.0005, size/2)); the old 0.5 px floor left a
+            // hard 1 px dot at the end of every tapered stroke.
+            let radius = (diameter / 2.0).max(0.0005);
             // Scatter.
             let mut c = Point::new(s.point.x, s.point.y);
             if sd.enabled && sd.stroke_jitter.jitter > 0.0 {
@@ -677,6 +714,8 @@ impl DabBuilder {
             if b.pressure_opacity && !(tr.enabled && tr.opacity.control != Control::Off) {
                 opacity *= s.point.pressure.clamp(0.0, 1.0);
             }
+            // Leaning fades the stamp by the square root of how far the tilt has gone.
+            opacity *= 1.0 - sd.tilt_opacity.clamp(0.0, 1.0) * reach.sqrt();
             // Colour.
             let color = if b.color_dynamics.enabled && !b.erase { dynamic_color(b, s, seed, if b.color_dynamics.per_tip { i } else { 0 }) } else { b.color };
             // Texture depth (per tip).
@@ -1047,6 +1086,7 @@ mod c3_full_secondary_tests {
                     speed: 0.,
                     pressure_released: false,
                     distance: 0.,
+                    tilt_angle: 0.,
                 },
                 &mut dabs,
             );
@@ -1084,7 +1124,7 @@ mod c3_full_secondary_tests {
         let mut builder = DabBuilder::new(&b);
         let mut d = Vec::new();
         let base =
-            StepInput { point: StrokePoint::new(0., 0., 0.), direction: 0., initial_direction: 0., step: 0, speed: 0., pressure_released: false, distance: 0. };
+            StepInput { point: StrokePoint::new(0., 0., 0.), direction: 0., initial_direction: 0., step: 0, speed: 0., pressure_released: false, distance: 0., tilt_angle: 0.0 };
         builder.build(&base, &mut d);
         builder.build(&StepInput { point: StrokePoint::new(1., 0., 1.), step: 1, ..base }, &mut d);
         assert_eq!(d[0].color, [1., 0., 0., 0.4]);

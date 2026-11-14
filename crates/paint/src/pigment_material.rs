@@ -432,7 +432,9 @@ pub fn shade(
             }
             weight += w;
         }
-        rgb = mix3(rgb, carried.map(|v| v / weight.max(1e-6)), liquidity * 0.8);
+        // The carried colour is mixed through the pigment LUT, as the reference's liquid transport
+        // does (`pm_lerp`), so wet paint dragged along the stroke mixes like paint, not like light.
+        rgb = crate::pigment::lerp(rgb, carried.map(|v| v / weight.max(1e-6)), liquidity * 0.8);
     }
     let texture = local[1] / local[3].max(1e-6);
     if texture > 0. {

@@ -26,6 +26,7 @@ use crate::widgets::{self, hue_color};
 mod basic;
 mod curves;
 mod gradient_map;
+mod halftone;
 mod hue_saturation;
 mod levels;
 mod selective_color;
@@ -55,7 +56,7 @@ use selective_color::selective_color;
 pub use session::{layer_editor, layer_mem, properties_coalesce, properties_reset, session_start};
 
 /// Kinds edited here (Color Lookup has its own editor in `adjust_ui`; Invert has none).
-pub const KINDS: [&str; 14] = [
+pub const KINDS: [&str; 15] = [
     "brightnessContrast",
     "levels",
     "curves",
@@ -70,6 +71,7 @@ pub const KINDS: [&str; 14] = [
     "threshold",
     "gradientMap",
     "selectiveColor",
+    "halftone",
 ];
 
 pub fn has_editor(kind: &str) -> bool {
@@ -173,6 +175,7 @@ pub fn editor(ui: &mut egui::Ui, kind: &str, v: &mut Value, cx: &EditorCx) -> Ed
         "threshold" => threshold(ui, v, cx),
         "gradientMap" => gradient_map(ui, v, cx),
         "selectiveColor" => selective_color(ui, v, cx),
+        "halftone" => halftone::halftone(ui, v, cx),
         _ => Edit::default(),
     }
 }

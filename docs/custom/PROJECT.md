@@ -91,6 +91,40 @@
 | 模糊顺序（先模糊再混色再沉积） | ✅ | `13dd1e4` |
 | 可分离高斯模糊 | ✅ | `f77c2a0` |
 | `blurColorTarget` 与笔画起点比较 | ✅ | `f77c2a0` |
+| 旧版色板（C2 布局）的实线/图案来源与吸管采样图案 | ✅ | 未提交（工作区） |
+| 颜料混合强度 `painting.pigmentMixStrength` + 颜色面板菜单滑条 | ✅ | 未提交（工作区） |
+| `pm.lut` 作为颜料混色的统一底层（涂抹 / 湿料拖色 / 传输 / 沉积） | ✅ | 未提交（工作区） |
+
+**pm.lut 底层细节**（对照 `sssp_c3/backup/minimal_20261020_131735`，Swift/Metal 的 C3）：
+
+参考版里所有**颜料色**的混色都收敛到一个函数：`pmPaintMix` → `pm_lerp`（38 波段 Kubelka-Munk，表是 32×32×320 的 `PM_lut.bin`），
+alpha / 覆盖率始终由各自的管线负责（`pigmentMergedPixel`、`carrierTransportResult`、`transportC2LiquidColor`、
+`mergeLayerTileKernel`）。这边的对应：
+
+- `paint/src/pigment.rs`：新增 `lerp(from, to, t)`（= 参考版 `pm_lerp`：≤0.025 纯线性，之后按 0.025–0.16 的闸进入 KM）；
+  `paint()` 改为调用它，公式与参考版 `pmPaintMix` 逐字对应（`support = smooth(0.02,0.22,dst α)`、`weight = strength * support`）。
+- 沉积：`render.rs::lane_composite`（含半透明、软边、双笔刷副色、任意混合模式之后）。
+- 混色 / 涂抹传输：`transport.rs` 的 V1/V2/V3 与 `over_carried`。
+- **涂抹工具**：`retouch::Smudge` 新增 `with_pigment()`，颜色过 LUT、alpha 仍走原来的线性预乘混合；
+  强度取自 `brush.pigment_mix_strength`（引擎 `paint.smudge` 直接读 session 笔刷，实时预览与提交同一份设置）。
+- **湿料液态拖色**：`pigment_material::shade` 的 liquidity 混合改走 `pigment::lerp`（参考版
+  `transportC2LiquidColor` 本来就不设强度闸，这里保持一致）。
+- 不经过 LUT（与参考版一致，不是遗漏）：图层合成 / 图层混合模式 / 图层不透明度（`color/src/blend.rs`、`compose`）、
+  桶填充、渐变与形状填充、液化、调整层、模糊与锐化。参考版的这几个 shader 里也没有 `pm_lerp`。
+- 性能：`pigment::paint` 在 `strength*support ≤ 1e-4` 时直接返回、`lerp` 在 ≤0.025 时不查表，
+  `render.rs` 保留 `pigment_mix_strength <= 0.0` 的 `native_only` 快速路径；单次混色 2 次查表，只在笔刷尺寸的 dab 内发生。
+
+**色板移植细节**（对照旧版 `crates/ui-egui/src/color_panel.rs`）：
+
+- 顶部 `实线 / 图案` 在 **C2 颜色** 布局里（面板菜单默认就是它）。图案模式下用吸管在画布上采样：
+  `canvas::cursors::sample_eyedropper` 调 `document.samplePattern`（旧版同样逻辑），⌥ 采样图案、⌥ 之外按旧版行为。
+- 图案采样后按笔刷大小取原生分辨率方块存在 `brush.sampled_pattern`，绘制时原样还原，不经过缩略图。
+- 取纯色（场地/滑条/色块/数值）会退出图案来源但保留采样块，与旧版 `set_color` 一致。
+- `混合强度` 在颜色面板右键菜单里（旧版位置），写 `painting.pigmentMixStrength`（0–100），
+  引擎在偏好变化时同步到 `brush.pigment_mix_strength`（0–1），随机重启保留；
+  不随无关偏好变动覆盖笔刷自身值。
+- 底部「绘画设置…」入口按要求未移植。
+- 性能：图案预览改为按采样块缓存一张最近邻纹理（旧版每帧 784 个矩形），采样只渲染笔刷大小的方块。
 
 **测试**：`photocraft-paint` 207 全绿，`photocraft-engine` 3298 全绿，全工作区编译通过。
 

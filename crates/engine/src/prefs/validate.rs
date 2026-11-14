@@ -139,6 +139,7 @@ pub fn range(path: &str) -> Option<(f64, f64)> {
         "guidesGridAndSlices.gridlineEvery" => (0.001, 10_000.0),
         "guidesGridAndSlices.subdivisions" => (1.0, 100.0),
         "layerMaskOverlay.opacity" => (0.0, 100.0),
+        "painting.pigmentMixStrength" => (0.0, 100.0),
         "type.recentFonts" => (0.0, 50.0),
         "integrations.controlPort" => (0.0, 65535.0),
         _ => return None,

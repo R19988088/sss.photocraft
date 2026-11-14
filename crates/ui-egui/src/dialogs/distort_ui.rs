@@ -22,6 +22,12 @@ use crate::canvas::{ToolEvent, ViewXform};
 #[derive(Default)]
 pub struct Distort {
     pub liquify: Option<crate::liquify_ui::LiquifyDialog>,
+    /// Liquify as a brush tool on the canvas (liquify_brush): distinct from the filter dialog.
+    pub liquify_brush: Option<crate::liquify_brush::LiquifyBrush>,
+    /// The brush could not open (no pixels to warp): don't retry — and re-toast — every frame.
+    pub liquify_brush_failed: bool,
+    /// The tool Liquify was picked from: Cancel escapes back to it, as leaving the workspace does.
+    pub liquify_prev_tool: Option<crate::state::Tool>,
     /// Edit › Content-Aware Fill… (caf_ui).
     pub caf: Option<crate::caf_ui::CafWorkspace>,
     /// Select › Select and Mask… (select_mask_ui).
@@ -38,6 +44,7 @@ pub struct Distort {
 impl Distort {
     pub fn active(&self) -> bool {
         self.liquify.is_some()
+            || self.liquify_brush.is_some()
             || self.caf.is_some()
             || self.select_mask.is_some()
             || self.puppet.is_some()
@@ -49,6 +56,7 @@ impl Distort {
     pub fn describe(&self) -> Value {
         json!({
             "liquify": self.liquify.as_ref().map(|d| d.describe()),
+            "liquifyBrush": self.liquify_brush.as_ref().map(|d| d.describe()),
             "contentAwareFill": self.caf.as_ref().map(|d| d.describe()),
             "selectAndMask": self.select_mask.as_ref().map(|d| d.describe()),
             "puppet": self.puppet.as_ref().map(|p| p.describe()),
@@ -235,6 +243,9 @@ pub fn cancel_stale(app: &mut PhotocraftApp) {
     if app.distort.liquify.as_ref().is_some_and(|d| Some(d.document) != active) {
         crate::liquify_ui::cancel(app);
     }
+    if app.distort.liquify_brush.as_ref().is_some_and(|d| Some(d.document) != active) {
+        crate::liquify_brush::cancel(app);
+    }
     if app.distort.puppet.as_ref().is_some_and(|p| Some(p.document) != active) {
         app.distort.puppet = None;
     }
@@ -260,6 +271,9 @@ pub fn display_doc(app: &PhotocraftApp, idx: usize) -> Option<(Arc<Document>, u6
         return None;
     }
     let (id, revision) = app.session.documents().get(idx).map(|st| (st.doc.id, st.revision))?;
+    if let Some(shown) = crate::liquify_brush::display_doc(app, idx) {
+        return Some(shown);
+    }
     if let Some(p) = &app.distort.puppet
         && p.document == id
     {
@@ -318,6 +332,10 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
         crate::select_mask_ui::pointer(app, ev, mods);
         return true;
     }
+    if app.distort.liquify_brush.as_ref().is_some_and(|d| on_doc(app, d.document)) {
+        crate::liquify_brush::pointer(app, ev, mods);
+        return true;
+    }
     if app.distort.liquify.as_ref().is_some_and(|d| on_doc(app, d.document)) {
         crate::liquify_ui::pointer(app, ev, mods);
         return true;
@@ -371,6 +389,16 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         }
         return true;
     }
+    if app.distort.liquify_brush.is_some() {
+        if enter(ctx) {
+            crate::liquify_brush::commit(app);
+        } else if esc(ctx) {
+            crate::liquify_brush::cancel(app);
+        } else {
+            crate::liquify_brush::keys(app, ctx);
+        }
+        return true;
+    }
     if app.distort.liquify.is_some() {
         if enter(ctx) {
             let _ = crate::liquify_ui::commit(app);
@@ -417,10 +445,16 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     false
 }
 
+/// Advances the Liquify brush's proxy for this frame (the view's zoom chooses its resolution).
+pub fn prepare_content(app: &mut PhotocraftApp, zoom: f32) {
+    crate::liquify_brush::prepare(app, zoom);
+}
+
 /// The warped (or pasted) pixels of the open on-canvas mode: image content, which the canvas
 /// draws right after the document and under the grid and guides (#7781), as Free Transform's
 /// preview is (#5086). Its pins, planes and meshes are [`draw_overlay`], drawn over the guides.
 pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    crate::liquify_brush::draw_content(app, painter, xf);
     if let Some(p) = &app.distort.puppet {
         crate::puppet_ui::draw_content(p, painter, xf);
     }
@@ -434,6 +468,7 @@ pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 
 /// Canvas overlay for the on-canvas modes: pins, planes and meshes over the guides.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    crate::liquify_brush::draw_overlay(app, painter, xf);
     if let Some(p) = &app.distort.puppet
         && on_doc(app, p.document)
     {
@@ -454,6 +489,9 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 /// Options bar for the on-canvas modes. True when drawn.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     cancel_stale(app);
+    if crate::liquify_brush::options_bar(app, ui) {
+        return true;
+    }
     if app.distort.puppet.is_some() {
         crate::puppet_ui::options_bar(app, ui);
         return true;
@@ -479,6 +517,7 @@ pub fn drop_foreign(app: &mut PhotocraftApp) {
         app.distort.owner = current;
     } else if app.distort.owner != current {
         app.distort.liquify = None;
+        app.distort.liquify_brush = None;
         // Stops its background preview too; what Apply wrote stays, as with Cancel.
         crate::caf_ui::cancel(app);
         crate::select_mask_ui::cancel(app);

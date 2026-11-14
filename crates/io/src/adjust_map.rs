@@ -702,6 +702,10 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
         Adjustment::ChannelMixer { matrix, monochrome } => {
             return block(b"mixr", encode::channel_mixer(matrix, *monochrome));
         }
+        // Photoshop has no halftone adjustment layer, so there is no block to write: the export
+        // warns that the layer's screen is not saved in PSD (the order of the stack and the
+        // layer's own settings still are).
+        Adjustment::Halftone { .. } => {}
         Adjustment::Unsupported { psd_key, raw } => {
             let k = psd_key.as_bytes();
             if k.len() == 4 {

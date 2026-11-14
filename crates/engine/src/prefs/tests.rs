@@ -23,6 +23,29 @@ fn session() -> Session {
 }
 
 #[test]
+fn mixing_strength_reaches_the_brush_and_survives_a_restart() {
+    let mut s = session();
+    assert_eq!(s.tools.brush.pigment_mix_strength, 0.0, "off until asked");
+    s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": 65})).unwrap();
+    assert!((s.tools.brush.pigment_mix_strength - 0.65).abs() < 1e-6);
+    assert_eq!(s.execute("prefs.get", json!({"path": "painting.pigmentMixStrength"})).unwrap(), json!(65.0));
+    // Out of range is refused, and leaves the brush as it was.
+    assert!(s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": 101})).is_err());
+    assert!((s.tools.brush.pigment_mix_strength - 0.65).abs() < 1e-6);
+    // Another preference doesn't touch it (a brush preset's own value survives).
+    s.execute("prefs.set", json!({"path": "interface.dynamicColorSliders", "value": false})).unwrap();
+    assert!((s.tools.brush.pigment_mix_strength - 0.65).abs() < 1e-6);
+    // Reset takes it back to off; so does loading preferences without it.
+    s.execute("prefs.reset", json!({"path": "painting"})).unwrap();
+    assert_eq!(s.tools.brush.pigment_mix_strength, 0.0);
+    s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": 40})).unwrap();
+    let saved = serde_json::to_string(&s.prefs().to_json()).unwrap();
+    let mut restored = session();
+    restored.load_prefs_json(&saved).unwrap();
+    assert!((restored.tools.brush.pigment_mix_strength - 0.4).abs() < 1e-6);
+}
+
+#[test]
 fn defaults_match_photoshop() {
     let p = Preferences::default();
     assert_eq!(p.performance.history_states, 50);

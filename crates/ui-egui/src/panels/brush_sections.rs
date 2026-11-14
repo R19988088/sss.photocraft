@@ -70,27 +70,72 @@ fn parameter_label(ui: &mut egui::Ui, label: &str, width: f32) {
     });
 }
 
-/// Shared columns keep every parameter's minimum, maximum and jitter aligned.
+/// Draws a row's picker centred across the column: the tip and texture pickers sit in the middle
+/// of the controls column instead of against its left edge.
+fn centered_row(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let rect = egui::Rect::from_center_size(egui::pos2(row.center().x, row.center().y), vec2(width, row.height()));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    add(&mut child);
+}
+
+/// Share of the controls column a row's field group takes: the reference screen's single bar
+/// spans from 54 % of the column to its right edge, and every row keeps that width so the fields
+/// look alike whether a row has one, two or three of them.
+const FIELD_GROUP: f32 = 0.46;
+
+/// Shared columns keep every parameter's minimum, maximum and jitter aligned, and every row's fields
+/// end on the panel's right margin whatever their number (a row with one field used to leave the
+/// last two columns empty, so its box floated away from the edge).
 fn numeric_fields(ui: &mut egui::Ui, label: &str, fields: [(Option<&mut f32>, std::ops::RangeInclusive<f32>, &str); 3]) -> bool {
     let mut changed = false;
     ui.push_id(label, |ui| {
         ui.horizontal(|ui| {
             let gap = ui.spacing().item_spacing.x;
-            let label_width = ui.available_width() * 0.31;
-            let width = ((ui.available_width() - label_width - gap * 3.0 - 12.0) / 3.0).max(36.0);
+            let column = ui.available_width();
+            let label_width = column * 0.31;
+            let width = ((column - label_width - gap * 3.0 - 12.0) / 3.0).max(36.0);
+            let present = fields.iter().filter(|f| f.0.is_some()).count();
+            // The three-field rows already end flush; the others put their fields in a group that
+            // is laid out against the column's right edge with the reference bar's width.
+            let group = (column * FIELD_GROUP).max(width + gap * (present.saturating_sub(1)) as f32);
+            let cell = if present > 1 { ((group - gap * (present - 1) as f32) / present as f32).max(28.0) } else { group };
             parameter_label(ui, label, label_width);
-            for (index, (field, range, suffix)) in fields.into_iter().enumerate() {
-                if index == 2 {
-                    ui.add_space(12.0);
-                }
-                ui.push_id(index, |ui| {
-                    if let Some(field) = field {
-                        let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
-                        changed |= widgets::value_field(ui, field, range, suffix, width).on_hover_text(hint).changed();
-                    } else {
-                        ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
+            if present >= 3 {
+                for (index, (field, range, suffix)) in fields.into_iter().enumerate() {
+                    if index == 2 {
+                        ui.add_space(12.0);
                     }
-                });
+                    ui.push_id(index, |ui| {
+                        if let Some(field) = field {
+                            let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
+                            changed |= widgets::value_field(ui, field, range, suffix, width).on_hover_text(hint).changed();
+                        } else {
+                            ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
+                        }
+                    });
+                }
+            } else {
+                let rest = (column - label_width - gap).max(0.0);
+                let (slot, _) = ui.allocate_exact_size(vec2(rest, 24.0), Sense::hover());
+                let fields_rect = egui::Rect::from_min_size(
+                    egui::pos2(slot.right() - group, slot.top()),
+                    vec2(group, slot.height()),
+                );
+                let mut fields_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(fields_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                for (index, (field, range, suffix)) in fields.into_iter().enumerate() {
+                    let Some(field) = field else { continue };
+                    fields_ui.push_id(index, |ui| {
+                        let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
+                        changed |= widgets::value_field(ui, field, range, suffix, cell).on_hover_text(hint).changed();
+                    });
+                }
             }
         });
     });
@@ -144,16 +189,18 @@ pub(crate) fn takes_curve(control: Control, angle: bool) -> bool {
     !angle && control != Control::Off
 }
 
-/// egui memory key of the open/closed state of a dynamic's curve editor.
-pub(crate) fn curve_open_id(id: &str) -> egui::Id {
-    egui::Id::new(("brush-curve-open", id))
+/// egui memory key of the open/closed state of a dynamic's curve editor. Keyed by the lane's own ui
+/// as well as the parameter: the primary and the secondary brush share the parameter ids, so one
+/// lane's curve used to open (or stay shut) because of the other lane's.
+pub(crate) fn curve_open_id(ui: &egui::Ui, id: &str) -> egui::Id {
+    egui::Id::new(("brush-curve-open", id, ui.id()))
 }
 
 /// `Control: [Off ▾] [25] [~]`: the controller pop-up, Fade's step count and the button that
 /// shows this dynamic's own response curve (lit while the curve isn't linear). `angle` offers the
 /// direction controls (Photoshop only has them for Angle Jitter).
 fn control_row(ui: &mut egui::Ui, id: &str, d: &mut Dynamic, angle: bool) {
-    let open_id = curve_open_id(id);
+    let open_id = curve_open_id(ui, id);
     let mut open: bool = ui.data(|m| m.get_temp(open_id)).unwrap_or(false);
     ui.horizontal(|ui| {
         let label_width = ui.available_width() * 0.31;
@@ -379,10 +426,16 @@ fn tip_grid(ui: &mut egui::Ui, id: &str, presets: &[BrushPreset], highlight: Opt
     let frame = egui::Frame::NONE.fill(t.field).stroke(Stroke::new(1.0, t.field_border)).corner_radius(t.radius_sm as u8).inner_margin(egui::Margin::same(3));
     frame.show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt(id).max_height(104.0).auto_shrink([false, true]).show(ui, |ui| {
+            // Five tips to a row, whatever the panel's width leaves (Photoshop's grid fills its
+            // pane edge to edge instead of stopping short at a fourth cell).
+            const GAP: f32 = 2.0;
+            // Leave room for the scroll bar the grid may reserve; five cells still have to fit,
+            // so the last row ends flush with the pane instead of wrapping at a fourth.
+            let cell_w = ((ui.available_width() - 8.0 - 4.0 * GAP) / 5.0).floor().max(30.0);
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                ui.spacing_mut().item_spacing = vec2(GAP, GAP);
                 for (i, p) in presets.iter().enumerate() {
-                    let (cell, resp) = ui.allocate_exact_size(vec2(44.0, 50.0), Sense::click());
+                    let (cell, resp) = ui.allocate_exact_size(vec2(cell_w, 50.0), Sense::click());
                     if !ui.is_rect_visible(cell) {
                         continue;
                     }
@@ -394,7 +447,8 @@ fn tip_grid(ui: &mut egui::Ui, id: &str, presets: &[BrushPreset], highlight: Opt
                     }
                     let (_, size, _, _, _, _) = preset_tip(p);
                     let tex = brush_preview::tip_texture(ui.ctx(), &format!("{id}:{}", p.name), &p.brush, 34, t.text);
-                    let ir = egui::Rect::from_center_size(pos2(cell.center().x, cell.top() + 20.0), vec2(34.0, 34.0) * thumb_scale(size));
+                    let side = 34.0_f32.min(cell_w - 6.0);
+                    let ir = egui::Rect::from_center_size(pos2(cell.center().x, cell.top() + 20.0), vec2(side, side) * thumb_scale(size));
                     ui.painter().image(tex.id(), ir, egui::Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
                     ui.painter().text(
                         pos2(cell.center().x, cell.bottom() - 6.0),
@@ -444,7 +498,12 @@ fn tip_shape(ui: &mut egui::Ui, b: &mut BrushSettings, presets: &[BrushPreset], 
     if shape == 2 {
         shapes.push((2, "Sampled Tip"));
     }
-    if widgets::dropdown(ui, "brush-tip-shape", "", &mut shape, &shapes, 130.0) {
+    const TIP_PICKER_W: f32 = 130.0;
+    let mut picked = false;
+    centered_row(ui, TIP_PICKER_W, |ui| {
+        picked = widgets::dropdown(ui, "brush-tip-shape", "", &mut shape, &shapes, TIP_PICKER_W);
+    });
+    if picked {
         b.triangle = shape == 1;
         if shape != 2 {
             b.tip = TipShape::Round;
@@ -469,6 +528,12 @@ fn shape_dynamics(ui: &mut egui::Ui, b: &mut BrushSettings) {
     let sd = &mut b.shape_dynamics;
     parameter(ui, "brush-angle-ctl", tl!("Angle"), &mut b.angle, &mut sd.angle, -180.0..=180.0, false, true, true);
     parameter(ui, "brush-round-ctl", tl!("Roundness"), &mut b.roundness, &mut sd.roundness, 0.01..=1.0, true, false, true);
+    // Tilt controls (ProCraft): the dial where tilt starts to act, what leaning adds to the stamp,
+    // and how much it fades; Follow Azimuth turns the stamp to the direction the pen leans.
+    pct(ui, tl!("Tilt Angle"), &mut sd.tilt_angle, 1.0);
+    pct(ui, tl!("Tilt Size"), &mut sd.tilt_size, 2.0);
+    pct(ui, tl!("Tilt Opacity"), &mut sd.tilt_opacity, 1.0);
+    widgets::checkbox(ui, &mut sd.follow_azimuth, tl!("Follow Azimuth"));
     let mut stroke = sd.stroke_jitter.jitter * 100.0;
     let mut minimum = sd.stroke_jitter.minimum * 100.0;
     if numeric_fields(ui, tl!("Stroke Jitter"), [(Some(&mut minimum), 0.0..=100.0, "%"), (Some(&mut stroke), 0.0..=1000.0, "%"), (None, 0.0..=100.0, "%")]) {
@@ -569,7 +634,9 @@ fn pattern_swatch(ui: &mut egui::Ui, tx: &paint::Texture) {
 
 fn texture(ui: &mut egui::Ui, b: &mut BrushSettings) {
     let tx = &mut b.texture;
-    ui.horizontal(|ui| {
+    // The texture picker (swatch plus the style dropdown) is centred across the column.
+    const PATTERN_PICKER_W: f32 = 110.0;
+    centered_row(ui, 56.0 + 8.0 + PATTERN_PICKER_W, |ui| {
         pattern_swatch(ui, tx);
         ui.add_space(8.0);
         ui.vertical(|ui| {
@@ -581,7 +648,7 @@ fn texture(ui: &mut egui::Ui, b: &mut BrushSettings) {
             if style.is_none() {
                 opts.push((None, tl!("Custom")));
             }
-            if widgets::dropdown(ui, "brush-pattern", "", &mut style, &opts, 110.0)
+            if widgets::dropdown(ui, "brush-pattern", "", &mut style, &opts, PATTERN_PICKER_W)
                 && let Some(s) = style
             {
                 let size = match &tx.pattern {
@@ -666,43 +733,57 @@ pub(crate) fn secondary_defaults(b: &BrushSettings) -> BrushSettings {
 const LANE_VALUE: f32 = 52.0;
 
 /// The secondary colour's blend modes, for the mode picker in the panel's header row
-/// (`brush_panel`): it sits by the close button, not beside the percentages.
-pub(crate) const DUAL_MODES: [(MaskMode, &str); 9] = [
-    (MaskMode::Normal, "Normal"),
+/// (`brush_panel`): it sits by the close button, not beside the percentages. The list is
+/// ProCraft's brush studio's: thirteen modes in its order.
+pub(crate) const DUAL_MODES: [(MaskMode, &str); 13] = [
     (MaskMode::Multiply, "Multiply"),
     (MaskMode::Darken, "Darken"),
-    (MaskMode::Overlay, "Overlay"),
-    (MaskMode::ColorDodge, "Color Dodge"),
     (MaskMode::ColorBurn, "Color Burn"),
     (MaskMode::LinearBurn, "Linear Burn"),
+    (MaskMode::Normal, "Normal"),
+    (MaskMode::Lighten, "Lighten"),
+    (MaskMode::ColorDodge, "Color Dodge"),
+    (MaskMode::Overlay, "Overlay"),
     (MaskMode::HardMix, "Hard Mix"),
+    (MaskMode::Difference, "Difference"),
+    (MaskMode::Subtract, "Subtract"),
+    (MaskMode::Divide, "Divide"),
     (MaskMode::LinearHeight, "Linear Height"),
 ];
 
-pub(crate) fn dual_brush_header(ui: &mut egui::Ui, b: &mut BrushSettings, lane: &mut usize) {
-    // The two lanes stack left-aligned, one line each: the mode picker that used to end the row
-    // moved into the panel's header, so the row is as narrow as a lane's name and percentage.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        if widgets::pill_tab(ui, tl!("Primary Brush"), *lane == 0).clicked() {
-            *lane = 0;
-        }
-        let mut primary = (b.dual_brush.primary_strength * 100.0).round();
-        if widgets::value_field(ui, &mut primary, 0.0..=100.0, "%", LANE_VALUE).changed() {
-            b.dual_brush.primary_strength = primary.round() / 100.0;
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        if widgets::pill_tab(ui, tl!("Secondary Brush"), *lane == 1).clicked() {
-            *lane = 1;
-        }
-        let mut secondary = (b.dual_brush.secondary_strength * 100.0).round();
-        if widgets::value_field(ui, &mut secondary, 0.0..=100.0, "%", LANE_VALUE).changed() {
-            b.dual_brush.enabled = secondary > 0.0;
-            b.dual_brush.secondary_strength = secondary.round() / 100.0;
-        }
-    });
+/// The lane tabs: one row, and only the picked lane's strength is shown (below, in the section
+/// list's column), so the two lanes no longer read as two always-open percentages.
+pub(crate) fn dual_brush_header(ui: &mut egui::Ui, lane: &mut usize) {
+    // Tighter than the stock pill: the two tabs, the blend mode and the menu share one line of a
+    // 340-point panel, and the stock padding ran the second tab into the blend mode's box.
+    if widgets::pill_tab_sized(ui, tl!("Primary Brush"), *lane == 0, 10.0, 11.5).clicked() {
+        *lane = 0;
+    }
+    ui.add_space(8.0);
+    if widgets::pill_tab_sized(ui, tl!("Secondary Brush"), *lane == 1, 10.0, 11.5).clicked() {
+        *lane = 1;
+    }
+}
+
+/// The picked lane's strength percentage: a caption in the section list's column with the field
+/// right-aligned to it, as the reference panel has it. Returns whether the value was edited.
+pub(crate) fn lane_strength(ui: &mut egui::Ui, value: &mut f32) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(tl!("Strength").to_string(), theme::medium(12.0), t.text);
+    ui.painter()
+        .galley(pos2(row.left() + 7.0, row.center().y - galley.size().y / 2.0), galley, t.text);
+    // Right-aligned to the column, as beside the reference panel's slider.
+    let field_x = row.right() - LANE_VALUE;
+    let mut field_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_center_size(pos2(field_x + LANE_VALUE / 2.0, row.center().y), vec2(LANE_VALUE, 22.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    field_ui.set_clip_rect(field_ui.clip_rect().union(row));
+    widgets::value_field(&mut field_ui, value, 0.0..=100.0, "%", LANE_VALUE).changed()
 }
 
 fn color_dynamics(ui: &mut egui::Ui, b: &mut BrushSettings) {
@@ -801,7 +882,7 @@ fn wet_settings(ui: &mut egui::Ui, settings: &mut Option<WetEdgeSettings>) {
             "wet-style",
             "",
             &mut w.style,
-            &[(WetStyle::Photoshop, "Photoshop"), (WetStyle::Watercolor, tl!("Watercolor")), (WetStyle::Watercolor2, tl!("Watercolor 2"))],
+            &[(WetStyle::Photoshop, "Photoshop"), (WetStyle::Watercolor, tl!("Watercolor")), (WetStyle::Watercolor2, tl!("Watercolor 2")), (WetStyle::V4, tl!("Wet Edge V4"))],
             140.0,
         );
     });

@@ -32,6 +32,7 @@ fn prefs_set(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // All or nothing: validate against a scratch copy first.
     let (saved_prefs, saved_color) = (s.prefs().clone(), s.color.settings.clone());
+    let pigment_before = saved_prefs.painting.pigment_mix_strength;
     let mut color_changed = false;
     for (path, v) in &changes {
         match s.set_pref(path, v.clone(), false) {
@@ -51,6 +52,9 @@ fn prefs_set(s: &mut Session, p: &Value) -> Result<Value> {
     // `colorSettings.blendTextGamma` lives in the compositor too, as `edit.colorSettings` sets it.
     photocraft_compose::psblend::set_text_gamma(s.color.settings.blend_text_gamma);
     s.apply_prefs();
+    // The brush's pigment response follows the Painting preference when it changed (`prefs.set`
+    // stages values itself, so it doesn't go through `edit_prefs`).
+    s.sync_pigment_mix(pigment_before);
     let view = s.prefs_view();
     let out: Map<String, Value> = changes.iter().map(|(k, _)| (k.clone(), get_path(&view, k).cloned().unwrap_or(Value::Null))).collect();
     Ok(Value::Object(out))

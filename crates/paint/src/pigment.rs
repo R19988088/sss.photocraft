@@ -120,6 +120,22 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// The reference shader's `pm_lerp`: a plain colour-to-colour mix, linear at a low amount and
+/// gated into the Kubelka-Munk response as the amount rises. Every paint colour that mixes with
+/// other paint (a dab, transport, liquid material, the smudge tool) goes through this, so the
+/// mixing model is one function rather than a per-caller approximation.
+pub fn lerp(from: [f32; 3], to: [f32; 3], t: f32) -> [f32; 3] {
+    let (from, to) = (from.map(|v| v.clamp(0.0, 1.0)), to.map(|v| v.clamp(0.0, 1.0)));
+    let t = t.clamp(0.0, 1.0);
+    let linear: [f32; 3] = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
+    if t <= 0.025 {
+        return linear;
+    }
+    let pigment = mix(from, to, t);
+    let gate = smooth(0.025, 0.16, t);
+    std::array::from_fn(|i| linear[i] + (pigment[i] - linear[i]) * gate)
+}
+
 /// Apply pigment colour to an already composited pixel, preserving its alpha.
 pub fn paint(normal: [f32; 4], dst: [f32; 4], src: [f32; 4], amount: f32, strength: f32) -> [f32; 4] {
     let support = smooth(0.02, 0.22, dst[3]);
@@ -129,14 +145,8 @@ pub fn paint(normal: [f32; 4], dst: [f32; 4], src: [f32; 4], amount: f32, streng
     }
     let base = std::array::from_fn(|i| normal[i] + (dst[i] - normal[i]) * support);
     let source = [src[0], src[1], src[2]];
-    let t = amount.clamp(0.0, 1.0);
-    let pigment = mix(base, source, t);
-    let gate = smooth(0.025, 0.16, t);
-    let rgb: [f32; 3] = std::array::from_fn(|i| {
-        let linear = base[i] + (source[i] - base[i]) * t;
-        let mixed = linear + (pigment[i] - linear) * gate;
-        normal[i] + (mixed - normal[i]) * weight
-    });
+    let mixed = lerp(base, source, amount);
+    let rgb: [f32; 3] = std::array::from_fn(|i| normal[i] + (mixed[i] - normal[i]) * weight);
     [rgb[0], rgb[1], rgb[2], normal[3]]
 }
 
@@ -156,5 +166,19 @@ mod tests {
         let output = [0., 0., 1., 0.5];
         assert_eq!(paint(output, empty, src, 1., 1.), output);
         assert_eq!(mix([0.2, 0.4, 0.6], [1., 0., 0.], 0.), [0.2, 0.4, 0.6]);
+    }
+
+    #[test]
+    fn lerp_is_linear_at_small_amounts_and_pigment_at_large_ones() {
+        let (yellow, blue) = ([1., 1., 0.], [0., 0., 1.]);
+        // Below the gate the mix is the plain colour ramp, untouched.
+        let small = lerp(yellow, blue, 0.01);
+        assert!((small[0] - 0.99).abs() < 1e-5 && (small[2] - 0.01).abs() < 1e-5, "{small:?}");
+        // Half way, the response reads green rather than the grey a linear ramp gives.
+        let half = lerp(yellow, blue, 0.5);
+        assert!(half[1] > half[0] && half[1] > half[2], "yellow + blue should mix green: {half:?}");
+        // The ends stay exact, so a fully covered or uncovered pixel never shifts.
+        assert_eq!(lerp(yellow, blue, 0.0), yellow);
+        assert_eq!(lerp(yellow, blue, 0.999999), blue);
     }
 }

@@ -13,6 +13,9 @@ pub enum BlendMode {
     PassThrough,
     Normal,
     Dissolve,
+    /// The darker of the backdrop and the layer laid over it, alpha included: nothing where
+    /// there is nothing below (ProCraft's Shade).
+    Shade,
     Darken,
     Multiply,
     ColorBurn,
@@ -50,15 +53,49 @@ impl BlendMode {
     /// Paint.NET modes without an exact Photoshop equivalent.
     pub const PAINT_NET_MODES: [BlendMode; 6] = [Self::Reflect, Self::Glow, Self::Negation, Self::Xor, Self::PaintNetColorBurn, Self::PaintNetColorDodge];
 
-    /// All editable layer modes, with Paint.NET modes after Photoshop's menu order.
+    /// All editable layer modes, in the layers panel's menu order: the menu adds Shade to
+    /// Photoshop's darken group, then the Paint.NET modes.
     pub fn layer_modes() -> impl Iterator<Item = Self> {
-        Self::LAYER_MODES.into_iter().chain(Self::PAINT_NET_MODES)
+        Self::MENU_MODES.into_iter().chain(Self::PAINT_NET_MODES)
     }
 
     pub fn has_psd_equivalent(self) -> bool {
-        !Self::PAINT_NET_MODES.contains(&self)
+        !Self::PAINT_NET_MODES.contains(&self) && self != BlendMode::Shade
     }
-    /// Photoshop modes except PassThrough, in Photoshop menu order.
+
+    /// The layers panel's menu order: Photoshop's modes with [`BlendMode::Shade`] after Darken.
+    pub const MENU_MODES: [BlendMode; 28] = [
+        BlendMode::Normal,
+        BlendMode::Dissolve,
+        BlendMode::Darken,
+        BlendMode::Shade,
+        BlendMode::Multiply,
+        BlendMode::ColorBurn,
+        BlendMode::LinearBurn,
+        BlendMode::DarkerColor,
+        BlendMode::Lighten,
+        BlendMode::Screen,
+        BlendMode::ColorDodge,
+        BlendMode::LinearDodge,
+        BlendMode::LighterColor,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::HardLight,
+        BlendMode::VividLight,
+        BlendMode::LinearLight,
+        BlendMode::PinLight,
+        BlendMode::HardMix,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Subtract,
+        BlendMode::Divide,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ];
+
+    /// Photoshop modes except PassThrough, in PSD menu order (Shade has no PSD key).
     pub const LAYER_MODES: [BlendMode; 27] = [
         BlendMode::Normal,
         BlendMode::Dissolve,
@@ -94,6 +131,7 @@ impl BlendMode {
             BlendMode::PassThrough => "Pass Through",
             BlendMode::Normal => "Normal",
             BlendMode::Dissolve => "Dissolve",
+            BlendMode::Shade => "Shade",
             BlendMode::Darken => "Darken",
             BlendMode::Multiply => "Multiply",
             BlendMode::ColorBurn => "Color Burn",
@@ -135,6 +173,7 @@ impl BlendMode {
             BlendMode::PassThrough => b"pass",
             BlendMode::Normal => b"norm",
             BlendMode::Dissolve => b"diss",
+            BlendMode::Shade => b"norm",
             BlendMode::Darken => b"dark",
             BlendMode::Multiply => b"mul ",
             BlendMode::ColorBurn => b"idiv",
@@ -195,6 +234,9 @@ fn channel(mode: BlendMode, cb: f32, cs: f32, hi: f32) -> f32 {
     match mode {
         BlendMode::Normal | BlendMode::Dissolve | BlendMode::PassThrough => cs,
         BlendMode::Darken => cb.min(cs),
+        // On straight colour Shade is the darker of the two; its premultiplied form (the one
+        // that also takes the alpha into account) is in `composite`.
+        BlendMode::Shade => cb.min(cs),
         BlendMode::Multiply => cb * cs,
         BlendMode::ColorBurn => color_burn(cb, cs),
         BlendMode::LinearBurn => (cb + cs - 1.0).max(0.0),
@@ -455,6 +497,21 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
     }
     let cb = [backdrop[0], backdrop[1], backdrop[2]];
     let cs = [source[0], source[1], source[2]];
+    // Shade compares the backdrop with the source laid over it as premultiplied colour, alpha
+    // included: `min(b, s + b(1 − αs))`, as ProCraft composites it.
+    if mode == BlendMode::Shade {
+        let ao = ab.min(as_ + ab * (1.0 - as_));
+        if ao <= 0.0 {
+            return [0.0; 4];
+        }
+        let mut out = [0.0f32; 4];
+        for i in 0..3 {
+            let laid = cs[i] * as_ + cb[i] * ab * (1.0 - as_);
+            out[i] = (cb[i] * ab).min(laid) / ao;
+        }
+        out[3] = ao;
+        return out;
+    }
     let b = blend_rgb(mode, cb, cs);
     let ao = as_ + ab * (1.0 - as_);
     if ao <= 0.0 {

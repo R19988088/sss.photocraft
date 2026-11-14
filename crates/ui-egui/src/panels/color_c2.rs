@@ -6,6 +6,8 @@
 //! The geometry is the reference's 54 : 8 : 168 : 8 : 25 strip at the panel's width, so the whole
 //! panel scales with the dock instead of its height.
 
+use std::sync::Arc;
+
 use egui::{Color32, Mesh, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
@@ -130,8 +132,10 @@ fn panels_srgb(h: egui::ecolor::Hsva) -> [f32; 3] {
     [c[0], c[1], c[2]]
 }
 
-/// The 实线/图案 switch and the sampled pattern's preview.
+/// The 实线/图案 switch: the brush paints the solid foreground colour, or a pattern sampled from
+/// the canvas with the eyedropper. A click on the sampled patch selects it too.
 fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
     let pattern = app.session.tools.brush.pattern_enabled;
     ui.horizontal(|ui| {
         if ui.selectable_label(!pattern, tl!("Solid")).clicked() {
@@ -141,23 +145,10 @@ fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let _ = app.run("tools.setColorSource", json!({"pattern": true}));
         }
         if let Some(patch) = app.session.tools.brush.sampled_pattern.as_ref() {
-            let (r, response) = ui.allocate_exact_size(vec2(28., 28.), Sense::click());
-            let t = Tokens::get(ui.ctx());
+            let (r, response) = ui.allocate_exact_size(vec2(26., 26.), Sense::click());
             ui.painter().rect_filled(r, t.radius_sm, t.field);
-            let nx = patch.width.min(28);
-            let ny = patch.height.min(28);
-            for yy in 0..ny {
-                for xx in 0..nx {
-                    let at = (yy * patch.height / ny) as usize * patch.width as usize + (xx * patch.width / nx) as usize;
-                    if let Some(c) = patch.pixels.get(at) {
-                        let cell = Rect::from_min_max(
-                            r.min + vec2(xx as f32 / nx as f32 * r.width(), yy as f32 / ny as f32 * r.height()),
-                            r.min + vec2((xx + 1) as f32 / nx as f32 * r.width(), (yy + 1) as f32 / ny as f32 * r.height()),
-                        );
-                        ui.painter().rect_filled(cell, 0., c32(*c));
-                    }
-                }
-            }
+            let tex = pattern_preview(ui, patch);
+            ui.painter().image(tex.id(), r.shrink(1.), Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)), Color32::WHITE);
             ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1., if pattern { t.accent } else { t.field_border }), StrokeKind::Inside);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sampled Pattern"));
             if response.on_hover_text(tl!("Use Sampled Pattern")).clicked() {
@@ -171,7 +162,42 @@ fn color_source(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.add_space(4.);
 }
 
+/// Cells across the pattern preview. The patch can be 2048 x 2048, so the preview is a texture
+/// built once per sampled pattern rather than one filled quad per cell on every frame.
+const PREVIEW_CELLS: usize = 28;
+
+/// The sampled pattern as a small nearest-neighbour texture, cached until the pattern changes.
+fn pattern_preview(ui: &egui::Ui, patch: &photocraft_paint::brush::ColorPattern) -> Arc<egui::TextureHandle> {
+    type Key = (usize, u32, u32);
+    let id = egui::Id::unique("c2-source-pattern-preview");
+    let key: Key = (patch.pixels.as_ptr() as usize, patch.width, patch.height);
+    if let Some((cached, tex)) = ui.data(|d| d.get_temp::<(Key, Arc<egui::TextureHandle>)>(id))
+        && cached == key
+    {
+        return tex;
+    }
+    let n = PREVIEW_CELLS;
+    let mut image = egui::ColorImage::new([n, n], vec![Color32::TRANSPARENT; n * n]);
+    for y in 0..n {
+        for x in 0..n {
+            // Cell centres, as the pixelated preview has always sampled them.
+            let sx = (x as u32 * patch.width / n as u32).min(patch.width.saturating_sub(1));
+            let sy = (y as u32 * patch.height / n as u32).min(patch.height.saturating_sub(1));
+            let at = sy as usize * patch.width as usize + sx as usize;
+            if let Some(c) = patch.pixels.get(at) {
+                image[(x, y)] = c32(*c);
+            }
+        }
+    }
+    let tex = Arc::new(ui.ctx().load_texture("c2-source-pattern", image, egui::TextureOptions::NEAREST));
+    ui.data_mut(|d| d.insert_temp(id, (key, tex.clone())));
+    tex
+}
+
 /// The C2 Color tab.
+/// The 实线/图案 switch at the top of the C2 layout, with the sampled pattern's preview. The
+/// pattern itself comes from the eyedropper on the canvas (`document.samplePattern`), so the
+/// panel says where a pattern comes from while it has none.
 pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     color_source(app, ui);
     let background = app.ui.color_panel.background;
@@ -188,15 +214,18 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if h.v < 0.04 && h.s < remembered.1 {
         h.s += (remembered.1 - h.s) * (1. - h.v / 0.04).clamp(0., 1.);
     }
-    // The reference's 54 : 8 : 168 : 8 : 25 geometry, scaled together to the panel's width.
+    // The reference's 54 : 8 : 168 : 8 : 25 strip is a fixed point size (PaletteLayerPanels:
+    // `scale = 1`, core 168, source 54, hue 25, gap 8). The picker stays a 168 pt square
+    // whatever the dock's width, so the panel's height never follows the dock; a narrower dock
+    // shrinks the strip evenly instead of clipping, and a wider one centres it.
     let width = ui.available_width().max(1.);
-    let scale = width / C2_WIDTH;
+    let scale = (width / C2_WIDTH).min(1.);
     let left = 54. * scale;
     let side = 168. * scale;
+    let pad = ((width - C2_WIDTH * scale) / 2.).max(0.);
     let (rect, response) = ui.allocate_exact_size(vec2(width, side), Sense::hover());
-    sources(app, ui, Rect::from_min_size(rect.min, vec2(left, side)));
-    let picker = Rect::from_min_size(rect.min + vec2(left + 8. * scale, 0.), vec2(width - left - 8. * scale, side));
-    let square = Rect::from_min_size(picker.min, vec2(side, side));
+    sources(app, ui, Rect::from_min_size(rect.min + vec2(pad, 0.), vec2(left, side)));
+    let square = Rect::from_min_size(pos2(rect.min.x + pad + left + 8. * scale, rect.min.y), vec2(side, side));
     let mut changed = sv(ui, square, &mut h);
     changed |= hue(ui, Rect::from_min_size(pos2(square.right() + 8. * scale, square.top()), vec2(25. * scale, square.height())), &mut h);
     if changed {

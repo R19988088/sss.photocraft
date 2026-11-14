@@ -1314,6 +1314,23 @@ impl LayerMaskOverlay {
     }
 }
 
+/// Painting colour controls (percentages use 0..100): the Color panel's own settings, as the
+/// reference application keeps them beside the colour field rather than in Photoshop's pages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Painting {
+    /// Pigment mixing strength: 0 paints plain colour, 100 the full Kubelka-Munk response. The
+    /// engine copies it onto the brush's `pigmentMixStrength` as a 0..1 fraction.
+    pub pigment_mix_strength: f32,
+}
+
+impl Default for Painting {
+    fn default() -> Self {
+        // Off: a fresh install paints the colour picked, as the brush's own default does.
+        Self { pigment_mix_strength: 0.0 }
+    }
+}
+
 /// All preferences. JSON keys are the `edit.preferences.<section>` ids.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1323,6 +1340,7 @@ pub struct Preferences {
     pub interface: Interface,
     pub workspace: Workspace,
     pub tools: Tools,
+    pub painting: Painting,
     pub history_log: HistoryLog,
     pub file_handling: FileHandling,
     pub export: Export,
@@ -1598,9 +1616,23 @@ impl Session {
 
     /// Change preferences and apply the engine-side ones.
     pub fn edit_prefs<R>(&mut self, f: impl FnOnce(&mut Preferences) -> R) -> R {
+        let pigment = self.prefs().painting.pigment_mix_strength;
         let r = self.prefs.edit(f);
         self.apply_prefs();
+        self.sync_pigment_mix(pigment);
         r
+    }
+
+    /// The brush takes the Painting preference's mixing strength (0..100 → 0..1) when it
+    /// changes: one value for every brush, as the reference application's Mixing Strength row
+    /// sets it. Unrelated preference edits leave a brush's own value alone, so a preset that
+    /// carries its own pigment response keeps it.
+    pub(crate) fn sync_pigment_mix(&mut self, before: f32) {
+        let now = self.prefs().painting.pigment_mix_strength;
+        if now != before {
+            self.tools.brush.pigment_mix_strength = now / 100.0;
+            self.tools.brush_changed();
+        }
     }
 
     /// Push engine-relevant preferences into live state: every document's history limit and
@@ -1702,6 +1734,7 @@ impl Session {
         }
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
+        let pigment = self.prefs().painting.pigment_mix_strength;
         let mut invalid = Vec::new();
         let mut prefs: Preferences = read_lenient(v, &[], &mut invalid);
         // An Effect Cache the field no longer accepts (above the 32-bit cap, saved before the cap
@@ -1717,6 +1750,7 @@ impl Session {
             self.load_presets_json(v);
         }
         self.apply_prefs();
+        self.sync_pigment_mix(pigment);
         Ok(invalid)
     }
 

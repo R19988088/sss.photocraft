@@ -83,14 +83,21 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     if !app.ui.view.hides_tabs() || opening {
-        // Flat Spectrum tabs sit directly against the canvas. The parent's default vertical
-        // item spacing would otherwise leave a visible gap below the tab strip (#2188).
-        let spacing = ui.spacing().item_spacing.y;
-        if crate::theme::Tokens::get(ui.ctx()).pro {
-            ui.spacing_mut().item_spacing.y = 0.0;
-        }
-        app.tab_strip = Some(tabs(app, ui));
-        ui.spacing_mut().item_spacing.y = spacing;
+        // The tab strip floats over the canvas, as Photoshop's document window has it: it takes no
+        // layout space, so the document starts at the canvas's top edge and shows through the
+        // strip between the tabs.
+        let rect = ui.available_rect_before_wrap();
+        let ctx = ui.ctx().clone();
+        egui::Area::new(egui::Id::new("document-tabs"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .default_size(egui::vec2(rect.width(), 0.0))
+            .movable(false)
+            .enabled(ui.is_enabled())
+            .show(&ctx, |ui| {
+                ui.set_width(rect.width());
+                app.tab_strip = Some(tabs(app, ui));
+            });
         drop_slot_line(app, ui);
         // A tab click switches documents before any canvas is drawn this frame.
         publish_shown(app);
@@ -251,8 +258,9 @@ pub(super) fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
                 egui::WidgetInfo::selected(egui::Role::Button, true, sel, label)
             });
             doc_tabs.push((doc, r));
-            // The selected tab stands out by its text alone: a floating strip has no card behind it.
+            // The selected tab sits on a card of its own, like the panel it belongs to.
             if sel {
+                ui.painter().rect_filled(r, t.radius_sm, t.card);
                 ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside);
             } else if resp.hovered() {
                 ui.painter().rect_filled(r, t.radius_sm, t.hover.gamma_multiply(0.5));
@@ -637,8 +645,11 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptab", doc)), Sense::click_and_drag());
         let sel = Some(i) == active;
-        // A floating strip: the active tab is told apart by its text; only a hover shows behind it.
-        if resp.hovered() && !sel {
+        // The active tab carries the strip's chrome behind its title, so the document's name reads
+        // as the bar it came from; the others float on the canvas.
+        if sel {
+            ui.painter().rect_filled(r, 0.0, t.chrome);
+        } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.35));
         }
         if dragging.is_some_and(|p| r.contains(p)) {
@@ -677,7 +688,9 @@ fn pro_tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> TabStrip {
         let g = crate::tab_strip::elided(ui, title, font.clone(), t.text, (r.width() - DOC_TAB_PAD).max(1.0));
         let resp = ui.interact(r, ui.scope_id().with(("ptabjob", job.0)), Sense::click());
         let sel = app.jobs.focus == Some(*job);
-        if resp.hovered() && !sel {
+        if sel {
+            ui.painter().rect_filled(r, 0.0, t.chrome);
+        } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.35));
         }
         ui.painter().line_segment([r.right_top(), r.right_bottom()], Stroke::new(1.0, t.separator));

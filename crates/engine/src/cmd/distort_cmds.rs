@@ -504,8 +504,11 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec {
             id: LIQUIFY,
             label: "Liquify…",
-            menu: &["Filter"],
-            shortcut: Some("Cmd+Shift+X"),
+            // The brush tool (Tool ▸ Liquify) is the entry point; the filter command stays only
+            // so a recorded Liquify smart filter can re-open with its strokes. No menu row and no
+            // shortcut, matching the Filter menu the UI no longer lists it in.
+            menu: &[],
+            shortcut: None,
             params: L,
             enabled: crate::filters::has_filterable_layer,
             journal: true,

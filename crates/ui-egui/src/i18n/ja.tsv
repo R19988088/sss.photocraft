@@ -4299,3 +4299,241 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Shrinkwrap Canvas on Save	保存時にカンバスを内容に合わせて縮小
 	Move Toolbar to the Right	ツールバーを右へ移動
 	Move Toolbar to the Left	ツールバーを左へ移動
+
+# 2026-11-14 に本体へ追加されたメッセージ・パネル見出し・メニュー項目。英語原文から
+# 作成し、本ファイルの用語（レイヤー、選択範囲、ブラシ、プリセット…）に合わせた。
+	A command was canceled or stopped during batch processing. Continue with the next file or stop?	バッチ処理中にコマンドが取り消されたか停止しました。次のファイルに進みますか、それとも中止しますか？
+	A file is still being placed; try again when it has finished.	まだ配置中のファイルがあります。完了してからもう一度お試しください。
+	Allow Tool Recording	ツールの記録を許可
+	Allows rotation and scaling of selection	選択範囲の回転と拡大・縮小を許可
+	Always use Pressure for Opacity. When off, Brush Preset controls pressure	常に筆圧で不透明度を制御します。オフのときはブラシプリセットが筆圧を制御します
+	Always use Pressure for Size. When off, Brush Preset controls pressure	常に筆圧でサイズを制御します。オフのときはブラシプリセットが筆圧を制御します
+	Anchor Delay	アンカー遅延
+	Anchor X	アンカー X
+	Anchor Y	アンカー Y
+	Answer the open import question first, then import this file again.	未回答の読み込みの質問に答えてから、このファイルをもう一度読み込んでください。
+	Anti-alias brush application	ブラシ適用をアンチエイリアス
+	Apply to All	すべてに適用
+	Are you sure you want to delete all notes?	すべての注釈を削除しますか？
+	Arrowhead options	矢じりのオプション
+	Arrowheads	矢じり
+	Artboards	アートボード
+	Attribute	属性
+	Backdrop Opacity	背景の不透明度
+	Batch preview	バッチのプレビュー
+	Blend Attribute	合成属性
+	Blur Strength	ぼかしの強さ
+	Bottom align text	テキストを下揃え
+	CPU Rendering	CPU レンダリング
+	Calculating…	計算中…
+	Cancelled placing {name}	{name} の配置を取り消しました
+	Choose Pattern	パターンを選択
+	Choose a menu command. Playback asks for its settings when needed.	メニューコマンドを選択してください。再生時に必要に応じて設定を確認します。
+	Choose a remix mode	リミックスモードを選択
+	Click and move left or right to scale using the Zoom Tool (OpenGL only)	ズームツールでクリックして左右に動かすと拡大・縮小します（OpenGL のみ）
+	Click to open the Brush Preset picker	クリックしてブラシプリセットピッカーを開く
+	Click to refresh histogram with uncached data	クリックして未キャッシュのデータでヒストグラムを更新
+	Color Attribute	色の属性
+	Complementary Color	補色
+	Concavity	凹み
+	Confirm or cancel the pending Record Again editor first.	先に保留中の「再記録」エディターを確定するか取り消してください。
+	Confirm or cancel the pending menu item first.	先に保留中のメニュー項目を確定するか取り消してください。
+	Coordinates:	座標：
+	Copy CSS	CSS をコピー
+	Could not use the type tool because the layer is locked.	レイヤーがロックされているため、文字ツールを使用できませんでした。
+	Count:	カウント：
+	Darkening	暗くする
+	Data Sets as Files is unavailable on the web	ウェブ版では「データセットをファイルとして」は使用できません
+	Delete Note	注釈を削除
+	Delete this note?	この注釈を削除しますか？
+	Determines the spread of replaced color	置き換える色の広がりを決めます
+	Do not erase the foreground swatch color	前景のスウォッチの色を消さない
+	Drag panels	パネルをドラッグ
+	Drawn on the CPU: {reason}. Click for System Info.	CPU で描画：{reason}。クリックでシステム情報を表示。
+	Draws background color over foreground colors	前景色の上に背景色で描画します
+	Dropped files weren't placed: their document was closed.	ドロップしたファイルは配置されませんでした：元のドキュメントが閉じられています。
+	Dropped files weren't placed: too many are waiting for their document.	ドロップしたファイルは配置されませんでした：同じドキュメントを待つファイルが多すぎます。
+	Edge Control	エッジの制御
+	Effect	効果
+	Empty	空
+	Enable to remix all layers	有効にするとすべてのレイヤーをリミックスします
+	End	終点
+	Erase range of similar colors	類似した色の範囲を消去します
+	Expansion	拡張
+	Filter for embedded smart objects	埋め込みスマートオブジェクトで絞り込む
+	Filter for linked smart objects that are missing	見つからないリンクスマートオブジェクトで絞り込む
+	Filter for smart objects linked locally	ローカルにリンクされたスマートオブジェクトで絞り込む
+	Fixed Width	固定幅
+	Flow Algorithm:	フローアルゴリズム：
+	Follow Azimuth	方位角に従う
+	Freeze every pixel	すべてのピクセルを固定
+	Grain Density	グレインの密度
+	Halftone	ハーフトーン
+	Halftone…	ハーフトーン…
+	High Memory Photoshop Document	大メモリの Photoshop ドキュメント
+	Highlight Brightness	ハイライトの明るさ
+	Highlight Ratio	ハイライトの比率
+	How far to let the erasing spread	消去をどこまで広げるか
+	Image Compression	画像の圧縮
+	Image Palette Color	イメージパレットの色
+	Import a C3 preset with a packaged canvas pattern.	キャンバスパターンを同梱した C3 プリセットを読み込みます。
+	Import as New Group	新しいグループとして読み込む
+	Import as New Group keeps “{group}” and adds the file as a new group beside it.	「新しいグループとして読み込む」は「{group}」を残し、その隣に新しいグループとしてファイルを追加します。
+	Inertia	慣性
+	Insert Menu Item…	メニュー項目を挿入…
+	Insert Path	パスを挿入
+	Jitter	ジッター
+	LZW	LZW
+	Layer Effects	レイヤー効果
+	Level:	レベル：
+	Lining	ライニング
+	Linked	リンク済み
+	Liquify closed: the document changed. Open Liquify again to start over.	液状化を終了しました：ドキュメントが変更されました。もう一度液状化を開いてやり直してください。
+	Little memory would be left after opening this file. Close other apps first, or PhotoCraft may run out of memory.	このファイルを開くと空きメモリがほとんど残りません。他のアプリを先に閉じてください。さもないと PhotoCraft がメモリ不足になる可能性があります。
+	Locked	ロック済み
+	Mask Options: Mask None	マスクオプション：マスクなし
+	Minimizes clipping in shadows and highlights, and keeps colors from shifting hue	シャドウとハイライトのクリッピングを抑え、色相のずれを防ぎます
+	Mixing Strength	混色の強さ
+	No Adv. Blending	高度な合成なし
+	No Layer Effects	レイヤー効果なし
+	No Layer Mask	レイヤーマスクなし
+	No Vector Mask	ベクトルマスクなし
+	No document.	ドキュメントがありません。
+	No import is waiting. Import the file again.	待機中の読み込みはありません。ファイルをもう一度読み込んでください。
+	No matching fonts	一致するフォントがありません
+	No menu item belongs to this chooser.	この選択画面に属するメニュー項目はありません。
+	No menu item is waiting.	待機中のメニュー項目はありません。
+	No note to delete	削除する注釈がありません
+	No path to make a shape from: draw one with the Pen tool or select one in the Paths panel.	形状の元になるパスがありません：ペンツールで描くか、「パス」パネルで選択してください。
+	No pixels are selected.	ピクセルが選択されていません。
+	No recorded step belongs to this editor.	このエディターに属する記録ステップはありません。
+	No slices are selected. Click a slice in the preview to select it.	スライスが選択されていません。プレビューでスライスをクリックして選択してください。
+	No step is waiting.	待機中のステップはありません。
+	Not Clipped	クリッピングなし
+	Not Empty	空でない
+	Not Linked	リンクなし
+	Not Locked	ロックなし
+	Not Visible	非表示
+	Note deleted, but the preference could not be saved: {error}	注釈は削除されましたが、環境設定を保存できませんでした：{error}
+	Nudge	ナッジ
+	Numerals	数字
+	Open anyway	そのまま開く
+	Open as Smart Object…	スマートオブジェクトとして開く…
+	Opening this document uses more memory and may slow down your computer or other running applications.	このドキュメントを開くとメモリを多く使い、コンピューターや他のアプリが遅くなる可能性があります。
+	Opening “{name}” requires an estimated {est} GiB of memory ({avail} GiB available).	「{name}」を開くには約 {est} GiB のメモリが必要です（空き {avail} GiB）。
+	Opening “{name}” requires an estimated {est} GiB of memory. The available memory could not be measured.	「{name}」を開くには約 {est} GiB のメモリが必要です。空きメモリを測定できませんでした。
+	Outline	アウトライン
+	Painting Mode	描画モード
+	Pattern:	パターン：
+	Percentile:	パーセンタイル：
+	Pick Color From Image	画像から色を取得
+	Preferences can't be saved	環境設定を保存できません
+	Preparing Free Transform	自由変形を準備中
+	Pressure Controls Anchor Delay	筆圧でアンカー遅延を制御
+	Pressure calibration	筆圧のキャリブレーション
+	Primary Brush	メインブラシ
+	Proportional	プロポーショナル
+	Proportional Lining	プロポーショナルライニング
+	Proportional Oldstyle	プロポーショナルオールドスタイル
+	Record Again	再記録
+	Replace deletes everything in “{group}” first, including presets you edited or moved there. This can't be undone.	「置き換え」は「{group}」内のすべてを先に削除します。編集したり移動したプリセットも含まれます。この操作は元に戻せません。
+	Resize windows when zooming using the Zoom Tool	ズームツールでのズーム時にウィンドウのサイズを変更
+	Retained peak	保持されるピーク
+	Saturation Boost	彩度の強調
+	Save Image Pyramid	イメージピラミッドを保存
+	Save Transparency	透明度を保存
+	Scales the whole field toward zero	フィールド全体を 0 に向けてスケールします
+	Scroll all open document windows when using the hand tool	手のひらツール使用時に開いているすべてのドキュメントウィンドウをスクロール
+	Search and select fonts	フォントを検索して選択
+	Secondary Brush	サブブラシ
+	Select Pixels	ピクセルを選択
+	Select an action first.	先にアクションを選択してください。
+	Select an action step first.	先にアクションのステップを選択してください。
+	Selected Slices	選択したスライス
+	Set 	セット 
+	Set 1	セット 1
+	Set 10	セット 10
+	Set 11	セット 11
+	Set 12	セット 12
+	Set 13	セット 13
+	Set 14	セット 14
+	Set 15	セット 15
+	Set 16	セット 16
+	Set 17	セット 17
+	Set 18	セット 18
+	Set 19	セット 19
+	Set 2	セット 2
+	Set 20	セット 20
+	Set 3	セット 3
+	Set 4	セット 4
+	Set 5	セット 5
+	Set 6	セット 6
+	Set 7	セット 7
+	Set 8	セット 8
+	Set 9	セット 9
+	Set as default	デフォルトに設定
+	Set exposure for stroke	ストロークの露出を設定
+	Set flow rate for stroke	ストロークの流量を設定
+	Set font size	フォントサイズを設定
+	Set font style	フォントスタイルを設定
+	Set opacity for stroke	ストロークの不透明度を設定
+	Set symmetry options for Painting	描画の対称オプションを設定
+	Set text color	テキストの色を設定
+	Set the brush angle	ブラシの角度を設定
+	Show Channels in Color	チャンネルをカラーで表示
+	Show Statistics	統計を表示
+	Single Tip	シングルチップ
+	Smoothing Options	スムージングオプション
+	Soft Coverage	ソフトなカバレッジ
+	Source:	ソース：
+	Start	始点
+	Stroke Jitter	ストロークのジッター
+	Stylistic Sets	スタイルセット
+	Tablet input mode	タブレット入力モード
+	Tablet…	タブレット…
+	Tabular	表形式
+	Tabular Lining	表形式ライニング
+	Tabular Oldstyle	表形式オールドスタイル
+	The Record Again command changed.	「再記録」コマンドが変更されました。
+	The action or insertion command changed. Request Insert Menu Item again.	アクションまたは挿入コマンドが変更されました。「メニュー項目を挿入」をもう一度実行してください。
+	The actions changed. Request Record Again again.	アクションが変更されました。「再記録」をもう一度実行してください。
+	The command permissions changed. Request Insert Menu Item again.	コマンドの許可が変更されました。「メニュー項目を挿入」をもう一度実行してください。
+	The command permissions changed. Request Record Again again.	コマンドの許可が変更されました。「再記録」をもう一度実行してください。
+	The current scratch directory ({path}) doesn't report its free space, so PhotoCraft can't stop before it fills up, and large files get no extra room from it without a Scratch Size Limit. This warning applies to the current configuration; changes above take effect on Apply or OK. Set a limit or use a local disk.	現在のスクラッチディスク（{path}）は空き容量を報告しないため、PhotoCraft は容量が尽きる前に停止できず、スクラッチサイズの上限がない場合は大きなファイルに追加の領域も確保できません。この警告は現在の設定に対するものです。上記の変更は「適用」または「OK」で有効になります。上限を設定するか、ローカルディスクを使用してください。
+	The document changed. Please choose Clear All again.	ドキュメントが変更されました。もう一度「すべてクリア」を選んでください。
+	The document changed. Request Record Again again.	ドキュメントが変更されました。「再記録」をもう一度実行してください。
+	The document or its notes changed. Please delete the note again.	ドキュメントまたは注釈が変更されました。注釈をもう一度削除してください。
+	The preference could not be saved: {error}	環境設定を保存できませんでした：{error}
+	The recovered document is no longer open	復元したドキュメントはすでに開いていません
+	The step editor could not be opened.	ステップエディターを開けませんでした。
+	The step has no command editor.	このステップにはコマンドエディターがありません。
+	Tilt Angle	チルト角度
+	Tilt Delay	チルト遅延
+	Tilt Opacity	チルト不透明度
+	Tilt Size	チルトサイズ
+	Tolerance for choosing related colors	関連する色を選ぶ許容量
+	Top align text	テキストを上揃え
+	Uncached Refresh	未キャッシュの更新
+	Use Sampled Pattern	サンプリングしたパターンを使用
+	Use relative positioning for reference point	基準点に相対配置を使用
+	Use the eyedropper on the canvas to sample a pattern.	キャンバス上でスポイトを使ってパターンをサンプリングします。
+	Use these settings for new arrows	新しい矢じりにこの設定を使用
+	Useful mixer brush combinations	便利なミキサーブラシの組み合わせ
+	Watercolor 2	水彩 2
+	Wet Edge Mode	ウェットエッジモード
+	Wet Edge V4	ウェットエッジ V4
+	Whole Stroke	ストローク全体
+	Width Mode	幅モード
+	WinTab	WinTab
+	Windows Ink	Windows Ink
+	ZIP	ZIP
+	Zoom current window to 1:1	現在のウィンドウを 1:1 にズーム
+	Zoom current window to fill the screen	現在のウィンドウを画面いっぱいにズーム
+	Zoom current window to screen size	現在のウィンドウを画面サイズにズーム
+	brush tool	ブラシツール
+	{message} into “{group}”	{message}を「{group}」へ
+	{ok} written to {dir}	{ok} を {dir} に書き込みました
+@plural	The brush group “{group}” already has {n} brush of yours.|The brush group “{group}” already has {n} brushes of yours.	ブラシグループ「{group}」にすでにあなたの {n} 本のブラシがあります。
+@plural	The gradient group “{group}” already exists ({n} gradient).|The gradient group “{group}” already exists ({n} gradients).	グラデーショングループ「{group}」はすでに存在します（{n} 個のグラデーション）。
+@plural	{what}: {n} Image Assets output failed|{what}: {n} Image Assets outputs failed	{what}：{n} 個の画像アセットの出力に失敗しました
+@plural	{what}: {n} file failed|{what}: {n} files failed	{what}：{n} 個のファイルに失敗しました

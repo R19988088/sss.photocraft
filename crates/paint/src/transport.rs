@@ -97,16 +97,24 @@ impl Transport {
     }
 
     pub fn dab(&mut self, work: &mut Region, fp: &Footprint) {
-        self.smudge_dab(work, fp);
+        // C3 dispatch order (ContentView.swift:9121 runs the independent blur, 9140 the
+        // transport pass): the blur comes first, so the smear reads the layer as it was rather
+        // than this dab's own blur. The first dab of a stroke snapshots the untouched layer for
+        // `blur_color_target` before either pass changes it.
+        if self.blur_base.is_none() && self.settings.blur_color_target.is_some() {
+            self.blur_base = Some(work.clone());
+        }
         self.blur_dab(work, fp);
+        self.smudge_dab(work, fp);
     }
 
-    /// Smudge precedes colour deposition; blur follows it.
+    /// Transport/smudge (pickup or carrier feedback), after the blur pass.
     pub(crate) fn smudge_dab(&mut self, work: &mut Region, fp: &Footprint) {
         if work.rect.is_empty() || work.ch == 0 {
             return;
         }
-        // The first dab of a stroke records the layer it started from, for `blur_color_target`.
+        // The first dab of a stroke records the layer it started from, for `blur_color_target`
+        // (normally taken in `dab` before the blur; kept here for direct callers).
         if self.blur_base.is_none() && self.settings.blur_color_target.is_some() {
             self.blur_base = Some(work.clone());
         }

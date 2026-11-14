@@ -102,11 +102,22 @@ pub fn panel_menu_button(ui: &mut Ui) -> Response {
 }
 
 pub fn pill_tab(ui: &mut Ui, label: &str, selected: bool) -> Response {
+    pill_tab_pad(ui, label, selected, 20.0)
+}
+
+/// `pill_tab` with an explicit horizontal padding, for rows whose two tabs and a trailing control
+/// have to share one line (the brush panel's lane row is that tight).
+pub fn pill_tab_pad(ui: &mut Ui, label: &str, selected: bool, pad: f32) -> Response {
+    pill_tab_sized(ui, label, selected, pad, 12.5)
+}
+
+/// `pill_tab` with an explicit padding and text size.
+pub fn pill_tab_sized(ui: &mut Ui, label: &str, selected: bool, pad: f32, text_size: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let translated = tl!(label);
-    let font = theme::medium(12.5);
+    let font = theme::medium(text_size);
     let galley = ui.painter().layout_no_wrap(translated.to_string(), font, t.text);
-    let size = vec2(galley.size().x + 20.0, 24.0);
+    let size = vec2(galley.size().x + pad, 24.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     if selected {
         surface(ui, rect, t.hover, true);
