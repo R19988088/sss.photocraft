@@ -29,11 +29,13 @@
 //! winsafe can't wrap a raw handle without it, so the window is found by its handle instead.
 
 pub use platform::service;
+#[cfg(target_os = "windows")]
+pub use platform::os_drag_hook;
 
 #[cfg(target_os = "windows")]
 mod platform {
     use eframe::wgpu::rwh::{HasWindowHandle, RawWindowHandle};
-    use photocraft_ui_egui::WindowFrameFn;
+    use photocraft_ui_egui::{OsDrag, OsDragHook, WindowFrameFn};
     use winsafe::prelude::Handle;
     use winsafe::{AtomStr, HWND, HwndPlace, POINT, SIZE, co};
 
@@ -62,6 +64,49 @@ mod platform {
         let hwnd = find_window(target)?;
         reapply(&hwnd);
         Some(Box::new(move || reapply(&hwnd)))
+    }
+
+    /// The window move and resize the custom title bar starts, or `None` when the app keeps the
+    /// system title bar (whose own title bar Windows moves) or its handle can't be found.
+    ///
+    /// The message itself goes through [`photocraft_tablet::windows::start_native_drag`], the
+    /// workspace's one `unsafe` helper crate: this keeps no state between presses, so a press that
+    /// never starts Windows' move loop costs only that press (see that function's docs).
+    pub fn os_drag_hook(cc: &eframe::CreationContext<'_>, custom_titlebar: bool) -> Option<OsDragHook> {
+        if !custom_titlebar {
+            return None;
+        }
+        let target = match cc.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => h.hwnd.get(),
+            _ => return None,
+        };
+        let hwnd = find_window(target)?;
+        // The raw handle: an integer is `Send + Sync`, a window handle is not.
+        let raw = hwnd.ptr() as isize;
+        Some(std::sync::Arc::new(move |drag: OsDrag| start_native_drag(raw, drag)))
+    }
+
+    /// Asks Windows to move (`HTCAPTION`, as a title bar does) or resize (the edge's hit-test code,
+    /// as the sizing border does) the window from the pointer's press, so the window keeps Aero
+    /// snap, its native shape and its resize cursors.
+    fn start_native_drag(hwnd: isize, drag: OsDrag) {
+        let hit = match drag {
+            OsDrag::Move => co::HT::CAPTION,
+            OsDrag::Resize(direction) => match direction {
+                egui::ResizeDirection::North => co::HT::TOP,
+                egui::ResizeDirection::South => co::HT::BOTTOM,
+                egui::ResizeDirection::East => co::HT::RIGHT,
+                egui::ResizeDirection::West => co::HT::LEFT,
+                egui::ResizeDirection::NorthEast => co::HT::TOPRIGHT,
+                egui::ResizeDirection::SouthEast => co::HT::BOTTOMRIGHT,
+                egui::ResizeDirection::NorthWest => co::HT::TOPLEFT,
+                egui::ResizeDirection::SouthWest => co::HT::BOTTOMLEFT,
+            },
+        };
+        let Ok(cursor) = winsafe::GetCursorPos() else {
+            return;
+        };
+        photocraft_tablet::windows::start_native_drag(hwnd, hit.raw(), cursor.x, cursor.y);
     }
 
     /// The top-level window with the given raw handle. `EnumWindows` hands out real `HWND`s, so

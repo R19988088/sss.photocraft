@@ -2,8 +2,9 @@
 //!
 //! The app opens a WinTab context on its real top-level window and polls queued packets once per
 //! frame. This module only translates Wintab packets into [`Sample`]s; it does not synthesise
-//! pointer events. With Windows Ink disabled for the tablet, the vendor driver provides the
-//! mouse cursor while this module provides pressure, tilt, rotation and the eraser flag.
+//! pointer events. WinTab is tried first: while the driver's packets come they are the pen's
+//! pressure, tilt, rotation and eraser end (the driver moves the cursor itself), and a driver
+//! with no WinTab context falls back to Windows Ink's pointer messages.
 //!
 //! Devices without orientation axes (pressure-only tablets) are opened with a packet that asks
 //! only for the fields the driver reports; their tilt is neutral rather than a made-up value.

@@ -6,9 +6,11 @@
 //! each sample into the UI's [`StylusFeed`], where the canvas reads it exactly like the web runner's
 //! Pointer Events and automation's simulated pen. On Windows, winit forwards `WM_POINTER` pressure
 //! as touch force, but drops `PEN_FLAG_BARREL` (`0x0001`) and the eraser end (`PEN_FLAG_INVERTED`);
-//! `photocraft-tablet` recovers them through thread-local message hooks beside winit. With Windows
-//! Ink disabled for the tablet, the optional WinTab mode reads pressure, tilt, rotation and the
-//! eraser end from a WinTab 1.4 system context instead ([`install_wintab`]).
+//! `photocraft-tablet` recovers them through thread-local message hooks beside winit. Windows
+//! tablets report the pen twice, and WinTab is tried first: a WinTab 1.4 system context supplies
+//! pressure, tilt, rotation and the eraser end whenever its packets come, and Windows Ink's touch
+//! force is the fallback for a driver that gives no such context
+//! ([`install_wintab`], [`StylusFeed::set_native`]).
 //!
 //! Wayland compositors give a pen only to clients that bind the tablet protocol
 //! (`zwp_tablet_v2`), which winit 0.30 doesn't (and binding it on winit's connection needs
@@ -47,14 +49,15 @@ pub fn install_windows() -> Option<photocraft_tablet::windows::Monitor> {
 
 /// Installs the WinTab backend on the real PhotoCraft window and returns its per-frame poll.
 ///
-/// `enabled` is Preferences > Tools > Pen Tablet > Tablet input set to WinTab. With Windows Ink disabled there, the vendor
-/// driver still moves the cursor; this backend only supplies pressure/tilt/rotation/eraser
-/// through the normal stylus feed. On failure it logs why and leaves Windows Ink untouched.
+/// A Windows tablet reports the pen twice: the vendor driver's WinTab packets, and Windows Ink's
+/// `WM_POINTER` messages (which winit forwards as a touch force). The packets carry the driver's
+/// own pressure, tilt, rotation and eraser end, so they are the pen's while they arrive; Windows
+/// Ink is the fallback, for a driver that gives no WinTab context or whose packets never come
+/// (Windows Ink is on for it). Both are hooked on every start, and the feed's `native` flag tells
+/// the stylus to drop Ink's duplicate copy of the same stroke
+/// ([`StylusFeed::set_native`]) - so WinTab is tried first and Ink takes over by itself.
 #[cfg(target_os = "windows")]
-pub fn install_wintab(cc: &eframe::CreationContext<'_>, feed: &StylusFeed, enabled: bool) -> Option<photocraft_ui_egui::TabletPollFn> {
-    if !enabled {
-        return None;
-    }
+pub fn install_wintab(cc: &eframe::CreationContext<'_>, feed: &StylusFeed) -> Option<photocraft_ui_egui::TabletPollFn> {
     use eframe::wgpu::rwh::{HasWindowHandle, RawWindowHandle};
     let hwnd = match cc.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => handle.hwnd.get(),
@@ -62,14 +65,20 @@ pub fn install_wintab(cc: &eframe::CreationContext<'_>, feed: &StylusFeed, enabl
     };
     let ctx = cc.egui_ctx.clone();
     if let Err(error) = photocraft_tablet::wintab::install(hwnd, Box::new(move || ctx.request_repaint())) {
-        log::warn!("WinTab backend: {error}");
+        // Not a failure: a tablet with no WinTab interface is the common case, and Windows Ink
+        // supplies its pen.
+        log::info!("WinTab backend: {error}; Windows Ink supplies the pen");
         return None;
     }
     let sink = sink(feed.clone());
-    log::info!("WinTab backend active (system context)");
+    let native = feed.clone();
+    log::info!("WinTab backend active (system context): its packets carry the pen while they come");
     let logged = std::cell::Cell::new(false);
     Some(Box::new(move |focused| {
         photocraft_tablet::wintab::poll(focused, &|sample| {
+            // The driver's own values are the pen's while its packets come, and Ink's copy of the
+            // same stroke is dropped meanwhile (the pen leaving, `None`, hands the pen back).
+            native.set_native(sample.is_some());
             if let Some(sample) = sample
                 && !logged.replace(true)
             {

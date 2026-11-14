@@ -661,6 +661,11 @@ fn main() -> eframe::Result {
             // The custom title bar's undecorated window must stay borderless, or its caption and
             // border offset the content and the pointer on some Windows systems (#2246).
             app.services.window_frame = window_frame::service(cc, custom_titlebar);
+            // The title bar's own move and resize: Windows starts its own size/move loop for
+            // them, instead of going through egui's viewport commands and winit's guard, which
+            // stays raised when a request never starts that loop (see `window_frame`).
+            #[cfg(target_os = "windows")]
+            photocraft_ui_egui::set_os_drag_hook(window_frame::os_drag_hook(cc, custom_titlebar));
             // Linux: the desktop's caption buttons (GNOME's, KDE's) on the sides its layout puts them.
             if custom_titlebar {
                 app.services.caption_style = caption_style::service();
@@ -690,9 +695,7 @@ fn main() -> eframe::Result {
             // With Windows Ink disabled for the tablet, WinTab supplies the pen pressure, tilt,
             // rotation and eraser end; the vendor driver still moves the cursor.
             #[cfg(target_os = "windows")]
-            if let Some(poll) =
-                tablet::install_wintab(cc, &app.stylus.feed, app.session.prefs().tools.tablet_input == photocraft_engine::prefs::TabletInput::WinTab)
-            {
+            if let Some(poll) = tablet::install_wintab(cc, &app.stylus.feed) {
                 app.services.tablet_poll = Some(poll);
             }
             #[cfg(target_os = "linux")]

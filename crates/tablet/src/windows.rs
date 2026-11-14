@@ -109,6 +109,8 @@ unsafe extern "system" {
     fn CallNextHookEx(hhk: *mut std::ffi::c_void, n_code: i32, w_param: usize, l_param: isize) -> isize;
     fn GetCurrentThreadId() -> u32;
     fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut POINTER_PEN_INFO) -> i32;
+    fn PostMessageW(hwnd: isize, msg: u32, w_param: usize, l_param: isize) -> i32;
+    fn ReleaseCapture() -> i32;
 }
 
 const WH_GETMESSAGE: i32 = 3;
@@ -123,6 +125,34 @@ pub const WM_POINTERDOWN: u32 = 0x0246;
 pub const WM_POINTERUP: u32 = 0x0247;
 /// `WM_POINTERLEAVE` (winuser.h).
 pub const WM_POINTERLEAVE: u32 = 0x024A;
+
+/// `WM_NCLBUTTONDOWN` (winuser.h): a press in a window's non-client area, carrying the hit-test
+/// code (its `w_param`) and the pointer's screen position (its `l_param`). The system starts its
+/// own move or resize loop from it, which is how a window without a caption is moved and resized.
+const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+
+/// Asks Windows to move or resize `hwnd` (our window's raw handle) from a press on its custom
+/// title bar: `hit` is the area pressed, as `HTLEFT`…`HTBOTTOMRIGHT` resize and `HTCAPTION` moves
+/// (`co::HT` in the app), `(x, y)` the pointer's screen position.
+///
+/// egui's `ViewportCommand::StartDrag`/`BeginResize` reach Windows through egui-winit and winit,
+/// which post the same message; winit raises a guard before posting and clears it only when
+/// Windows reports the end of its own size/move loop, so a request that never starts the loop
+/// (window not active yet, the button already up, another program holding the pointer) leaves the
+/// guard raised and drops every later move *and* resize until the app restarts. This remembers
+/// nothing between presses: one that fails costs that press only.
+pub fn start_native_drag(hwnd: isize, hit: u16, x: i32, y: i32) {
+    // The pointer's screen position, packed as `MAKELPARAM(x, y)`: the low word x, the high y.
+    let position = (((y as u32) & 0xFFFF) << 16 | ((x as u32) & 0xFFFF)) as isize;
+    // SAFETY: a hit-test code and a screen position, no pointer, and a window this process owns;
+    // the message is posted, so the system starts its loop once the press returns to it.
+    unsafe {
+        // winit took the pointer on the press: the system's own loop can only take it once it is
+        // free again.
+        ReleaseCapture();
+        PostMessageW(hwnd, WM_NCLBUTTONDOWN, usize::from(hit), position);
+    }
+}
 
 /// `PEN_FLAG_BARREL` (winuser.h): the barrel button of the pen is pressed.
 pub const PEN_FLAG_BARREL: u32 = 0x00000001;

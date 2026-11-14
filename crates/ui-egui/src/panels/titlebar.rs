@@ -482,12 +482,57 @@ fn hand_off(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(resize_handed_off_id(), HandOff { pass, released: None }));
 }
 
+/// The window move or resize a press on the title bar's free gap or the window's edges starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OsDrag {
+    /// Move the window (the free gap between the title bar's menus and its controls).
+    Move,
+    /// Resize it from that edge or corner.
+    Resize(ResizeDirection),
+}
+
+/// Starts a window move or resize on the host's own terms, instead of through egui's viewport
+/// commands. Called on the UI thread for each press that starts one.
+///
+/// Windows installs one (`apps/photocraft`'s `window_frame`): it posts the system's own
+/// non-client message, so a press always starts the OS size/move loop directly, without the
+/// egui-winit focus check and without winit's one-shot guard, which stays raised when the loop
+/// never starts and then drops every later move and resize until the app restarts. macOS, Linux
+/// and the web install none and use the viewport commands.
+pub type OsDragHook = std::sync::Arc<dyn Fn(OsDrag) + Send + Sync>;
+
+/// The host's [`OsDragHook`], once the app has installed one.
+static OS_DRAG_HOOK: std::sync::Mutex<Option<OsDragHook>> = std::sync::Mutex::new(None);
+
+/// Installs the host's [`OsDragHook`] (`None` clears it). The app calls this once, after it
+/// created its window.
+pub fn set_os_drag_hook(hook: Option<OsDragHook>) {
+    match OS_DRAG_HOOK.lock() {
+        Ok(mut slot) => *slot = hook,
+        Err(poisoned) => *poisoned.into_inner() = hook,
+    }
+}
+
+/// Has the host started this drag itself? Then the viewport command must not be sent as well.
+fn os_drag(ctx: &egui::Context, what: OsDrag) -> bool {
+    let hook = match OS_DRAG_HOOK.lock() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    let Some(hook) = hook else { return false };
+    hook(what);
+    hand_off(ctx);
+    true
+}
+
 /// Move the window from this press. The window manager takes the press of an OS move as it does
 /// that of a resize and keeps its release, so egui kept the drag: every other move failed, and a
 /// resize right after one (#5725). The same hand-off ends it.
 pub(crate) fn start_os_move(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-    hand_off(ctx);
+    if !os_drag(ctx, OsDrag::Move) {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        hand_off(ctx);
+    }
 }
 
 /// The compositor takes the button release of an OS resize or move (KDE Wayland, KWin on X11), so
@@ -537,7 +582,7 @@ pub fn resize_zones(ui: &mut Ui) {
     let zui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(w));
     for (i, (r, dir, cursor)) in zones(w).into_iter().enumerate() {
         let resp = zui.interact(r, Id::unique(("titlebar-resize", i)), Sense::drag()).on_hover_cursor(cursor);
-        if resp.drag_started_by(PointerButton::Primary) {
+        if resp.drag_started_by(PointerButton::Primary) && !os_drag(&ctx, OsDrag::Resize(dir)) {
             ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
             hand_off(&ctx);
         }

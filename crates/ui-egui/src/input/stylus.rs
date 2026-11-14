@@ -75,6 +75,9 @@ struct FeedState {
     latest: Option<PenSample>,
     /// Every sample set since the canvas last drained them, oldest first.
     queue: VecDeque<PenSample>,
+    /// A native backend (WinTab) supplies this pen's samples, so winit's own copy of the same
+    /// stroke (the touch force Windows Ink reports) would double-report its pressure.
+    native: bool,
 }
 
 /// Shared state a platform backend writes pen samples into. Cloning shares it. Each sample both
@@ -99,6 +102,19 @@ impl StylusFeed {
 
     pub fn get(&self) -> Option<PenSample> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).latest
+    }
+
+    /// Says a native backend (WinTab) supplies this pen's samples. WinTab and Windows Ink both
+    /// report the same stroke on Windows: the pressure, tilt and rotation come from the driver's
+    /// WinTab packets while they arrive (the finer data), and Windows Ink's touch force is only
+    /// the fallback for a driver that gives no WinTab context.
+    pub fn set_native(&self, native: bool) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).native = native;
+    }
+
+    /// Whether a native backend supplies the pen ([`Self::set_native`]).
+    pub fn is_native(&self) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).native
     }
 
     /// The samples set since the last drain, oldest first.
@@ -211,6 +227,9 @@ impl Stylus {
             self.prev = Some(*last);
         }
         self.frame = self.feed.drain();
+        // A native backend (WinTab) supplies this pen: Windows Ink's own copy of the same stroke
+        // would double-report its pressure (see `StylusFeed::set_native`).
+        let native = self.external_pen || self.feed.is_native();
         self.current = None;
         for e in events {
             if let egui::Event::Touch { id, phase, force, .. } = e {
@@ -244,7 +263,7 @@ impl Stylus {
                             self.touch = Some(f);
                             // WinTab (or another native backend) supplies this pen's pressure:
                             // winit's copy of the same stroke would double-report it.
-                            if !self.external_pen {
+                            if !native {
                                 self.frame.push(PenSample { pressure: f, ..Default::default() });
                             }
                         }

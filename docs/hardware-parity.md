@@ -33,17 +33,19 @@ HDR display to verify.
 | Feature | Photoshop | macOS | Windows | Linux X11 | Linux Wayland | Web |
 |---|---|---|---|---|---|---|
 | Pressure | yes | yes (AppKit monitor) | yes (WM_POINTER), jumpy (#2046) | yes (XInput2) | via Xwayland only; GNOME 50 pen doesn't click (#2622), KDE (#2297) | yes |
-| Tilt | yes | yes | **no** (WinTab: with orientation axes, opt-in) | yes | no | yes |
-| Barrel rotation | yes | yes (not applied to tip angle, #1301) | no (WinTab: with a twist-reporting pen and driver, opt-in) | partial | no | yes (twist) |
-| Eraser end | yes | yes | yes with Windows Ink, not yet confirmed on hardware (#2285); WinTab: yes (opt-in) | partial | no | partial |
-| WinTab driver mode | yes | – | yes (opt-in; Windows Ink off) | – | – | – |
+| Tilt | yes | yes | **no** on Windows Ink; with orientation axes through WinTab (tried first) | yes | no | yes |
+| Barrel rotation | yes | yes (not applied to tip angle, #1301) | no on Windows Ink; WinTab with a twist-reporting pen and driver | partial | no | yes (twist) |
+| Eraser end | yes | yes | yes with Windows Ink, not yet confirmed on hardware (#2285); WinTab: yes | partial | no | partial |
+| WinTab driver mode | yes | – | yes (tried first; Windows Ink is the fallback) | – | – | – |
 | Pressure curve | Windows Ink / driver | global curve in Preferences (#2195) | same | same | same | same |
 
-Windows: the opt-in WinTab backend (`tools.tabletInput = "winTab"`, with Windows Ink turned off
-in the tablet utility) supplies pressure and the eraser end, tilt only on devices that report
-orientation axes, and rotation only when the pen and driver report twist (pressure-only devices
-get neutral tilt and rotation). The default Windows Ink path still lacks tilt and
-rotation; its eraser end comes from the pointer hooks (#2285).
+Windows: WinTab is tried first on every start. A driver that gives a WinTab context supplies
+pressure and the eraser end, tilt only on devices that report orientation axes, and rotation only
+when the pen and driver report twist (pressure-only devices get neutral tilt and rotation); its
+packets are the pen's while they come, and Windows Ink's touch force is the fallback for a driver
+with no WinTab interface (or one whose packets never arrive). Windows Ink on its own still lacks
+tilt and rotation; its eraser end comes from the pointer hooks (#2285). `tools.tabletInput` is
+kept as the recorded preference only - it no longer decides which backend wins.
 
 ## Displays and colour
 
