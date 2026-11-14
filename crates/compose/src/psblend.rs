@@ -213,6 +213,21 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
     if mode == BlendMode::Normal {
         return normal_rgb(backdrop, source, as_, ao);
     }
+    // Shade: the darker of the backdrop and the source laid over it, premultiplied and alpha
+    // too (ProCraft's Shade; a layer over nothing shows nothing).
+    if mode == BlendMode::Shade {
+        let ao = ab.min(as_ + ab * (1.0 - as_));
+        if ao <= 0.0 {
+            return [0.0; 4];
+        }
+        let mut out = [0.0f32; 4];
+        for i in 0..3 {
+            let laid = source[i] * as_ + backdrop[i] * ab * (1.0 - as_);
+            out[i] = (backdrop[i] * ab).min(laid) / ao;
+        }
+        out[3] = ao;
+        return out;
+    }
     let cb = [backdrop[0], backdrop[1], backdrop[2]];
     let cs = [source[0], source[1], source[2]];
     let b = blend_rgb(mode, cb, cs);
@@ -354,7 +369,9 @@ pub fn text_decode(v: f32, gamma: f32) -> f32 {
 /// ([`text_encode`]; `gamma == 1` is [`composite`], the setting switched off).
 #[inline]
 pub fn composite_gamma(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32, gamma: f32) -> [f32; 4] {
-    if gamma == 1.0 {
+    // Shade compares premultiplied colour, which the text gamma mix cannot express: take the
+    // plain composite (its own colours are already the result of a min, not a mix).
+    if gamma == 1.0 || mode == BlendMode::Shade {
         return composite(mode, backdrop, source, opacity);
     }
     let ab = backdrop[3];

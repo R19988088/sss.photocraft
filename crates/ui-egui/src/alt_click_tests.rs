@@ -111,6 +111,26 @@ fn alt_click_with_the_brush_samples_the_foreground() {
     assert_eq!(h.state().session.tools.foreground, [0.0, 1.0, 0.0, 1.0], "⌥-click sampled green");
 }
 
+/// With the Color panel's 图案 source on, ⌥-click fills the brush's pattern instead of the
+/// foreground swatch: the canvas is what the brush then paints.
+#[test]
+fn alt_click_with_a_pattern_source_samples_the_pattern() {
+    let mut h = harness(two_colours());
+    h.state_mut().ui.tool = Tool::Brush;
+    h.state_mut().run("tools.setColors", json!({"foreground": [0.0, 0.0, 1.0, 1.0]})).unwrap();
+    h.state_mut().run("tools.setColorSource", json!({"pattern": true})).unwrap();
+    let rev = h.state().session.active().unwrap().revision;
+    click(&mut h, 50.0, 50.0, Modifiers::ALT);
+    let patch = h.state().session.tools.brush.sampled_pattern.clone().expect("⌥-click sampled a pattern");
+    assert!(h.state().session.tools.brush.pattern_enabled, "图案 stays armed");
+    assert_eq!(h.state().session.tools.foreground, [0.0, 0.0, 1.0, 1.0], "the swatch is left alone");
+    assert_eq!(h.state().session.active().unwrap().revision, rev, "nothing was painted");
+    // A pixel in the patch's middle is the red under the sample point.
+    let mid = (patch.height as usize / 2) * patch.width as usize + patch.width as usize / 2;
+    let c = patch.pixels[mid];
+    assert!((c[0] - 1.0).abs() < 0.01 && c[1] < 0.01 && c[2] < 0.01, "the patch is the canvas there: {c:?}");
+}
+
 /// Alt-click sampling respects the canvas view transform without changing document pixels.
 #[test]
 fn mixer_alt_click_samples_the_tip_through_zoomed_rotated_canvas_input() {

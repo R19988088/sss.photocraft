@@ -217,6 +217,19 @@ impl PhotocraftApp {
         self.tool_override.unwrap_or(self.ui.tool)
     }
 
+    /// Bring the Properties panel to the front: its tab in the classic dock, or the panel itself in
+    /// the Studio docking workspace (which has to switch to it, not just un-collapse it) — the same
+    /// hand Photoshop shows an adjustment layer's or a mask's settings with.
+    pub fn show_properties(&mut self) {
+        self.ui.panels.properties = true;
+        if self.ui.docking.is_some() {
+            let _ = panel_docking::command(self, "window.panel.activate", &json!({"panel": "properties"}));
+        } else {
+            self.ui.dock_tabs.properties = 0;
+            dock::reveal(self, dock::Group::Properties);
+        }
+    }
+
     fn sync_command_side_effects(
         &mut self,
         id: &str,
@@ -248,12 +261,7 @@ impl PhotocraftApp {
         if result.is_ok() && creates_adjustment_or_fill {
             // Properties comes to the front, shown and expanded, so the new layer's settings can
             // be edited at once, as in Photoshop (#4028). The layer is made whatever happens here.
-            if self.ui.docking.is_some() {
-                let _ = panel_docking::command(self, "window.panel.activate", &json!({"panel": "properties"}));
-            } else {
-                self.ui.dock_tabs.properties = 0;
-                dock::reveal(self, dock::Group::Properties);
-            }
+            self.show_properties();
         }
         // Making a new selection reveals its outline after View > Extras was hidden (#5597).
         // These interactive selection commands complete inline; a failed command, deselection,

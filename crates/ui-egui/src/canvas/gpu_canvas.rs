@@ -59,7 +59,7 @@ pub use budget::{
 };
 #[cfg(test)]
 use budget::{NVIDIA_VENDOR, bounded_output, drm_video_memory, parse_nvidia_smi};
-use callback::CanvasCallback;
+use callback::{CanvasCallback, ShadowCallback};
 #[cfg(test)]
 use callback::{filter_mode, map_doc_px, tile_screen_aabb};
 use doc_textures::init_buffer;
@@ -1125,6 +1125,12 @@ impl GpuCanvas {
     /// Add the paint callback drawing `params` into `rect` (clipped by the painter's clip rect).
     pub fn paint(painter: &egui::Painter, rect: egui::Rect, params: ViewParams) {
         painter.add(egui_wgpu::Callback::new_paint_callback(rect, CanvasCallback { rect, params }));
+    }
+
+    /// Add only the canvas drop shadow (C3 `canvasShadowVertex`/`canvasShadowFragment`). A view
+    /// drawn on the CPU calls this as well, so both render paths get the identical shadow.
+    pub fn paint_shadow(painter: &egui::Painter, rect: egui::Rect, params: ViewParams) {
+        painter.add(egui_wgpu::Callback::new_paint_callback(rect, ShadowCallback { rect, params }));
     }
 }
 

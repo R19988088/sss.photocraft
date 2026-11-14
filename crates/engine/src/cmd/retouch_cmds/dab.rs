@@ -129,7 +129,7 @@ pub(super) enum DabTool {
     Tone { burn: bool, range: ToneRange, exposure: f32, protect: bool },
     Sponge { saturate: bool, vibrance: bool },
     Focus { sharpen: bool, strength: f32, protect: bool, sigma: f32 },
-    Smudge { strength: f32, finger: Option<[f32; 4]>, max_size: f32 },
+    Smudge { strength: f32, finger: Option<[f32; 4]>, max_size: f32, pigment: f32 },
 }
 
 /// One dab's edit of the working copy.
@@ -200,7 +200,7 @@ impl DabTool {
             }
             "paint.smudge" => {
                 let finger = flag(p, "fingerPainting", false).then_some(s.tools.foreground);
-                (Self::Smudge { strength: num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0, finger, max_size: stroke.brush.size }, "Smudge Tool")
+                (Self::Smudge { strength: num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0, finger, max_size: stroke.brush.size, pigment: stroke.brush.pigment_mix_strength }, "Smudge Tool")
             }
             o => return Err(bad(o, "not a sequential-dab tool")),
         })
@@ -255,10 +255,10 @@ impl DabTool {
                     });
                 })
             }
-            Self::Smudge { strength, finger, max_size } => {
+            Self::Smudge { strength, finger, max_size, pigment } => {
                 let finger_px = finger.map(|fg| photocraft_raster::from_rgba(&fmt, fg));
                 // Premultiplied mixing: transparent pixels carry no colour, so no dark fringes.
-                let mut sm = Smudge::new(strength, finger_px, max_size).with_alpha(alpha_index(&fmt));
+                let mut sm = Smudge::new(strength, finger_px, max_size).with_alpha(alpha_index(&fmt)).with_pigment(pigment);
                 Box::new(move |work, fp| sm.dab(work, fp))
             }
         }

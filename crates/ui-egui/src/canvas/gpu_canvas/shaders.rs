@@ -76,9 +76,6 @@ fn px_to_doc(p: vec2<f32>) -> vec2<f32> {
     return vec2(q.x * cs.x + q.y * cs.y, -q.x * cs.y + q.y * cs.x) + view.h.zw;
 }
 
-fn doc_min() -> vec2<f32> { return view.b.xy; }
-fn doc_max() -> vec2<f32> { return view.b.xy + view.b.zw * view.a.z; }
-
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + 0.055) / 1.055, vec3(2.4));
@@ -92,49 +89,44 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
 
 // --- drop shadow ---------------------------------------------------------------------------
 
-fn erf2(x: vec2<f32>) -> vec2<f32> {
-    let s = sign(x);
-    let a = abs(x);
-    var t = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
-    t = t * t;
-    return s - s / (t * t);
-}
-
-// Coverage of the box [lo, hi] blurred by a Gaussian of std-dev `sigma`, at point p.
-fn box_blur(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>, sigma: f32) -> f32 {
-    let k = 0.70710678 / sigma;
-    let q = (erf2((p - lo) * k) - erf2((p - hi) * k)) * 0.5;
-    return q.x * q.y;
-}
+// C3 `canvasShadowVertex`/`canvasShadowFragment`: the shadow quad *is* the page quad (rotated
+// with it) grown by an 8 pt border, shifted down, and faded out over that border by distance from
+// the page edge. Because the border is measured on the rotated quad, the shadow keeps the page's
+// orientation while its light stays overhead.
+//
+// C3 passes `10 / viewSize.height` to a clip-space `y -=`, and clip y spans 2 over the view
+// height, so the drop is 5 pt on screen, not 10.
+const SHADOW_OFFSET_PT: f32 = 5.0;
+const SHADOW_EXTENT_PT: f32 = 8.0;
 
 @vertex
 fn vs_shadow(@builtin(vertex_index) vi: u32) -> VOut {
-    let pad = 64.0 * view.a.w;
-    let c0 = doc_to_px(vec2(0.0, 0.0));
-    let c1 = doc_to_px(vec2(view.b.z, 0.0));
-    let c2 = doc_to_px(vec2(view.b.z, view.b.w));
-    let c3 = doc_to_px(vec2(0.0, view.b.w));
-    let lo = min(min(c0, c1), min(c2, c3)) - vec2(pad);
-    let hi = max(max(c0, c1), max(c2, c3)) + vec2(pad);
-    let p = mix(lo, hi, corner(vi));
-    return VOut(px_to_clip(p));
+    let u = view.a.w;
+    // The page quad grown by 8 pt on every side, then rotated with the page. `doc_to_px` works in
+    // doc px, so the screen-space pad is divided back by the view scale.
+    let pad = SHADOW_EXTENT_PT * u / max(view.a.z, 1e-6);
+    let c0 = doc_to_px(vec2(-pad, -pad));
+    let c1 = doc_to_px(vec2(view.b.z + pad, -pad));
+    let c2 = doc_to_px(vec2(view.b.z + pad, view.b.w + pad));
+    let c3 = doc_to_px(vec2(-pad, view.b.w + pad));
+    // The quad's own corners, not their screen AABB: the shadow keeps the page's rotation.
+    let c = corner(vi);
+    let p = mix(mix(c0, c1, c.x), mix(c3, c2, c.x), c.y);
+    // Down the screen is +y here (device px, top-left origin), matching C3's clip-space −y.
+    return VOut(px_to_clip(p + vec2(0.0, SHADOW_OFFSET_PT * u)));
 }
 
 @fragment
 fn fs_shadow(in: VOut) -> @location(0) vec4<f32> {
-    let p = in.pos.xy;
-    let d = px_to_doc(p);
-    if (all(d >= vec2(0.0)) && all(d < view.b.zw)) {
-        discard;
-    }
-    let p_align = view.b.xy + d * view.a.z;
-    let lo = doc_min();
-    let hi = doc_max();
     let u = view.a.w;
-    let ambient = box_blur(p_align - vec2(0.0, 7.0 * u), lo, hi, 16.0 * u) * 0.40;
-    let contact = box_blur(p_align - vec2(0.0, 0.75 * u), lo, hi, 1.25 * u) * 0.30;
-    let a = 1.0 - (1.0 - ambient) * (1.0 - contact);
-    return vec4(0.0, 0.0, 0.0, a);
+    // Undo the screen-space drop so this pixel lands where the shadow quad was before the shift.
+    let d = px_to_doc(in.pos.xy - vec2(0.0, SHADOW_OFFSET_PT * u));
+    // Distance outside the page in device px, then C3's `length(outside)` fade over the border.
+    // The page is drawn after this pass and is opaque, so its own interior covers the shadow.
+    let outside = max(max(-d, d - view.b.zw), vec2(0.0)) * view.a.z;
+    let fade = SHADOW_EXTENT_PT * u;
+    let alpha = (1.0 - smoothstep(0.0, fade, length(outside))) * 0.14;
+    return vec4(0.0, 0.0, 0.0, alpha);
 }
 
 // --- document tiles ------------------------------------------------------------------------

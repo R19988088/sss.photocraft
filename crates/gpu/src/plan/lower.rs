@@ -302,6 +302,14 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             };
             (7, p, Some(cached_rows(adj, depth, rows)))
         }
+        Adjustment::Halftone { size, angle, density, contrast, brightness, jitter, shape, color, preserve_white, white, black } => {
+            // The same screen the CPU builds (compose::adjust::halftone): the period, the three
+            // screen axes, the tone and shape parameters, and the Preserve White threshold.
+            let screen = photocraft_compose::adjust::HalftoneScreen::new(
+                *size, *angle, *density, *contrast, *brightness, *jitter, *shape, *color, *preserve_white, *white, *black,
+            );
+            (18, screen.program_params(), None)
+        }
         Adjustment::SelectiveColor { relative, adjustments } => {
             // 9 ranges × CMYK don't fit the 16 params: they go in LUT row 0 (read texel-exact).
             p[0][0] = if *relative { 1.0 } else { 0.0 };
@@ -395,6 +403,7 @@ pub fn mode_index(m: BlendMode) -> i32 {
         BlendMode::Xor => 31,
         BlendMode::PaintNetColorBurn => 32,
         BlendMode::PaintNetColorDodge => 33,
+        BlendMode::Shade => 34,
     }
 }
 

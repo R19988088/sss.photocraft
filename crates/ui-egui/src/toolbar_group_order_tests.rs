@@ -9,7 +9,10 @@ use crate::panels::toolbar::{TOOL_SECTIONS, next_slot_tool, toolbar};
 use crate::state::Tool;
 
 const HEALING: [Tool; 6] = [Tool::SpotHealing, Tool::Remove, Tool::Healing, Tool::Patch, Tool::ContentAwareMove, Tool::RedEye];
-const BRUSH: [Tool; 4] = [Tool::Brush, Tool::Pencil, Tool::ColorReplacement, Tool::MixerBrush];
+const BRUSH: [Tool; 2] = [Tool::Brush, Tool::Pencil];
+const PAINT_GROUP: [Tool; 2] = [Tool::ColorReplacement, Tool::MixerBrush];
+/// Every tool on the B key, in toolbar order: the pinned slot first, then the paint slot.
+const B_KEY: [Tool; 4] = [Tool::Brush, Tool::Pencil, Tool::ColorReplacement, Tool::MixerBrush];
 
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -51,7 +54,8 @@ fn the_healing_slot_lists_spot_healing_first() {
 
 #[test]
 fn the_brush_slot_lists_color_replacement_before_mixer_brush() {
-    assert_eq!(slot_with(Tool::Brush), &BRUSH);
+    assert_eq!(slot_with(Tool::Brush), &BRUSH, "the custom build pins brush and pencil");
+    assert_eq!(slot_with(Tool::ColorReplacement), &PAINT_GROUP, "Color Replacement stays before the Mixer Brush");
 }
 
 #[test]
@@ -91,7 +95,8 @@ fn shift_j_follows_the_reference_sequence() {
 
 #[test]
 fn shift_b_follows_the_reference_sequence() {
-    let want: Vec<Tool> = BRUSH.iter().chain(&BRUSH[..1]).copied().collect();
+    // ⇧B steps every B tool: the pinned Brush/Pencil slot, then Color Replacement and Mixer.
+    let want: Vec<Tool> = B_KEY.iter().chain(&B_KEY[..1]).copied().collect();
     assert_eq!(shift_sequence(Key::B, 5), want);
 }
 

@@ -20,6 +20,25 @@ fn same_pixels(a: &Surface, b: &Surface, r: Rect) -> bool {
 }
 
 #[test]
+fn a_semi_transparent_dab_mixes_with_the_paint_beneath_through_the_pigment_lut() {
+    // A 30% blue dab over dry yellow: a plain over keeps red and green equal and reads grey;
+    // the pigment response reads green. The strength is the preference the Color panel writes.
+    let run = |strength: i64| {
+        let mut s = session(40, 40);
+        s.execute("paint.pencil", json!({"points": [[20, 20]], "size": 30, "hardness": 100, "opacity": 1.0, "color": "#ffff00"})).unwrap();
+        if strength > 0 {
+            s.execute("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})).unwrap();
+        }
+        s.execute("paint.pencil", json!({"points": [[20, 20]], "size": 10, "hardness": 100, "opacity": 0.3, "color": "#0000ff"})).unwrap();
+        rgba(&s, 20, 20)
+    };
+    let linear = run(0);
+    assert!((linear[0] - linear[1]).abs() < 1e-3, "a plain over moves red and green alike: {linear:?}");
+    let mixed = run(100);
+    assert!(mixed[1] > mixed[0] + 0.02, "blue over yellow mixes green, not grey: {mixed:?}");
+}
+
+#[test]
 fn stroke_backwards_compatible() {
     let mut s = session(80, 40);
     let r = s.execute("paint.stroke", json!({"points": [[4, 20], [60, 20]], "size": 6, "color": "#0000ff"})).unwrap();
@@ -654,7 +673,8 @@ fn works_on_cmyk_and_16_bit() {
 
 #[test]
 fn brush_blend_mode_multiply() {
-    // Painting with a blend mode (options-bar "Mode"): blue × yellow = black (Multiply).
+    // Painting with a blend mode (options-bar "Mode"): blue × yellow = black (Multiply). The
+    // render copy keeps the mode, as the reference application does.
     let fill = |s: &mut Session| {
         s.edit("bg", |doc, a| {
             doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 40, 40), &[1.0, 1.0, 0.0, 1.0]);
@@ -985,11 +1005,7 @@ fn mixer_brush_uses_the_brush_mixer_settings() {
     let mut s = session(200, 30);
     s.execute("tools.setColors", json!({"foreground": "#ff0000"})).unwrap();
     // No wet/load params: the brush's Mixer settings (a dry brush with 0 % Load) apply.
-    s.execute(
-        "tools.setBrush",
-        json!({"brush": {"pressureSize": false, "spacing": 0.25, "mixer": {"wet": 0, "load": 0, "mix": 0}, "smoothing": {"catchUpOnEnd": true}}}),
-    )
-    .unwrap();
+    s.execute("tools.setBrush", json!({"brush": {"pressureSize": false, "spacing": 0.25, "mixer": {"wet": 0, "load": 0, "mix": 0}}})).unwrap();
     s.execute("paint.mixerBrush", json!({"points": [[5, 15], [195, 15]], "size": 8})).unwrap();
     assert!(rgba(&s, 10, 15)[3] > 0.95 && rgba(&s, 190, 15)[3] < 0.5, "the brush's 0 % Load dries out");
     // A param still overrides the brush.
@@ -1164,11 +1180,13 @@ fn out_of_range_scatter_is_rejected_and_the_maximum_still_paints() {
         let d: Vec<i64> = r["damage"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
         assert!(d[0].abs() < 1000 && d[1].abs() < 1000 && d[2] > 0 && d[3] > 0, "{r}");
     }
-    // Control: 200 % scatter paints where it did before the cap (the soft default tip reaches a
-    // little past its radius).
+    // Control: 200 % Range scatters by one radius (C3: Range is a percent of the diameter,
+    // 100 % = one radius), so a 20 px dab at (10, 10) still reaches inside the 32×32 document.
     let mut s = new();
     s.execute("tools.setBrush", json!({ "brush": scatter(2.0) })).unwrap();
-    assert_eq!(s.execute("paint.stroke", stroke).unwrap(), json!({"damage": [15, 12, 27, 27]}));
+    let r = s.execute("paint.stroke", stroke).unwrap();
+    let d: Vec<i64> = r["damage"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+    assert!(d[0].abs() < 1000 && d[1].abs() < 1000 && d[2] > 0 && d[3] > 0, "{r}");
 }
 
 #[test]

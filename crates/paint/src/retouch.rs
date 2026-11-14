@@ -354,6 +354,10 @@ pub struct Smudge {
     alpha: Option<usize>,
     /// Carried colour (premultiplied when `alpha` is set).
     carry: Option<Vec<f32>>,
+    /// 0..1 pigment-mixing strength. When set, the carried colour mixes with the paint under the
+    /// dab through the pigment LUT (the reference's transport response), not a linear blend; alpha
+    /// still comes from the plain premultiplied mix.
+    pigment: f32,
 }
 
 impl Smudge {
@@ -364,13 +368,43 @@ impl Smudge {
     }
 
     pub fn new(strength: f32, finger: Option<Vec<f32>>, max_brush_size: f32) -> Self {
-        Self { strength: strength.clamp(0.0, 1.0), finger, radius: Self::sampling_radius(max_brush_size), alpha: None, carry: None }
+        Self { strength: strength.clamp(0.0, 1.0), finger, radius: Self::sampling_radius(max_brush_size), alpha: None, carry: None, pigment: 0.0 }
+    }
+
+    /// Mix the carried colour into the paint through the pigment LUT, as C3's transport does.
+    /// `strength` is the brush's pigment mixing (0 leaves the plain linear mix untouched).
+    pub fn with_pigment(mut self, strength: f32) -> Self {
+        self.pigment = strength.clamp(0.0, 1.0);
+        self
     }
 
     /// Mix in premultiplied space using alpha channel `a` (the format's [`alpha_index`]).
     pub fn with_alpha(mut self, a: Option<usize>) -> Self {
         self.alpha = a;
         self
+    }
+
+    /// The pigment response for one laid-down pixel: the carried colour mixes with the paint that
+    /// was already there through the LUT (`pigment::paint`), while alpha keeps the plain mix's value.
+    /// Only straight RGB pixels (three channels, or four with the alpha last) take the response.
+    fn pigment_response(pigment: f32, alpha: Option<usize>, px: &mut [f32], old: &[f32; 4], source: &[f32], k: f32, n: usize) {
+        if pigment <= 0.0 || px.len() < n {
+            return;
+        }
+        let (normal, dst, src, amount) = match (n, alpha) {
+            (3, None) => ([px[0], px[1], px[2], 1.0], [old[0], old[1], old[2], 1.0], [source[0], source[1], source[2], 1.0], k),
+            (4, Some(3)) => {
+                let (da, oa, sa) = (old[3], px[3], source[3]);
+                if sa <= 0.0 || oa <= 1e-6 {
+                    return;
+                }
+                // The carried colour is `sa * k` of the resulting pixel.
+                ([px[0], px[1], px[2], oa], [old[0], old[1], old[2], da], [source[0], source[1], source[2], sa], (sa * k / oa).clamp(0.0, 1.0))
+            }
+            _ => return,
+        };
+        let out = crate::pigment::paint(normal, dst, src, amount, pigment);
+        px[..3].copy_from_slice(&out[..3]);
     }
 
     /// Apply one dab to the working copy.
@@ -383,6 +417,8 @@ impl Smudge {
         let (cx, cy) = (fp.dab.center.x.floor() as i32, fp.dab.center.y.floor() as i32);
         let wr = work.rect;
         let alpha = self.alpha.filter(|a| *a < n);
+        // Copy out first: `self.carry` stays mutably borrowed for the rest of the dab.
+        let pigment = self.pigment;
         let carry = self.carry.get_or_insert_with(|| {
             let mut c = vec![0.0f32; side * side * n];
             match &self.finger {
@@ -418,6 +454,8 @@ impl Smudge {
                 }
                 let q = (qy as usize * side + qx as usize) * n;
                 let px = work.px_mut(x, y);
+                // The pixel before the carried colour lands: the pigment response needs it.
+                let old: [f32; 4] = std::array::from_fn(|i| px.get(i).copied().unwrap_or(0.0));
                 match alpha {
                     Some(a) => {
                         // Back to straight for the mix (premultiplied lerp towards the carried colour).
@@ -434,10 +472,17 @@ impl Smudge {
                             }
                         }
                         mix_premultiplied(px, src, a, k);
+                        Self::pigment_response(pigment, alpha, px, &old, src, k, n);
                     }
                     None => {
+                        let mut src = [0.0f32; 4];
+                        let m = n.min(4);
+                        src[..m].copy_from_slice(&carry[q..q + m]);
                         for c in 0..n {
-                            px[c] += (carry[q + c] - px[c]) * k;
+                            px[c] += (src[c] - px[c]) * k;
+                        }
+                        if n == 3 {
+                            Self::pigment_response(pigment, None, px, &old, &src, k, n);
                         }
                     }
                 }
@@ -557,6 +602,27 @@ mod tests {
         assert!(seen.windows(2).all(|w| w[1] == w[0] + 1));
         assert!(s.pixel(20, 10)[0] > 0.1, "dabs accumulate");
         assert_eq!(s.pixel(40, 10)[0], 0.0, "outside the selection untouched");
+    }
+
+    #[test]
+    fn smudge_mixes_the_carried_colour_as_paint() {
+        // Finger painting from blue over yellow: without pigment mixing the carried colour ramps
+        // linearly (red and green fall together, so the pixel reads grey-blue); with it the pixel
+        // keeps a green channel above red, as paint does.
+        let fmt = PixelFormat::RGBA32F;
+        let run = |pigment: f32| {
+            let mut s = Surface::new(fmt);
+            s.fill_rect(Rect::new(0, 0, 60, 60), &[1.0, 1.0, 0.0, 1.0]);
+            let st = stroke(&[(30.0, 30.0)], 16.0, 1.0);
+            let mut sm = Smudge::new(0.5, Some(vec![0.0, 0.0, 1.0, 1.0]), 16.0).with_alpha(alpha_index(&fmt)).with_pigment(pigment);
+            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp));
+            s.pixel(30, 30)
+        };
+        let linear = run(0.0);
+        assert!((linear[0] - linear[1]).abs() < 1e-5, "a plain mix moves red and green alike: {linear:?}");
+        let mixed = run(1.0);
+        assert!(mixed[1] > mixed[0] + 0.02, "pigment mixing should read green, not grey: {mixed:?}");
+        assert!((mixed[3] - 1.0).abs() < 1e-3, "alpha keeps the plain mix's value: {mixed:?}");
     }
 
     #[test]

@@ -42,7 +42,22 @@ fn paint_net_modes_keep_their_math_and_distinct_psd_status() {
             }
         }
     }
-    assert_eq!(BlendMode::layer_modes().count(), 33);
+    assert_eq!(BlendMode::layer_modes().count(), 34);
+}
+
+#[test]
+fn shade_takes_the_darker_of_backdrop_and_source_laid_over_it() {
+    // Opaque: the darker colour wins, like Darken.
+    assert_eq!(composite(BlendMode::Shade, [0.2, 0.9, 0.4, 1.0], [0.7, 0.1, 0.4, 1.0], 1.0), [0.2, 0.1, 0.4, 1.0]);
+    // Over nothing there is nothing to shade: the min takes the empty backdrop's alpha, so the
+    // layer shows nothing (unlike Darken, which is the source there).
+    assert_eq!(composite(BlendMode::Shade, [0.0; 4], [0.4, 0.6, 0.8, 0.5], 1.0), [0.0; 4]);
+    // Half-covering black over white: min(1, 0 + 1 * 0.5) = 0.5, not Darken's straight 0.
+    let r = composite(BlendMode::Shade, [1.0; 4], [0.0, 0.0, 0.0, 0.5], 1.0);
+    assert!((r[0] - 0.5).abs() < 1e-6 && r[3] == 1.0, "{r:?}");
+    // The alpha follows the min too: half-covering a half-transparent backdrop keeps its 0.5.
+    let r = composite(BlendMode::Shade, [0.5, 0.5, 0.5, 0.5], [0.0, 0.0, 0.0, 0.5], 1.0);
+    assert!((r[3] - 0.5).abs() < 1e-6 && (r[0] - 0.25).abs() < 1e-6, "{r:?}");
 }
 
 #[test]

@@ -267,6 +267,7 @@ impl LiveMixer {
                         *point
                     } else {
                         StrokePoint {
+                            is_pen: start.is_pen || point.is_pen,
                             x: start.x + (point.x - start.x) * f,
                             y: start.y + (point.y - start.y) * f,
                             pressure: start.pressure + (point.pressure - start.pressure) * ff,

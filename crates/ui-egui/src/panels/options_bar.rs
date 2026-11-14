@@ -43,7 +43,6 @@ pub(super) fn options_bar_height(pro: bool, narrow: bool) -> f32 {
 
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::vector_ui::track_arrow_default_selection(app, ui.ctx());
-    crate::eraser_ui::alert_for_a_field_gone(app, ui.ctx());
     let t = Tokens::get(ui.ctx());
     let narrow = app.session.prefs().workspace.narrow_options_bar();
     egui::Panel::top("options_bar")
@@ -60,27 +59,70 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::chrome_ui::home_button(app, ui);
                             widgets::vline(ui, 22.0);
                         }
-                        let tool_icon = icons::button(ui, icons::tool_icon(app.ui.tool), if t.pro { 26.0 } else { 28.0 }, !t.pro, tl!(app.ui.tool.label()));
-                        // Photoshop: right-click the tool icon for Reset Tool / Reset All Tools (#2825).
-                        let mut reset = None;
-                        tool_icon.context_menu(|ui| {
-                            if ui.button(tl!("Reset Tool")).clicked() {
-                                reset = Some("tool.reset");
-                                ui.close();
+                        // The custom build shows every tool of the active tool's group at once, so
+                        // switching inside a group is one click instead of a flyout. The toolbar
+                        // itself keeps its flyouts.
+                        let direct_group = super::toolbar::visible_sections(&app.session.prefs().toolbar.hidden)
+                            .into_iter()
+                            .flat_map(|section| section.into_iter())
+                            .find(|(_, tools)| tools.len() > 1 && tools.contains(&app.ui.tool));
+                        match direct_group {
+                            Some((_, group)) => {
+                                for candidate in group {
+                                    let response = icons::button(
+                                        ui,
+                                        icons::tool_icon(candidate),
+                                        if t.pro { 26.0 } else { 28.0 },
+                                        candidate == app.ui.tool,
+                                        tl!(candidate.label()),
+                                    );
+                                    if response.clicked() && candidate != app.ui.tool {
+                                        crate::tool_memory::select(app, candidate);
+                                    }
+                                    if candidate == app.ui.tool {
+                                        let mut reset = None;
+                                        response.context_menu(|ui| {
+                                            if ui.button(tl!("Reset Tool")).clicked() {
+                                                reset = Some("tool.reset");
+                                                ui.close();
+                                            }
+                                            if ui.button(tl!("Reset All Tools")).clicked() {
+                                                reset = Some("tool.resetAll");
+                                                ui.close();
+                                            }
+                                        });
+                                        if let Some(id) = reset
+                                            && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, json!({}))
+                                        {
+                                            app.ui.status = e;
+                                        }
+                                    }
+                                }
                             }
-                            if ui.button(tl!("Reset All Tools")).clicked() {
-                                reset = Some("tool.resetAll");
-                                ui.close();
+                            None => {
+                                let tool_icon = icons::button(ui, icons::tool_icon(app.ui.tool), if t.pro { 26.0 } else { 28.0 }, !t.pro, tl!(app.ui.tool.label()));
+                                // Photoshop: right-click the tool icon for Reset Tool / Reset All Tools (#2825).
+                                let mut reset = None;
+                                tool_icon.context_menu(|ui| {
+                                    if ui.button(tl!("Reset Tool")).clicked() {
+                                        reset = Some("tool.reset");
+                                        ui.close();
+                                    }
+                                    if ui.button(tl!("Reset All Tools")).clicked() {
+                                        reset = Some("tool.resetAll");
+                                        ui.close();
+                                    }
+                                });
+                                if let Some(id) = reset
+                                    && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, json!({}))
+                                {
+                                    app.ui.status = e;
+                                }
+                                if t.pro {
+                                    let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
+                                    icons::paint(ui, r, "chevron-down", 10.0, t.text_faint);
+                                }
                             }
-                        });
-                        if let Some(id) = reset
-                            && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, json!({}))
-                        {
-                            app.ui.status = e;
-                        }
-                        if t.pro {
-                            let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
-                            icons::paint(ui, r, "chevron-down", 10.0, t.text_faint);
                         }
                         widgets::vline(ui, 22.0);
                         if app.ui.transform.is_some() {
@@ -165,8 +207,9 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let brush = app.ui.tool == Tool::Brush;
             let tip = |r: egui::Response, text: &str| if brush { r.on_hover_text(text) } else { r };
             ui.add_enabled_ui(!block, |ui| {
-                brush_preset_chip(ui, b, &mut app.ui);
-                crate::brush_picker::settings_toggle(app, ui);
+                // The bar carries the size itself; the brush picker lives in the panel (F5).
+                opt_label(ui, tl!("Size"));
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
             });
             widgets::vline(ui, 22.0);
             // The Eraser has no blend mode: its Mode is Brush, Pencil or Block (#2662).
@@ -206,23 +249,16 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
                     b.build_up = !b.build_up;
                 }
             });
-            opt_label(ui, tl!("Smoothing"));
-            if brush {
-                tip(smoothing_field(ui, b, 58.0), tl!("Set smoothing for stroke\nUse higher values to reduce the shakiness of brush strokes"));
-            } else if super::brush_controls::smoothing_field_alerting(ui, b, 58.0).1 {
-                range_alert(&mut app.ui, ZERO_TO_100);
-            }
-            smoothing_options(ui, b, brush);
             widgets::vline(ui, 22.0);
             let pressure = pressure_button(ui, b.pressure_size, tl!("Always use pressure for size"), brush);
             if tip(pressure, tl!("Always use Pressure for Size. When off, Brush Preset controls pressure")).clicked() {
                 b.pressure_size = !b.pressure_size;
             }
+            // The panel's toggle sits at the bar's tail.
+            crate::brush_picker::settings_toggle(app, ui);
         }
         // Pencil: Photoshop's options (no hardness or flow: the pencil is always hard).
         Tool::Pencil => {
-            brush_preset_chip(ui, b, &mut app.ui);
-            crate::brush_picker::settings_toggle(app, ui);
             widgets::vline(ui, 22.0);
             if !t.pro {
                 opt_label(ui, tl!("Size"));
@@ -233,36 +269,12 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let held = app.held_erase;
             paint_mode_dropdown(ui, "pencil-mode", b, &mut app.ui.tool_options.pencil_clear, held);
             whole_percent_field(ui, tl!("Opacity"), &mut b.opacity, 1.0..=100.0, if t.pro { 62.0 } else { 66.0 });
-            if t.pro {
-                // Between Opacity and Smoothing, as measured (#11962).
-                let pressure = pressure_button(ui, b.pressure_opacity, tl!("Always use pressure for opacity"), true);
-                if pressure.on_hover_text(tl!("Always use Pressure for Opacity. When off, Brush Preset controls pressure")).clicked() {
-                    b.pressure_opacity = !b.pressure_opacity;
-                }
-            }
-            opt_label(ui, tl!("Smoothing"));
-            smoothing_field(ui, b, if t.pro { 58.0 } else { 66.0 });
             widgets::vline(ui, 22.0);
             widgets::checkbox(ui, &mut app.ui.tool_options.pencil_auto_erase, tl!("Auto Erase"))
                 .on_hover_text(tl!("Draws background color over foreground colors"));
-            widgets::vline(ui, 22.0);
-            if t.pro {
-                // Between Auto Erase and the Symmetry button the bar adds after this arm (#11962).
-                let pressure = pressure_button(ui, b.pressure_size, tl!("Always use pressure for size"), true);
-                if pressure.on_hover_text(tl!("Always use Pressure for Size. When off, Brush Preset controls pressure")).clicked() {
-                    b.pressure_size = !b.pressure_size;
-                }
-            } else {
-                // The other themes show the Brush's labelled switches; the Pencil gets them too.
-                widgets::toggle(ui, &mut b.pressure_size, tl!("Pressure for Size"))
-                    .on_hover_text(tl!("Always use Pressure for Size. When off, Brush Preset controls pressure"));
-                widgets::toggle(ui, &mut b.pressure_opacity, tl!("Pressure for Opacity"))
-                    .on_hover_text(tl!("Always use Pressure for Opacity. When off, Brush Preset controls pressure"));
-            }
+            crate::brush_picker::settings_toggle(app, ui);
         }
         Tool::Brush | Tool::Eraser => {
-            brush_preset_chip(ui, b, &mut app.ui);
-            crate::brush_picker::settings_toggle(app, ui);
             widgets::vline(ui, 22.0);
             // A Block-mode Eraser has a fixed size, opacity and flow (Photoshop, #2770).
             let block = crate::eraser_ui::block_mode(app, app.ui.tool);
@@ -291,8 +303,6 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             tip(opacity, tl!("Set opacity for stroke"));
             let flow = ui.add_enabled_ui(!fixed, |ui| percent_field(ui, tl!("Flow"), &mut b.flow, 1.0..=100.0, 66.0)).inner;
             tip(flow, tl!("Set flow rate for stroke"));
-            opt_label(ui, tl!("Smoothing"));
-            tip(smoothing_field(ui, b, 66.0), tl!("Set smoothing for stroke\nUse higher values to reduce the shakiness of brush strokes"));
             widgets::vline(ui, 22.0);
             tip(
                 widgets::toggle(ui, &mut b.pressure_size, tl!("Pressure for Size")),
@@ -302,6 +312,8 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
                 widgets::toggle(ui, &mut b.pressure_opacity, tl!("Pressure for Opacity")),
                 tl!("Always use Pressure for Opacity. When off, Brush Preset controls pressure"),
             );
+            // The panel's toggle sits at the bar's tail.
+            crate::brush_picker::settings_toggle(app, ui);
         }
         Tool::MixerBrush => {
             brush_preset_chip(ui, b, &mut app.ui);
@@ -515,7 +527,7 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
             if classic {
                 widgets::vline(ui, 22.0);
                 opt_label(ui, tl!("Mode"));
-                let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
+                let opts: Vec<(BlendMode, &str)> = BlendMode::MENU_MODES.iter().map(|m| (*m, m.label())).collect();
                 // The wheel over it steps the mode, as over the Layers panel's (#2061).
                 widgets::dropdown_wheel_grouped(ui, "gradient-blend-mode", tl!("Blend Mode"), &mut app.ui.tool_options.gradient_blend_mode, &opts, 96.0, |m| {
                     starts_blend_group(*m)
@@ -736,8 +748,8 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
         Tool::Hand => {
             widgets::checkbox(ui, &mut app.ui.tool_options.hand_scroll_all, tl!("Scroll All Windows"))
                 .on_hover_text(tl!("Scroll all open document windows when using the hand tool"));
-            // The reference tooltips and no hint text, as on the Zoom bar (#12026).
-            if widgets::secondary_button(ui, "100%", 0.0).on_hover_text(tl!("Zoom current window to 1:1")).clicked()
+            hint(ui, tl!("Drag to pan  ·  hold Space with any tool"));
+            if widgets::secondary_button(ui, "100%", 0.0).clicked()
                 && let Some(i) = app.session.active_index()
             {
                 app.ui.views[i].zoom = 1.0;
@@ -746,7 +758,7 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
                 app.ui.views[i].fit_pending = false;
                 app.ui.views[i].fill_pending = false;
             }
-            if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).on_hover_text(tl!("Zoom current window to screen size")).clicked()
+            if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).clicked()
                 && let Some(i) = app.session.active_index()
             {
                 app.ui.views[i].fit_pending = true;
@@ -754,7 +766,7 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
                 app.ui.views[i].zoom_anchor = None;
                 app.ui.views[i].fill_pending = false;
             }
-            if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).on_hover_text(tl!("Zoom current window to fill the screen")).clicked()
+            if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).clicked()
                 && let Some(i) = app.session.active_index()
             {
                 app.ui.views[i].fill_pending = true;
@@ -770,9 +782,6 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
 
 #[cfg(test)]
 mod zoom_buttons_tests;
-
-#[cfg(test)]
-mod hand_tooltips_tests;
 
 /// Width of the Layers panel's Opacity and Fill fields, with room for their pop-up slider's ▾.
 pub(super) const LAYER_PCT_W: f32 = 66.0 + widgets::POPUP_ARROW_W;

@@ -520,6 +520,21 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
 }
 
 /// Double-click: rename, un-background, open the thumbnail's settings or the row's Layer Style.
+/// What a double-click on a row's content opens — its name renames in place, its masks their
+/// own settings. Photoshop puts an adjustment layer's settings in the Properties panel wherever
+/// the row is double-clicked (its thumbnail or not) and never in Layer Style, which has no effect
+/// to edit on an adjustment; a fill, shape, smart object or text opens its own editor on its
+/// thumbnail; anything else is Layer Style.
+fn double_click_target(content: &LayerContent, on_thumb: bool) -> &'static str {
+    match content {
+        LayerContent::Adjustment(_) => "ui.properties",
+        LayerContent::Fill(_) | LayerContent::Shape(_) if on_thumb => "layer.layerContentOptions",
+        LayerContent::Smart(_) if on_thumb => "layer.smartObjects.editContents",
+        LayerContent::Text(_) if on_thumb => "type.editText",
+        _ => "layer.layerStyle.blendingOptions",
+    }
+}
+
 fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &RowCtx<'_>, name_rect: Option<Rect>, actions: &mut Vec<(String, Value)>) {
     let (l, doc, resp, masks, ts, thumb, rect) = (rc.l, rc.doc, rc.resp, rc.masks, rc.ts, rc.thumb, rc.rect);
     // A frame row's thumbnails are handled in the row; its name still renames in place.
@@ -554,13 +569,11 @@ fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &Ro
                 actions.push(("ui.properties".into(), json!(true)));
             }
         } else if pos.and_then(|p| masks.hit(p)).is_none() {
-            let id = match &l.content {
-                LayerContent::Adjustment(_) | LayerContent::Fill(_) | LayerContent::Shape(_) if ts > 0.0 && on(thumb) => "layer.layerContentOptions",
-                LayerContent::Smart(_) if ts > 0.0 && on(thumb) => "layer.smartObjects.editContents",
-                LayerContent::Text(_) if ts > 0.0 && on(thumb) => "type.editText",
-                _ => "layer.layerStyle.blendingOptions",
-            };
-            if crate::menus::is_enabled(app, id) {
+            let id = double_click_target(&l.content, ts > 0.0 && on(thumb));
+            if id == "ui.properties" {
+                // The Properties panel's own command: not a menu item, so no enable check.
+                actions.push((id.into(), json!(true)));
+            } else if crate::menus::is_enabled(app, id) {
                 // Null params: run like the menu item, dialog included.
                 actions.push((id.into(), Value::Null));
             }
@@ -676,4 +689,28 @@ fn draw_layer_thumb(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &egui::Ui,
     };
     p.rect_stroke(rect, CornerRadius::same(if t.pro { 0 } else { 5 }), stroke, StrokeKind::Outside);
     crate::smart_ui::thumb_badge(ui, l, rect);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photocraft_color::Color;
+    use photocraft_doc::{Adjustment, Fill};
+
+    /// Photoshop opens an adjustment layer's settings wherever its row is double-clicked, and
+    /// never the Layer Style dialog: an adjustment has no layer effect to edit.
+    #[test]
+    fn a_double_clicked_adjustment_opens_properties_never_layer_style() {
+        let adj = LayerContent::Adjustment(Adjustment::Invert);
+        assert_eq!(double_click_target(&adj, true), "ui.properties");
+        assert_eq!(double_click_target(&adj, false), "ui.properties", "not just the thumbnail");
+    }
+
+    /// Other content keeps its own target: its editor on the thumbnail, Layer Style elsewhere.
+    #[test]
+    fn other_content_keeps_its_double_click_target() {
+        let fill = LayerContent::Fill(Fill::Solid(Color::BLACK));
+        assert_eq!(double_click_target(&fill, true), "layer.layerContentOptions");
+        assert_eq!(double_click_target(&fill, false), "layer.layerStyle.blendingOptions");
+    }
 }

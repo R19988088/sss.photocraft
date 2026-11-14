@@ -119,7 +119,7 @@ fn a_selection_dropped_outside_documents_copies_nothing() {
 fn a_selection_can_be_dragged_directly_between_tiled_canvases() {
     let (mut h, _) = harness();
     h.state_mut().ui.tool = Tool::Move;
-    h.state_mut().ui.view.arrange = "twoUpVertical".into();
+    h.state_mut().ui.view.arrange = "twoUpHorizontal".into();
     h.state_mut().run("select.rect", json!({"x": 7, "y": 8, "width": 3, "height": 4})).unwrap();
     h.run_steps(3);
     let before = h.state().session.documents()[0].doc.clone();
@@ -144,7 +144,7 @@ fn a_selection_can_be_dragged_directly_between_tiled_canvases() {
 fn a_plain_layer_can_be_dragged_directly_between_tiled_canvases() {
     let (mut h, paint) = harness();
     h.state_mut().ui.tool = Tool::Move;
-    h.state_mut().ui.view.arrange = "twoUpVertical".into();
+    h.state_mut().ui.view.arrange = "twoUpHorizontal".into();
     h.run_steps(3);
     let before = source_square(&h, paint);
     let cells = crate::canvas::arranged_cells(h.state(), h.state().last_canvas_rect).unwrap();
@@ -170,7 +170,7 @@ fn a_plain_layer_can_be_dragged_directly_between_tiled_canvases() {
 fn a_tiled_selection_drag_that_returns_to_its_source_still_moves_there() {
     let (mut h, _) = harness();
     h.state_mut().ui.tool = Tool::Move;
-    h.state_mut().ui.view.arrange = "twoUpVertical".into();
+    h.state_mut().ui.view.arrange = "twoUpHorizontal".into();
     h.state_mut().run("select.rect", json!({"x": 7, "y": 8, "width": 3, "height": 4})).unwrap();
     h.run_steps(3);
     let before = h.state().session.documents()[0].doc.clone();

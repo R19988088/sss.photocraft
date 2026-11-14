@@ -86,6 +86,8 @@ fn keeps_gray(adj: &Adjustment) -> bool {
         | Adjustment::Threshold { .. }
         | Adjustment::Invert => true,
         Adjustment::HueSaturation { colorize, .. } => !colorize,
+        // One screen on the grey tone keeps the document grey; one screen per channel colours it.
+        Adjustment::Halftone { color, .. } => !color,
         _ => false,
     }
 }

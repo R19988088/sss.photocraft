@@ -17,6 +17,8 @@ fn left_top() -> egui::Id {
 fn color_tab(kind: ThemeKind, fill: Option<f32>) -> egui_kittest::Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = [1.0, 0.0, 0.0, 1.0];
+    // These tests are about Photoshop's saturation/brightness field, not the C2 default layout.
+    app.ui.color_panel.mode = crate::state::ColorPanelMode::HueCube;
     let tab = Group::Color.tabs(Tokens::for_kind(kind).pro).iter().position(|name| *name == "Color").unwrap();
     let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(300.0, 400.0)).build_ui_state(
         move |ui, app: &mut PhotocraftApp| {
@@ -74,3 +76,4 @@ fn every_theme_stretches_the_field_over_the_group() {
         assert!((r - g).abs() < 0.02 && (g - b).abs() < 0.02 && r < 0.25, "{kind:?}: the stretched field picks a dark grey, got {r} {g} {b}");
     }
 }
+

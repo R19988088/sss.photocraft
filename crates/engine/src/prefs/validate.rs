@@ -7,11 +7,14 @@ use super::{
 };
 
 /// Preferences dialog sections in Photoshop's order: (id, title).
-pub const SECTIONS: [(&str, &str); 18] = [
+pub const SECTIONS: [(&str, &str); 19] = [
     ("general", "General"),
     ("interface", "Interface"),
     ("workspace", "Workspace"),
     ("tools", "Tools"),
+    // Derived from `tools.tabletPressure` / `tools.tabletInput` (see `Preferences::to_json`): the
+    // pen's own page, as the reference application has it, not a corner of Tools.
+    ("tablet", "Tablet"),
     ("historyLog", "History Log"),
     ("fileHandling", "File Handling"),
     ("export", "Export"),
@@ -88,7 +91,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "cursors.painting" => PaintingCursor::NAMES,
         "cursors.other" => OtherCursor::NAMES,
         "tools.rightClickWithPaintingTools" => RightClickPaint::NAMES,
-        "tools.tabletInput" => TabletInput::NAMES,
+        "tools.tabletInput" | "tablet.tabletInput" => TabletInput::NAMES,
         "transparencyAndGamut.gridSize" => CheckerSize::NAMES,
         "transparencyAndGamut.gridColors" => CheckerColors::NAMES,
         "unitsAndRulers.rulers" | "guidesGridAndSlices.gridUnit" => Unit::NAMES,
@@ -116,6 +119,10 @@ pub fn range(path: &str) -> Option<(f64, f64)> {
         "actions.pauseSeconds" => (1.0, 60.0),
         "fileHandling.recentFileCount" => (0.0, 100.0),
         "tools.nudgeBundlePauseMs" => (100.0, 10_000.0),
+        "tools.tabletPressure.maximumPressure" | "tablet.maximumPressure" => (0.001, 1.0),
+        "tools.tabletPressure.deadZone" | "tablet.deadZone" => (0.0, 0.3),
+        "tools.tabletPressure.elasticity" | "tablet.elasticity" => (0.1, 16.0),
+        "tools.tabletPressure.coordinateWindow" | "tools.tabletPressure.pressureWindow" | "tablet.coordinateWindow" | "tablet.pressureWindow" => (1.0, 16.0),
         "fileHandling.rasterizeSvgGroupsDeeperThan" => (0.0, photocraft_doc::MAX_GROUP_DEPTH as f64),
         "interface.notificationDurationSeconds" => (1.0, 120.0),
         "export.jpegQuality" | "export.webpQuality" => (1.0, 100.0),
@@ -132,6 +139,7 @@ pub fn range(path: &str) -> Option<(f64, f64)> {
         "guidesGridAndSlices.gridlineEvery" => (0.001, 10_000.0),
         "guidesGridAndSlices.subdivisions" => (1.0, 100.0),
         "layerMaskOverlay.opacity" => (0.0, 100.0),
+        "painting.pigmentMixStrength" => (0.0, 100.0),
         "type.recentFonts" => (0.0, 50.0),
         "integrations.controlPort" => (0.0, 65535.0),
         _ => return None,

@@ -136,6 +136,11 @@ fn field_fine(range: &std::ops::RangeInclusive<f32>, decimals: Option<u32>, step
 /// returns the box with the number's response.
 // The explicit accessible name accompanies the existing numeric-field parameters.
 #[expect(clippy::too_many_arguments)]
+/// How far a value field's edge strips reach past the box, and how much of the box's own left and
+/// right edges they keep free of typing (see `value_field_box`).
+const FIELD_STEP_PAD: f32 = 3.0;
+const FIELD_INNER_PAD: f32 = 3.0;
+
 pub(super) fn value_field_in(
     ui: &mut Ui,
     value: &mut f32,
@@ -195,10 +200,9 @@ fn value_field_box(
     if !t.bevel {
         ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     }
-    // The number's slot ends 1 pt left of the suffix, by its measured width (the suffix is drawn
-    // 6 pt from the right edge), so a one-character unit like `%` leaves the number room (#3040).
-    let suffix_font = theme::mono(11.0);
-    let suffix_w = if suffix.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(suffix.to_owned(), suffix_font.clone(), t.text_faint).size().x + 3.0 };
+    // Units are no longer printed, so the number gets the whole box and only a 4 pt inset is kept
+    // before the trailing controls.
+    let suffix_w = 0.0;
     // Centred: the digits' ink then sits within 0.2 pt of the box's centre, where a 1 pt lift
     // (#1322) put it 0.9 pt high and the focus outline off-centre (#5150). The slot is at least
     // one text row tall, so a slim box's number isn't pushed out of it (#2823).
@@ -207,6 +211,21 @@ fn value_field_box(
     let slot_h = (rect.height() - 4.0).max(row_h).min(rect.height() - 2.0);
     let cy = rect.center().y;
     let field = Rect::from_min_max(pos2(rect.left() + 4.0, cy - slot_h / 2.0), pos2(rect.right() - 4.0 - suffix_w - trailing, cy + slot_h / 2.0));
+    // The number's editable slot, pulled in by `FIELD_INNER_PAD` on both sides: the box's own edges
+    // never open the editor, because a press that close to one is a nudge, not an edit.
+    let edit = Rect::from_min_max(pos2(field.left() + FIELD_INNER_PAD, field.top()), pos2(field.right() - FIELD_INNER_PAD, field.bottom()));
+    // Two edge strips step the value and never type: the left one spans the padding inside the
+    // box's left edge plus `FIELD_STEP_PAD` outside it, the right one covers the unit (`px`, `%`,
+    // `°`) and the padding before it, so clicking the unit adds one unit instead of opening the
+    // editor — the number's typing area is narrowed to the middle.
+    let step_click = {
+        let left = Rect::from_min_max(pos2(rect.left() - FIELD_STEP_PAD, rect.top()), pos2(rect.left() + FIELD_INNER_PAD, rect.bottom()));
+        let right = Rect::from_min_max(pos2(field.right() - FIELD_INNER_PAD, rect.top()), pos2(rect.right() + FIELD_STEP_PAD, rect.bottom()));
+        let sense = Sense::click();
+        let minus = ui.interact(left, slot.id.with("step-left"), sense).clicked();
+        let plus = ui.interact(right, slot.id.with("step-right"), sense).clicked();
+        f32::from(plus as u8 as f32 - minus as u8 as f32)
+    };
     // Small ranges (gamma 0.01–9.99, 0–1 centres) need two decimals and a finer drag, like Photoshop.
     let fine = field_fine(&range, decimals, step_from_decimals);
     let unit = field_step(&range, decimals, step_from_decimals);
@@ -225,7 +244,7 @@ fn value_field_box(
     }
     let step = step + notches * unit;
     // new_child (not scope_builder): a scope would move the parent cursor back to the child rect.
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(edit));
     let mut resp = {
         let ui = &mut child;
         {
@@ -238,16 +257,46 @@ fn value_field_box(
             // The theme's interact height (24) is taller than the number's slot: the DragValue
             // would grow past the slot's bottom and sit low, or spill out of a slim box (#2823).
             // Its horizontal padding would push a long number out of the box's left edge.
-            ui.spacing_mut().interact_size.y = field.height();
+            ui.spacing_mut().interact_size.y = edit.height();
             ui.spacing_mut().button_padding = Vec2::ZERO;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let layout = egui::Layout::centered_and_justified(ui.layout().main_dir());
-                ui.allocate_ui_with_layout(field.size(), layout, |ui| number_edit(ui, value, range, fine, units, opts)).inner
+                ui.allocate_ui_with_layout(edit.size(), layout, |ui| number_edit(ui, value, range, fine, units, opts)).inner
             })
             .inner
         }
     };
     ui.data_mut(|d| d.insert_temp(slot.id, resp.id));
+    // A click on either side of the box nudges the number by one unit (1, or 1% for a percent
+    // field); the middle still opens it for typing, and a drag scrubs as before.
+    {
+        // Percent fields step a whole percent; finer scales (0–1 ranges, gamma) keep their own unit.
+        let click = if typed_suffix == "%" || unit >= 1.0 { 1.0 } else { unit };
+        let mut by = step_click * click;
+        if by == 0.0
+            && resp.clicked()
+            && let Some(p) = ui.ctx().pointer_interact_pos()
+            && rect.contains(p)
+        {
+            let quarter = rect.width() / 4.0;
+            by = if p.x < rect.left() + quarter {
+                -click
+            } else if p.x > rect.right() - quarter {
+                click
+            } else {
+                0.0
+            };
+        }
+        if by != 0.0 {
+            let v = (*value / grid).round() * grid + by;
+            let v = (v * 1e4).round() / 1e4;
+            let v = if lo <= hi { v.clamp(lo, hi) } else { v };
+            if v.is_finite() && v != *value {
+                *value = v;
+                resp.mark_changed();
+            }
+        }
+    }
     // A click on the caption's expanded hit area (outside the editor) is not an edit: keep the
     // number's keyboard focus, but never take it for a field that did not have it.
     if option_click
@@ -284,8 +333,12 @@ fn value_field_box(
         resp.flags.set(Flags::DRAGGED, resp.flags.contains(Flags::DRAGGED) || s.dragging);
         resp.flags.set(Flags::DRAG_STOPPED, resp.flags.contains(Flags::DRAG_STOPPED) || s.stopped);
     }
-    if !suffix.is_empty() {
-        ui.painter().text(pos2(rect.right() - 6.0 - trailing, rect.center().y), Align2::RIGHT_CENTER, suffix, suffix_font, t.text_faint);
+    if typed_suffix == "%" {
+        // A percent field says so without printing `%`: a short rounded line under the number, in
+        // the theme's own border colour, so it reads the same in every theme.
+        let w = (rect.width() * 0.34).clamp(10.0, 20.0);
+        let bar = Rect::from_center_size(egui::pos2(rect.center().x, rect.bottom() - 3.5), egui::vec2(w, 1.5));
+        ui.painter().rect_filled(bar, egui::CornerRadius::same(1), t.card_border);
     }
     if step != 0.0 {
         // Round to the step before adding it, so whole-number fields drop decimals (55.4 + 1 = 56).

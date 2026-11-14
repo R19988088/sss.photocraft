@@ -172,6 +172,9 @@ pub fn file_failures(app: &mut PhotocraftApp, what: &str, failures: &[String]) {
 /// Report a failed file operation: the status bar shows it as an error and a notice keeps it on
 /// screen until dismissed.
 pub fn error(app: &mut PhotocraftApp, message: String) {
+    // The card translates its title when it draws; the status bar shows this copy, so translate it
+    // here too. A message already built with `i18n::fmt` comes back unchanged.
+    let message = crate::i18n::t(&message).to_string();
     app.ui.status = message.clone();
     app.ui.status_error = true;
     post(app, message, Vec::new(), true, None);

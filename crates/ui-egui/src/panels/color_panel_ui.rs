@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::color_picker_ui::{hex, not_web_safe, out_of_gamut};
 use crate::panels::{color_field_fill_id, field_chips, field_hsva, srgb_hsva};
-use crate::state::{ColorPanelMode, ColorRamp};
+use crate::state::{ColorPanelMode, ColorRamp, ColorPanelState};
 use crate::theme::Tokens;
 use crate::widgets;
 use photocraft_color::convert;
@@ -32,16 +32,6 @@ const UNIT_W: f32 = 14.0;
 /// Width of the white and black boxes at the right end of the ramp.
 const BOXES_W: f32 = 16.0;
 
-/// The Color tab: whatever the panel menu picked.
-pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    match app.ui.color_panel.mode {
-        ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => crate::panels::color_field(app, ui),
-        ColorPanelMode::ColorWheel => wheel(app, ui),
-        mode => sliders(app, ui, mode),
-    }
-    crate::apply_color::track_focus(ui.ctx());
-}
-
 /// The colour model a slider mode edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Model {
@@ -57,7 +47,8 @@ impl Model {
     pub(crate) fn of(mode: ColorPanelMode) -> Model {
         match mode {
             ColorPanelMode::GrayscaleSlider => Model::Gray,
-            ColorPanelMode::HsbSliders | ColorPanelMode::ColorWheel => Model::Hsb,
+            // The C2 layout has no sliders; it reads and writes RGB.
+            ColorPanelMode::C2 | ColorPanelMode::HsbSliders | ColorPanelMode::ColorWheel => Model::Hsb,
             ColorPanelMode::CmykSliders => Model::Cmyk,
             ColorPanelMode::LabSliders => Model::Lab,
             ColorPanelMode::WebColorSliders => Model::Web,
@@ -116,11 +107,18 @@ pub(crate) fn active(app: &PhotocraftApp) -> [f32; 3] {
 
 /// Set the background colour, or the foreground and recolour what is selected as the tool in hand
 /// says (`apply_color`); the picks of one drag or typed value are one history step.
+///
+/// Picking a solid colour also leaves the 图案 source, as the reference application's field does
+/// (its `set_color` clears the pattern): what the brush paints next is the colour just picked, not
+/// the pattern sampled earlier. The pattern itself is kept, so 图案 brings it back.
 pub(crate) fn set_color(app: &mut PhotocraftApp, ctx: &egui::Context, background: bool, rgb: [f32; 3]) {
     let c = [rgb[0], rgb[1], rgb[2], 1.0];
     if background {
         app.session.tools.background = c;
     } else {
+        if app.session.tools.brush.pattern_enabled {
+            let _ = app.run("tools.setColorSource", json!({"pattern": false}));
+        }
         app.session.tools.foreground = c;
         crate::apply_color::foreground_changed(app, crate::apply_color::gesture(ctx));
     }
@@ -746,13 +744,35 @@ fn ramp_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The Color panel's panel menu, Photoshop's: the modes, the copy commands, the ramps.
+/// The Color tab: whatever the panel menu picked. The C2 layout draws the 实线/图案 source
+/// switch at its top; the Photoshop modes keep Photoshop's geometry, which the default Color
+/// group can't hold a switch row above (its wheel would run past the group's bottom).
+pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    match app.ui.color_panel.mode {
+        ColorPanelMode::C2 => super::color_c2::show(app, ui),
+        ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => crate::panels::color_field(app, ui),
+        ColorPanelMode::ColorWheel => wheel(app, ui),
+        mode => sliders(app, ui, mode),
+    }
+    crate::apply_color::track_focus(ui.ctx());
+}
+
+/// The Color panel's panel menu, Photoshop's: the modes, the mixing strength, the copy commands,
+/// the ramps.
 pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    // One section, as Photoshop's: no separator between Color Wheel and Grayscale Slider.
-    for mode in ColorPanelMode::ALL {
-        if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
-            app.ui.color_panel.mode = mode;
-            ui.close();
+    // Wide enough for the mixing strength row's slider and field, as the reference menu is.
+    ui.set_min_width(220.0);
+    // No display picker: the reference layout is the panel's only face, so there is no way back
+    // to the traditional modes from the menu.
+    // 混合强度: the brush's pigment mixing, one value for every brush, beside the colour field
+    // as the reference application keeps it. The slider writes the `painting.pigmentMixStrength`
+    // preference and the engine copies it onto the brush, so it survives a restart with the rest
+    // of the preferences.
+    let mut strength = app.session.prefs().painting.pigment_mix_strength;
+    if widgets::slider_row(ui, tl!("Mixing Strength"), &mut strength, 0.0..=100.0, "%", None).changed() {
+        if let Err(e) = app.run("prefs.set", json!({"path": "painting.pigmentMixStrength", "value": strength})) {
+            app.ui.status = e;
+            app.ui.status_error = true;
         }
     }
     ui.separator();
@@ -788,6 +808,12 @@ pub fn persist(app: &mut PhotocraftApp) {
 
 /// Restore the remembered Color panel options (at launch, or after a preference change made
 /// outside the panel); none stored (a reset) or unreadable ones are the defaults.
+///
+/// The reference layout is the panel's only face: whatever mode the preferences record — an
+/// older build's default, a hand-edited file, `ui.set colorPanel.mode` — the panel comes back
+/// as C2, so there is no way to fall back to the traditional layouts.
 pub fn restore(app: &mut PhotocraftApp) {
-    app.ui.color_panel = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
+    let mut state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
+    state.mode = ColorPanelMode::C2;
+    app.ui.color_panel = state;
 }

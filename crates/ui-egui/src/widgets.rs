@@ -55,7 +55,7 @@ pub use fields::{
 };
 pub(crate) use panel::body_margin;
 pub use panel::{
-    FOOTER_BAR, chevron_icon, drop_line, footer_height, hairline, panel_footer, panel_menu_button, pill_tab, section_label, style_spectrum_popup_menu, surface,
+    FOOTER_BAR, chevron_icon, drop_line, footer_height, hairline, panel_footer, panel_menu_button, pill_tab, pill_tab_pad, pill_tab_sized, section_label, style_spectrum_popup_menu, surface,
     vline,
 };
 pub(crate) use scrub::scrub_label_within;

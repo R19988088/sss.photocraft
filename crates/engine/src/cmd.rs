@@ -76,9 +76,11 @@ mod count_record_label_tests;
 pub mod cutout_cmds;
 pub mod distort_cmds;
 pub mod document_preset_cmds;
+pub mod cached_transform;
 pub mod edit_cmds;
 pub mod edit_menu_cmds;
 mod enabled;
+pub mod edit_scope;
 pub mod eraser_cmds;
 pub mod export_preset_cmds;
 pub mod exr_cmds;
@@ -139,6 +141,7 @@ pub mod render_cmds;
 pub mod retouch_cmds;
 pub mod sample_cmds;
 pub mod sampler_cmds;
+pub mod pattern_sample_cmds;
 pub mod select_extra_cmds;
 pub mod selection_cmds;
 pub mod slice_cmds;
@@ -587,7 +590,6 @@ fn build() -> Vec<CommandSpec> {
                 let add_copy = layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
                 // The dialog offers Duplicate Layer's own name: only a different one was typed (#9023).
                 let mut typed = None;
-                let mut shift = (0, 0);
                 let nid = s.edit("Duplicate Layer", |doc, active| {
                     let mut dup = layer_copy(doc, id, add_copy)?;
                     if let Some(name) = name.as_ref().filter(|n| **n != dup.name) {
@@ -598,12 +600,11 @@ fn build() -> Vec<CommandSpec> {
                     // A lone copy joins its original's link group, as in the reference application (#11217).
                     crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
-                        shift = crate::artboard_cmds::place_copy(doc, nid)?;
+                        crate::artboard_cmds::place_copy(doc, nid)?;
                     }
                     *active = Some(nid);
                     Ok(nid)
                 })?;
-                crate::artboard_cmds::follow_shift(s, shift);
                 if let Some(name) = typed {
                     crate::type_cmds::note_typed_name(s, nid, &name);
                 }
@@ -1255,7 +1256,12 @@ fn build() -> Vec<CommandSpec> {
         (
             "colorLookup",
             "Color Lookup…",
-            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text,"lutFormat":"auto|cube|3dl|look"="auto"} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection, auto detects it)"##,
+            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
+        ),
+        (
+            "halftone",
+            "Halftone…",
+            r##"{"size":1..200=8,"angle":-180..180=45,"density":0..100=50,"contrast":-100..100=0,"brightness":-100..100=0,"jitter":0..100=0,"shape":"round|diamond|ellipse|square|cross|line"="round","color":bool=false,"preserveWhite":bool=true,"white":0..100=0,"black":0..100=0} (a dot screen over the layers below: size = the screen's period in pixels, angle = screen angle in degrees, density = dot gain in percent (50 prints the tone as it is), brightness negative darkens the dots, jitter wobbles each cell's dot, shape = the dot's shape, color = one screen per channel at its own angle instead of one on the grey tone, preserveWhite keeps near-white pixels untouched, white/black = the white and black tolerances in percent of the tone range: tones that close to white print as bare paper, to black as solid ink)"##,
         ),
     ];
     for &(kind, label, params) in ADJ {
@@ -1393,6 +1399,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::edit_menu_cmds::specs());
     v.extend(crate::fill_key_cmds::specs());
     v.extend(crate::sample_cmds::specs());
+    v.extend(crate::cmd::pattern_sample_cmds::specs());
     v.extend(crate::face_cmds::specs());
     v.extend(crate::sampler_cmds::specs());
     v.extend(crate::brush_key_cmds::specs());

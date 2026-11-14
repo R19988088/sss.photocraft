@@ -1,7 +1,7 @@
-//! AppKit local event monitor for tablet data. The only module in the workspace that allows
-//! `unsafe`: three calls into AppKit's Objective-C API that objc2 can't prove sound on its own
-//! (each has a `SAFETY:` comment). Everything the monitor reads goes through the pure, tested
-//! mapping in [`crate::appkit`].
+//! AppKit local event monitor for tablet data. One of the two places in the workspace that allow
+//! `unsafe` (`photocraft-winorder` is the other): three calls into AppKit's Objective-C API that
+//! objc2 can't prove sound on its own (each has a `SAFETY:` comment). Everything the monitor reads
+//! goes through the pure, tested mapping in [`crate::appkit`].
 //!
 //! A *local* monitor sees this app's events only, on the main thread, inside `-[NSApplication
 //! sendEvent:]` before the event reaches winit's view, so the sample is current when the UI

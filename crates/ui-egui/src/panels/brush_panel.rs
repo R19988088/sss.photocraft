@@ -1,7 +1,7 @@
 //! Window › Brush Settings (F5) and Window › Brushes: Photoshop's floating brush panel.
 //!
 //! Brush Settings: the section list with enable boxes on the left (clicking a controls section
-//! shows and enables it; the last five rows only toggle), the selected section's controls on the right (see [`crate::brush_sections`]),
+//! shows and enables it; Build-up and Protect Texture only toggle), the selected section's controls on the right (see [`crate::brush_sections`]),
 //! and a live stroke preview strip below, rendered with the real brush engine and cached on the
 //! settings (it re-renders only when they change). Brushes: the presets in collapsible groups with
 //! tip thumbnails and stroke previews, a size slider and a search field.
@@ -28,33 +28,30 @@ pub use crate::brush_preview::{preview_pixels, preview_sig};
 pub use crate::brush_sections::section_body;
 pub use photocraft_engine::brush_cmds::brush_patch;
 
-/// Sections in Photoshop's order. The bool says whether the section has an enable box.
-pub const SECTIONS: [(&str, bool); 13] = [
-    ("Brush Tip Shape", false),
-    ("Shape Dynamics", true),
-    ("Scattering", true),
-    ("Texture", true),
-    ("Dual Brush", true),
-    ("Color Dynamics", true),
-    ("Transfer", true),
-    ("Brush Pose", true),
-    ("Noise", true),
-    ("Wet Edges", true),
-    ("Build-up", true),
-    ("Smoothing", true),
-    ("Protect Texture", true),
-];
+/// The eight brush-setting categories mirrored by the reference panel.
+pub const SECTIONS: [(&str, bool); 8] =
+    [("Tip", false), ("Basic", false), ("Motion", true), ("Texture", true), ("Color Mode", true), ("Wet Edge", true), ("Mix", true), ("Pigment", true)];
 
-/// The final five entries are switches, not sections with a properties pane.
-const CHECKBOX_ONLY_START: usize = 8;
+pub(crate) fn section_label(name: &str) -> &str {
+    crate::i18n::tr_ctx(crate::i18n::current(), "brushSection", name)
+}
 
-fn checkbox_only(section: usize) -> bool {
-    (CHECKBOX_ONLY_START..SECTIONS.len()).contains(&section)
+pub(crate) fn section_visible(section: usize) -> bool {
+    section < SECTIONS.len()
 }
 
 /// Panel width and the stroke strip's size.
-pub(crate) const WIDTH: f32 = 540.0;
-const STRIP: (u32, u32) = (488, 76);
+pub(crate) const WIDTH: f32 = 340.0;
+const PANEL_PAD: f32 = 10.0;
+const LIST_WIDTH: f32 = 120.0;
+const STRIP: (u32, u32) = (368, 60);
+
+/// The blend mode picker in the lane-tab row: narrow enough for the two tabs to keep their place.
+const MODE_PICKER_WIDTH: f32 = 82.0;
+
+/// Height the panel opens at, and the shortest it can be pulled with the bottom grip.
+const DEFAULT_HEIGHT: f32 = 640.0;
+const MIN_HEIGHT: f32 = 300.0;
 
 /// How the Brushes tab lists presets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +81,8 @@ pub struct Renaming {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BrushesPanelState {
+    #[serde(default = "crate::panels::brush_panel::default_true")]
+    pub show_search: bool,
     /// Collapsed groups and folders: a group's label, or for a nested folder the group's label and
     /// the folder path joined with `/` ([`crate::brushes_tab::folder_view_key`]).
     pub collapsed: Vec<String>,
@@ -98,11 +97,8 @@ pub struct BrushesPanelState {
     pub show_stroke: bool,
     /// The Brush Preset picker's cards: show the tip thumbnail.
     pub show_tip: bool,
-    /// The Brush Preset picker's search field (its gear menu's Show Search Bar).
-    pub show_search: bool,
-    /// The Brush Preset picker's cards and the Brushes tab's grid cells and list rows: their size
-    /// scale, from the picker's footer slider (`crate::brush_picker::body`) or the tab's preview-size
-    /// slider. 1 is the standard size; the cards' width, height and
+    /// The Brush Preset picker's cards: their size scale, from the picker's footer slider
+    /// (`crate::brush_picker::body`). 1 is the standard size; the cards' width, height and
     /// insides multiply by it (`crate::brushes_tab`) — the height down to a 0.50 floor, the
     /// width all the way — the text holds its 1.0 size, and at or below the compact threshold
     /// the tips drop the size number under them and take their cell whole.
@@ -112,6 +108,7 @@ pub struct BrushesPanelState {
 impl Default for BrushesPanelState {
     fn default() -> Self {
         Self {
+            show_search: true,
             collapsed: Vec::new(),
             filter: String::new(),
             view: BrushesView::default(),
@@ -119,49 +116,69 @@ impl Default for BrushesPanelState {
             show_name: true,
             show_stroke: true,
             show_tip: true,
-            show_search: true,
             scale: 1.0,
         }
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Switch-only rows do not select a control pane.
+fn checkbox_only(section: usize) -> bool {
+    matches!(section, 5 | 6)
+}
+
 /// The enable flag behind section `i` (None for Brush Tip Shape).
 pub fn section_flag(b: &mut BrushSettings, i: usize) -> Option<&mut bool> {
     Some(match i {
-        1 => &mut b.shape_dynamics.enabled,
-        2 => &mut b.scattering.enabled,
+        2 => &mut b.motion.enabled,
         3 => &mut b.texture.enabled,
-        4 => &mut b.dual_brush.enabled,
-        5 => &mut b.color_dynamics.enabled,
-        6 => &mut b.transfer.enabled,
-        7 => &mut b.pose.enabled,
-        8 => &mut b.noise,
-        9 => &mut b.wet_edges,
-        10 => &mut b.build_up,
-        11 => &mut b.smoothing.enabled,
-        12 => &mut b.protect_texture,
+        5 => &mut b.wet_edges,
+        6 => &mut b.mix_settings.enabled,
+        7 => &mut b.pigment.as_mut()?.enabled,
         _ => return None,
     })
 }
 
+fn section_enabled(b: &BrushSettings, section: usize) -> bool {
+    match section {
+        1 => b.shape_dynamics.enabled || b.scattering.enabled || b.transfer.enabled,
+        2 => b.motion.enabled,
+        3 => b.texture.enabled,
+        4 => b.color_attributes.enabled || b.color_dynamics.enabled,
+        5 => b.wet_edges,
+        6 => b.mix_settings.enabled,
+        7 => b.pigment.as_ref().is_some_and(|p| p.enabled),
+        _ => false,
+    }
+}
+
+fn set_section_enabled(b: &mut BrushSettings, section: usize, enabled: bool) {
+    match section {
+        1 => {
+            b.shape_dynamics.enabled = enabled;
+            b.scattering.enabled = enabled;
+            b.transfer.enabled = enabled;
+        }
+        4 => {
+            b.color_attributes.enabled = enabled;
+            b.color_dynamics.enabled = enabled;
+        }
+        7 => b.pigment.get_or_insert_with(Default::default).enabled = enabled,
+        _ => {
+            if let Some(flag) = section_flag(b, section) {
+                *flag = enabled;
+            }
+        }
+    }
+}
+
 /// The lock behind section `i` (every section but Brush Tip Shape has one, as in Photoshop).
 pub fn section_lock(b: &mut BrushSettings, i: usize) -> Option<&mut bool> {
-    let l = &mut b.locks;
-    Some(match i {
-        1 => &mut l.shape_dynamics,
-        2 => &mut l.scattering,
-        3 => &mut l.texture,
-        4 => &mut l.dual_brush,
-        5 => &mut l.color_dynamics,
-        6 => &mut l.transfer,
-        7 => &mut l.pose,
-        8 => &mut l.noise,
-        9 => &mut l.wet_edges,
-        10 => &mut l.build_up,
-        11 => &mut l.smoothing,
-        12 => &mut l.protect_texture,
-        _ => return None,
-    })
+    let _ = (b, i);
+    None
 }
 
 /// Send the panel's edits (`before` → `after`) through `tools.setBrush`.
@@ -195,7 +212,7 @@ fn gesture(ctx: &egui::Context) -> u64 {
     let frame = ctx.cumulative_pass_nr();
     let pressed = ctx.input(|i| i.pointer.any_pressed());
     ctx.data_mut(|d| {
-        let g = d.get_temp_mut_or_default::<(u64, u64)>(egui::Id::unique(GESTURE));
+        let g = d.get_temp_mut_or_default::<(u64, u64)>(egui::Id::new(GESTURE));
         if pressed && g.1 != frame {
             g.0 += 1;
             g.1 = frame;
@@ -210,12 +227,12 @@ fn gesture(ctx: &egui::Context) -> u64 {
 pub fn commit_gesture(app: &mut PhotocraftApp, ctx: &egui::Context, before: &BrushSettings, after: &BrushSettings) {
     let g = gesture(ctx);
     if send(app, before, after, Some(format!("brush-ui:{g}"))) && !ctx.input(|i| i.pointer.any_down()) {
-        ctx.data_mut(|d| d.get_temp_mut_or_default::<(u64, u64)>(egui::Id::unique(GESTURE)).0 += 1);
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<(u64, u64)>(egui::Id::new(GESTURE)).0 += 1);
     }
 }
 
 /// Group label for presets saved without a group.
-pub const UNGROUPED: &str = photocraft_engine::brush_key_cmds::UNGROUPED;
+pub const UNGROUPED: &str = "My Brushes";
 
 /// Preset indices in panel order: groups in order of first appearance.
 pub fn grouped_presets(presets: &[paint::BrushPreset]) -> Vec<(String, Vec<usize>)> {
@@ -250,9 +267,9 @@ pub(crate) fn full_uv() -> egui::Rect {
 fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings) {
     let t = Tokens::get(ui.ctx());
     ui.vertical(|ui| {
-        ui.set_width(150.0);
+        ui.set_width(LIST_WIDTH);
         ui.spacing_mut().item_spacing.y = 1.0;
-        let (br_rect, br_resp) = ui.allocate_exact_size(vec2(150.0, 23.0), Sense::click());
+        let (br_rect, br_resp) = ui.allocate_exact_size(vec2(LIST_WIDTH, 23.0), Sense::click());
         if br_resp.hovered() {
             ui.painter().rect_filled(br_rect, t.radius_sm, t.hover);
         }
@@ -267,155 +284,224 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
         widgets::hairline(ui);
         ui.add_space(3.0);
         for (i, (name, has_box)) in SECTIONS.iter().enumerate() {
-            let toggle_only = checkbox_only(i);
-            // Group the switches with whitespace, not separators between individual rows.
-            if i == CHECKBOX_ONLY_START {
-                ui.add_space(6.0);
+            if app.ui.tool == crate::Tool::Eraser && matches!(i, 4 | 6) {
+                continue;
             }
-            let sel = !toggle_only && app.ui.brush_section == i;
-            let (r, resp) = ui.allocate_exact_size(vec2(150.0, 23.0), Sense::click());
-            // Named for accessibility and for tests and agents that look sections up by name.
-            if toggle_only {
-                let checked = section_flag(b, i).is_some_and(|flag| *flag);
-                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, checked, tl!(*name)));
-            } else {
-                resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, tl!(*name)));
-            }
+            let sel = app.ui.brush_section == i;
+            let (r, resp) = ui.allocate_exact_size(vec2(LIST_WIDTH, 23.0), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, sel, section_label(name)));
             if sel {
                 ui.painter().rect_filled(r, t.radius_sm, t.accent_soft);
             } else if resp.hovered() {
                 ui.painter().rect_filled(r, t.radius_sm, t.hover);
             }
-            let mut x = r.left() + 6.0;
-            if *has_box && let Some(flag) = section_flag(b, i) {
-                let br = egui::Rect::from_center_size(egui::pos2(x + 6.0, r.center().y), vec2(13.0, 13.0));
-                // A checkbox-only row is one accessible checkbox across its whole width. A
-                // controls section keeps its separate enable box and selectable label.
-                let box_resp = (!toggle_only).then(|| {
-                    let resp = ui.interact(br, ui.scope_id().with(("brush-sec-box", i)), Sense::click());
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::CheckBox, true, *flag, crate::i18n::fmt(tl!("Enable {name}"), &[("name", tl!(*name))]))
-                    });
-                    resp
+            let mut x = r.left() + 7.0;
+            if *has_box {
+                let box_rect = egui::Rect::from_center_size(egui::pos2(x + 6.0, r.center().y), vec2(13.0, 13.0));
+                let enabled = section_enabled(b, i);
+                let box_resp = ui.interact(box_rect, ui.id().with(("brush-sec-box", i)), Sense::click());
+                box_resp.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::Role::CheckBox,
+                        true,
+                        enabled,
+                        crate::i18n::fmt(tl!("Enable {name}"), &[("name", section_label(name))]),
+                    )
                 });
-                let on_lock = resp.interact_pointer_pos().is_some_and(|p| p.x > r.right() - 22.0);
-                // A press on the row (but not its lock) presses the box too: a release there
-                // turns the section on, or toggles a checkbox-only row (#4476).
-                let pressed = box_resp.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) || (resp.is_pointer_button_down_on() && !on_lock);
-                let hovered = box_resp.as_ref().is_some_and(|b| b.hovered()) || (toggle_only && resp.hovered());
-                widgets::check_box(ui.painter(), br, *flag, hovered, pressed, &t);
-                if box_resp.is_some_and(|resp| resp.clicked()) || (toggle_only && resp.clicked() && !on_lock) {
-                    *flag = !*flag;
-                } else if !toggle_only && resp.clicked() && !on_lock {
-                    *flag = true;
+                widgets::check_box(ui.painter(), box_rect, enabled, box_resp.hovered(), box_resp.is_pointer_button_down_on(), &t);
+                if box_resp.clicked() {
+                    set_section_enabled(b, i, !enabled);
                 }
-                x += 20.0;
-            } else {
-                // No box (Brush Tip Shape): the name still starts in the names' column,
-                // as in Photoshop (#4282).
-                x += 20.0;
             }
+            // The rows without a box pad to the same column, as Photoshop does.
+            x += 20.0;
             let color = if sel { t.text } else { t.text_dim };
             let font = if i == 0 { theme::semibold(12.0) } else { theme::medium(12.0) };
-            let mut job = egui::text::LayoutJob::simple_singleline(tl!(name).to_string(), font, color);
+            let mut job = egui::text::LayoutJob::simple_singleline(section_label(name).to_string(), font, color);
             job.wrap = egui::text::TextWrapping::truncate_at_width((r.right() - 22.0 - x).max(0.0));
             let galley = ui.painter().layout_job(job);
             let elided = galley.elided;
             ui.painter().galley(egui::pos2(x, r.center().y - galley.size().y / 2.0), galley, color);
-            let resp = if elided { resp.on_hover_text(tl!(name)) } else { resp };
-            let mut lock_clicked = false;
-            if let Some(lock) = section_lock(b, i) {
-                let lr = egui::Rect::from_center_size(egui::pos2(r.right() - 11.0, r.center().y), vec2(18.0, 18.0));
-                let lresp = ui.interact(lr, ui.scope_id().with(("brush-sec-lock", i)), Sense::click());
-                lresp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), *lock, format!("{}: {}", tl!("Lock"), tl!(*name))));
-                // Like Photoshop: lock icons stay visible on every lockable section row.
-                let tint = if *lock { t.text } else { t.text_faint };
-                icons::paint(ui, lr, if *lock { "lock" } else { "lock-open" }, 12.0, tint);
-                if lresp.has_focus() {
-                    ui.painter().rect_stroke(lr, t.radius_sm, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+            let resp = if elided { resp.on_hover_text(section_label(name)) } else { resp };
+            if resp.clicked() {
+                let on_checkbox = *has_box && resp.interact_pointer_pos().is_some_and(|p| p.x < r.left() + 24.0);
+                if !on_checkbox {
+                    if *has_box && !section_enabled(b, i) {
+                        set_section_enabled(b, i, true);
+                    }
+                    app.ui.brush_section = i;
                 }
-                let tip =
-                    if *lock { tl!("Unlock: picking a preset replaces these settings") } else { tl!("Lock: keep these settings when picking another preset") };
-                if lresp.on_hover_text(tip).clicked() {
-                    *lock = !*lock;
-                    lock_clicked = true;
-                }
-            }
-            if !toggle_only && resp.clicked() && !lock_clicked {
-                app.ui.brush_section = i;
-            }
-            if i == 0 {
-                ui.add_space(4.0);
             }
         }
     });
 }
 
-fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+fn settings_tab(app: &mut PhotocraftApp, ui: &mut egui::Ui, width: f32) {
+    ui.push_id(("brush-lane", app.ui.brush_lane), |ui| settings_lane(app, ui, width));
+}
+
+fn brush_with_secondary(parent: &BrushSettings, secondary: &BrushSettings) -> BrushSettings {
+    let mut brush = parent.clone();
+    let dual = &mut brush.dual_brush;
+    dual.tip = secondary.tip.clone();
+    dual.size = secondary.size;
+    dual.hardness = secondary.hardness;
+    dual.roundness = secondary.roundness;
+    dual.angle = secondary.angle;
+    dual.spacing = secondary.spacing;
+    dual.opacity = secondary.opacity;
+    dual.flow = secondary.flow;
+    dual.grain = secondary.grain.clone();
+    dual.wet_edges = secondary.wet_edges;
+    dual.wet_edge = secondary.wet_edge.clone();
+    dual.full_parameters = Some(Box::new(secondary.clone()));
+    brush
+}
+
+fn settings_lane(app: &mut PhotocraftApp, ui: &mut egui::Ui, width: f32) {
     let t = Tokens::get(ui.ctx());
     let before = app.session.tools.brush.clone();
-    let mut b = before.clone();
-    // Older UI state and control clients could select any of the 13 entries. Switch rows no
-    // longer have a properties pane, so those selections recover to Brush Tip Shape.
-    if app.ui.brush_section >= CHECKBOX_ONLY_START {
+    let mut base = before.clone();
+    let secondary = app.ui.brush_lane == 1;
+    if secondary {
+        std::mem::swap(&mut app.ui.brush_section, &mut app.ui.brush_secondary_section);
+    }
+    // Each lane's percentage lives on the parent brush (the secondary's inside `dual_brush`), not
+    // on the lane's working copy, so the box in the list column edits `base` directly.
+    let mut strength = if secondary { base.dual_brush.secondary_strength } else { base.dual_brush.primary_strength } * 100.0;
+    let mut strength_changed = false;
+    let mut b = if secondary { crate::brush_sections::secondary_defaults(&base) } else { base.clone() };
+    let lane_before = secondary.then(|| b.clone());
+    let mut secondary_flip = before.dual_brush.flip;
+    // Older UI state and control clients could select any of the previous section entries.
+    if !section_visible(app.ui.brush_section) || (app.ui.tool == crate::Tool::Eraser && matches!(app.ui.brush_section, 4 | 6)) {
         app.ui.brush_section = 0;
     }
     let section = app.ui.brush_section;
+    let on = section == 2 || !SECTIONS[section].1 || section_enabled(&b, section);
+    // The controls fill whatever height the panel is dragged to (its bottom edge is resizable),
+    // leaving the preview strip and its buttons their room at the bottom. The budget is worked
+    // out in `window()` from the window's current height and the measured height of everything
+    // that isn't the lane, so the lane (and with it the panel) really does get shorter when the
+    // bottom edge is pulled up.
+    let lane_height = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("brush-settings-lane"))).unwrap_or(480.0);
     ui.horizontal_top(|ui| {
-        section_list(app, ui, &mut b);
-        widgets::vline(ui, 482.0);
         ui.vertical(|ui| {
-            ui.set_width(WIDTH - 190.0);
-            // No title above the options (#3477): the selected row in the list names them, as
-            // in Photoshop, and the line is better spent on the options.
-            let on = section_flag(&mut b, section).is_none_or(|f| *f);
-            egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(450.0).auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_width(WIDTH - 204.0);
+            ui.set_width(LIST_WIDTH);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            strength_changed = crate::brush_sections::lane_strength(ui, &mut strength);
+            ui.add_space(5.0);
+            section_list(app, ui, &mut b);
+        });
+        widgets::vline(ui, lane_height);
+        ui.vertical(|ui| {
+            // Derived, not taken from the available width: the column's own content (the tip grid,
+            // the strip) sizes itself from this value, so reading the layout back would feed any
+            // off-by-a-few into the window's width and leave a gutter on the right.
+            let lane_width = (width - LIST_WIDTH - 9.0 - 2.0 * ui.spacing().item_spacing.x).max(140.0);
+            // The controls run to the panel's right margin. The bars float over the content instead
+            // of reserving a strip, so the pane's edges line up with the panel's on both sides.
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::floating();
+            let controls_width = lane_width;
+            ui.set_width(lane_width);
+            egui::ScrollArea::vertical().id_salt(("brush-section", section)).max_height(lane_height).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_width(controls_width);
                 // A section that's off shows its options greyed out (Photoshop). A tip picked in
                 // the grid copies the tip fields only — the dynamics sections stay (Photoshop).
                 // The picked preset is recorded by name (`brush.presets.setCurrent`, identity, so
                 // look-alike duplicates stay distinct), since the engine can't infer it from the
                 // brush afterwards.
                 ui.add_enabled_ui(on, |ui| {
-                    section_body(ui, &mut b, section, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), app.ui.tool)
+                    if secondary && section == 0 {
+                        widgets::checkbox(ui, &mut secondary_flip, tl!("Flip"));
+                    }
+                    crate::brush_sections::section_body_with_canvas(
+                        ui,
+                        &mut b,
+                        section,
+                        &app.session.tools.presets,
+                        app.session.tools.current_preset.as_deref(),
+                        &app.session.tools.canvas_presets,
+                    )
                 })
                 .inner
-                .inspect(|name| run_or_status(app, "brush.presets.setCurrent", json!({ "name": name })));
+                .inspect(|name| {
+                    if !secondary {
+                        run_or_status(app, "brush.presets.setCurrent", json!({ "name": name }));
+                    }
+                });
             });
         });
     });
     ui.add_space(6.0);
     widgets::hairline(ui);
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(STRIP.0 as f32, STRIP.1 as f32), Sense::hover());
-        ui.painter().rect_filled(r, t.radius_sm, t.field);
-        let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, STRIP.0, STRIP.1, t.text);
-        ui.painter().image(tex.id(), r, full_uv(), Color32::WHITE);
-        ui.vertical(|ui| {
-            let new = icons::button(ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
-            if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
-                crate::brush_preset_dialog::open(app, Some(&b));
-            }
-            if icons::button(ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
-                b = BrushSettings { color: b.color, background: b.background, smoothing: b.smoothing.clone(), locks: b.locks.clone(), ..Default::default() };
-            }
-            // Overwrite the preset the current brush was picked from (Photoshop's "update the
-            // selected brush"): no new preset, the brush keeps its place in the list.
-            let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
-            let update =
-                ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
-            update.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, current.is_some(), "Update the current brush with these settings"));
-            if update.clicked() {
-                run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&b).unwrap_or(Value::Null) }));
-            }
-        });
-    });
-    commit_gesture(app, ui.ctx(), &before, &b);
+    // The strip spans the panel and its buttons sit in a row beneath it: three 24-point buttons do
+    // not fit in a column as tall as the strip, and the third was clipped by the panel's bottom
+    // edge. The strip is rendered at twice its point size so it stays sharp on a Retina display.
+    // The panel's content width, not the ui's available width: this row sits outside the
+    // `set_width` scope, and its available width runs wider than the panel, which grew the window.
+    let strip_w = width;
+    let (strip, _) = ui.allocate_exact_size(vec2(strip_w, STRIP.1 as f32), Sense::hover());
+    ui.painter().rect_filled(strip, t.radius_sm, t.field);
+    let tex = brush_preview::stroke_texture(ui.ctx(), "settings-strip", &b, (strip_w * 2.0) as u32, STRIP.1 * 2, t.text);
+    ui.painter().image(tex.id(), strip, full_uv(), Color32::WHITE);
+    // The three buttons sit in a row under the strip, right-aligned to the strip's own edge: this
+    // column's available width runs past the panel's margin, so padding by width overshoots.
+    ui.add_space(8.0);
+    let (bar, _) = ui.allocate_exact_size(vec2(strip.width(), 24.0), Sense::hover());
+    let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    // Overwrite the preset the current brush was picked from (Photoshop's "update the selected
+    // brush"): no new preset, the brush keeps its place in the list. Laid out right to left, so
+    // this one is added first and ends at the panel's margin.
+    let current = app.session.tools.current_preset.clone().filter(|n| app.session.tools.presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)));
+    let update =
+        bar_ui.add_enabled_ui(current.is_some(), |ui| icons::button(ui, "check", 24.0, false, tl!("Update the current brush with these settings"))).inner;
+    update.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, current.is_some(), "Update the current brush with these settings"));
+    if update.clicked() {
+        let preset = if secondary { brush_with_secondary(&base, &b) } else { b.clone() };
+        run_or_status(app, "brush.presets.update", json!({ "brush": serde_json::to_value(&preset).unwrap_or(Value::Null) }));
+    }
+    if icons::button(&mut bar_ui, "undo-2", 24.0, false, tl!("Reset the brush to the defaults")).clicked() {
+        b = BrushSettings { color: b.color, background: b.background, locks: b.locks.clone(), ..Default::default() };
+    }
+    let new = icons::button(&mut bar_ui, "square-plus", 24.0, false, tl!("Create new brush from these settings"));
+    if crate::brush_picker::named(new, "Create new brush from these settings").clicked() {
+        let preset = if secondary { brush_with_secondary(&base, &b) } else { b.clone() };
+        crate::brush_preset_dialog::open(app, Some(&preset));
+    }
+    if secondary {
+        std::mem::swap(&mut app.ui.brush_section, &mut app.ui.brush_secondary_section);
+    }
+    // The edited percentage goes onto the parent brush; the lane's working copy already took the
+    // section edits, and the parent is what the command carries.
+    if strength_changed {
+        let rounded = strength.round();
+        if secondary {
+            base.dual_brush.enabled = rounded > 0.0;
+            base.dual_brush.secondary_strength = rounded / 100.0;
+        } else {
+            base.dual_brush.primary_strength = rounded / 100.0;
+        }
+    }
+    if secondary {
+        if strength_changed || lane_before.as_ref().is_some_and(|previous| *previous != b) || secondary_flip != base.dual_brush.flip {
+            let mut parent = brush_with_secondary(&base, &b);
+            parent.dual_brush.flip = secondary_flip;
+            commit_gesture(app, ui.ctx(), &before, &parent);
+        }
+    } else {
+        let mut after = b;
+        // The lane's copy carries the sections' edits; the percentage came from the parent, so it
+        // is only put back when the box above was what changed (a reset keeps its own default).
+        if strength_changed {
+            after.dual_brush.primary_strength = base.dual_brush.primary_strength;
+        }
+        commit_gesture(app, ui.ctx(), &before, &after);
+    }
 }
 
-/// Clear brush controls: turns off every section except Smoothing and resets their options
-/// to the defaults (Photoshop), keeping locked sections intact.
+/// Clear brush controls and reset their options, keeping locked sections intact.
 pub fn clear_brush_controls(current: &BrushSettings) -> BrushSettings {
     let mut b = current.clone();
     let d = BrushSettings::default();
@@ -443,9 +529,11 @@ pub fn clear_brush_controls(current: &BrushSettings) -> BrushSettings {
     }
     if !l.noise {
         b.noise = d.noise;
+        b.grain = d.grain;
     }
     if !l.wet_edges {
         b.wet_edges = d.wet_edges;
+        b.wet_edge = d.wet_edge;
     }
     if !l.build_up {
         b.build_up = d.build_up;
@@ -454,6 +542,12 @@ pub fn clear_brush_controls(current: &BrushSettings) -> BrushSettings {
     if !l.protect_texture {
         b.protect_texture = d.protect_texture;
     }
+    b.pigment = d.pigment;
+    b.mix_settings = d.mix_settings;
+    b.color_attributes = d.color_attributes;
+    b.hardness_dynamic = d.hardness_dynamic;
+    b.build_up = false;
+    b.smoothing = d.smoothing;
     b
 }
 
@@ -500,6 +594,87 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
+/// A full-width row placed at the cursor: `allocate_exact_size` clips its width to the space egui
+/// reports as available, which comes out narrower than the panel's content and left the end of a
+/// row short of the right margin.
+fn row_rect(ui: &egui::Ui, width: f32, height: f32) -> egui::Rect {
+    egui::Rect::from_min_size(ui.next_widget_position(), vec2(width, height))
+}
+
+/// The panel menu button's box, and the gap before each item of the lane row.
+const MENU_BOX: f32 = 20.0;
+/// How far the menu icon sits inside its own box.
+const MENU_GLYPH_INSET: f32 = 4.0;
+const LANE_GAP: f32 = 8.0;
+
+/// The lane tabs on the left, the blend mode picker and the panel menu on the right. Both ends are
+/// laid out in their own child rect: the tabs from the panel's left edge, the other two from its
+/// right edge, so the two margins come out equal however wide the translations make the tabs.
+fn lane_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings, open: &mut bool, width: f32) {
+    let row = row_rect(ui, width, 26.0);
+    ui.allocate_rect(row, Sense::hover());
+    let group = LANE_GAP + MENU_BOX + LANE_GAP + MODE_PICKER_WIDTH;
+    let tabs = egui::Rect::from_min_max(row.min, egui::pos2(row.right() - group, row.max.y));
+    let mut tabs_ui = ui.new_child(egui::UiBuilder::new().max_rect(tabs).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    tabs_ui.spacing_mut().item_spacing.x = LANE_GAP;
+    crate::brush_sections::dual_brush_header(&mut tabs_ui, &mut app.ui.brush_lane);
+    // Both end items get their own rect against the row's right edge: a right-to-left layout left
+    // them short of the margin by a few points.
+    // The icon inside its 20-point box is drawn a few points in, so the box is hung past the row's
+    // edge by that much: the glyph, not its invisible box, lands on the same inset as the tab.
+    let anchor = row.right() + MENU_GLYPH_INSET;
+    let menu_rect = egui::Rect::from_min_size(
+        egui::pos2(anchor - MENU_BOX, row.center().y - MENU_BOX / 2.0),
+        egui::vec2(MENU_BOX, MENU_BOX),
+    );
+    let mut menu_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(menu_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let menu_btn = widgets::panel_menu_button(&mut menu_ui);
+    egui::Popup::menu(&menu_btn).show(|ui| {
+        widgets::style_spectrum_popup_menu(ui);
+        ui.set_min_width(180.0);
+        panel_menu(app, ui);
+        ui.separator();
+        if ui.button(tl!("Close")).clicked() {
+            *open = false;
+            ui.close();
+        }
+        if ui.button(tl!("Close Tab Group")).clicked() {
+            *open = false;
+            ui.close();
+        }
+    });
+    let picker_rect = egui::Rect::from_min_size(
+        egui::pos2(anchor - group + LANE_GAP, row.min.y),
+        egui::vec2(MODE_PICKER_WIDTH, row.height()),
+    );
+    let mut picker_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(picker_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    widgets::dropdown(
+        &mut picker_ui,
+        "brush-dual-mode",
+        tl!("Mode:"),
+        &mut b.dual_brush.mode,
+        &crate::brush_sections::DUAL_MODES,
+        MODE_PICKER_WIDTH,
+    );
+}
+
+/// The panel's title row: the name centred across the panel, the close button at the row's end.
+fn panel_title(ui: &mut egui::Ui, t: &Tokens, open: &mut bool, width: f32) {
+    let bar = row_rect(ui, width, 22.0);
+    ui.allocate_rect(bar, Sense::hover());
+    let galley = ui.painter().layout_no_wrap(tl!("Brush Settings").to_string(), theme::medium(12.5), t.text);
+    ui.painter().galley(egui::pos2(bar.center().x - galley.size().x / 2.0, bar.center().y - galley.size().y / 2.0), galley, t.text);
+    let close = egui::Rect::from_center_size(egui::pos2(bar.right() - 10.0, bar.center().y), vec2(20.0, 20.0));
+    let mut close_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(close).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    close_ui.set_clip_rect(close_ui.clip_rect().union(bar));
+    if icons::button(&mut close_ui, "x", 20.0, false, tl!("Close")).clicked() {
+        *open = false;
+    }
+}
+
 pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.panels.brush_settings {
         return;
@@ -510,53 +685,86 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .stroke(Stroke::new(1.0, t.card_border))
         .corner_radius(CornerRadius::same(t.radius_lg as u8))
         .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: t.shadow })
-        .inner_margin(egui::Margin::same(10));
+        .inner_margin(egui::Margin::same(PANEL_PAD as i8));
     let canvas = app.last_canvas_rect;
     let mut open = true;
+    // The panel's height is ours to keep, not the content's: a bottom grip pulls it shorter and
+    // the controls scroll instead of pushing the panel back open (egui would otherwise let the
+    // content grow the window and never shrink it again).
+    let height_id = egui::Id::new("brush-settings-height");
+    let panel_height = ctx
+        .data(|d| d.get_temp::<f32>(height_id))
+        .unwrap_or(DEFAULT_HEIGHT)
+        .clamp(MIN_HEIGHT, (canvas.height() - 40.0).max(MIN_HEIGHT));
     egui::Window::new(tl!("Brush Settings"))
-        .id(egui::Id::unique("brush-settings"))
+        .id(egui::Id::new("brush-settings"))
         .title_bar(false)
         .resizable(false)
+        .scroll(false)
+        .fixed_size([WIDTH + 20.0, panel_height])
         .frame(frame)
         .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0))
         .show(ctx, |ui| {
-            ui.set_width(WIDTH);
-            ui.horizontal(|ui| {
-                let mut tab = app.ui.brush_tab;
-                for (i, name) in [tl!("Brush Settings"), tl!("Brushes")].iter().enumerate() {
-                    if widgets::pill_tab(ui, name, tab == i).clicked() {
-                        tab = i;
-                    }
-                }
-                app.ui.brush_tab = tab;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, "x", 20.0, false, tl!("Close")).clicked() {
-                        open = false;
-                    }
-                    let menu_btn = widgets::panel_menu_button(ui);
-                    egui::Popup::menu(&menu_btn).show(|ui| {
-                        widgets::style_spectrum_popup_menu(ui);
-                        ui.set_min_width(180.0);
-                        panel_menu(app, ui);
-                        ui.separator();
-                        if ui.button(tl!("Close")).clicked() {
-                            open = false;
-                            ui.close();
-                        }
-                        if ui.button(tl!("Close Tab Group")).clicked() {
-                            open = false;
-                            ui.close();
-                        }
-                    });
-                });
-            });
+            // Fill the window's inner width rather than forcing WIDTH: the contents then end at the
+            // panel's own margin on both sides instead of leaving a gutter on the right.
+            // The vertical scroll area in the body reserves a bar's width from the parent ui, so
+            // the available width came out 15 points short of the panel's content and the header
+            // rows ended inside the right margin. Floating bars reserve nothing.
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::floating();
+            // The body is the panel's own width: measuring it back from the layout picks up the
+            // vertical bar's reserve (which comes and goes with the panel's height) and leaves the
+            // contents ending inside the right margin by that much.
+            let body = WIDTH;
+            ui.set_width(body);
+            ui.set_max_width(body);
+            ui.set_max_width(body);
+            // No title and no brush-selection tab in the header: right-aligned, the colour
+            // attribute's mode picker sits just left of the close button. The brush list itself
+            // lives in the Brushes panel (the toolbar's brush button opens it).
+            // Everything outside the controls (header, hairline, preview strip, its buttons) is
+            // measured at the end of this frame and subtracted next frame, so the lane gets
+            // exactly the space that's left and the panel keeps the height it was dragged to.
+            let overhead_id = egui::Id::new("brush-settings-overhead");
+            let overhead = ctx.data(|d| d.get_temp::<f32>(overhead_id)).unwrap_or(150.0);
+            let full_height = ui.available_height();
+            let lane_height = (full_height - overhead).clamp(120.0, 900.0);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("brush-settings-lane"), lane_height));
+            let before = app.session.tools.brush.clone();
+            let mut b = before.clone();
+            // The title sits centred on the row, the close button at its end.
+            panel_title(ui, &t, &mut open, body);
             ui.add_space(6.0);
-            widgets::hairline(ui);
+            // The lane tabs lead the row; the blend mode picker and the panel menu end it, flush
+            // with the panel's right edge so the margins match the left one's.
+            lane_row(app, ui, &mut b, &mut open, body);
+            commit_gesture(app, ui.ctx(), &before, &b);
             ui.add_space(6.0);
-            if app.ui.brush_tab == 1 {
-                crate::brushes_tab::show(app, ui);
-            } else {
-                settings_tab(app, ui);
+            {
+                let hair = row_rect(ui, body, 1.0);
+                ui.allocate_rect(hair, Sense::hover());
+                ui.painter().line_segment([hair.left_center(), hair.right_center()], Stroke::new(1.0, t.separator));
+            }
+            ui.add_space(6.0);
+            settings_tab(app, ui, body);
+            let content_height = ui.min_rect().height();
+            ctx.data_mut(|d| d.insert_temp(overhead_id, (content_height - lane_height).max(0.0)));
+            // Grip along the bottom edge: drag it up to shorten the panel (the controls scroll
+            // instead of pushing the panel back open).
+            ui.add_space(2.0);
+            let grip_rect = row_rect(ui, body, 10.0);
+            let grip = ui.allocate_rect(grip_rect, egui::Sense::drag());
+            if grip.hovered() || grip.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(grip_rect.center(), egui::vec2(56.0, 2.0)),
+                1.0,
+                if grip.hovered() || grip.dragged() { t.text } else { t.text_faint },
+            );
+            if grip.dragged() {
+                let dy = ui.ctx().input(|i| i.pointer.delta().y);
+                let next = (panel_height + dy).clamp(MIN_HEIGHT, (canvas.height() - 40.0).max(MIN_HEIGHT));
+                ui.ctx().data_mut(|d| d.insert_temp(height_id, next));
             }
         });
     if !open {
@@ -565,4 +773,5 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 }
 
 #[cfg(test)]
+#[path = "brush_panel_tests.rs"]
 mod tests;

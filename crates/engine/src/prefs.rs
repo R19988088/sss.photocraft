@@ -480,6 +480,9 @@ pub struct Tools {
     /// Pen pressure response: `[input, output]` control points in 0..1 that the pen's pressure
     /// passes through before it reaches any brush ([`PressureCurve`]). Linear by default.
     pub pressure_curve: Vec<[f32; 2]>,
+    /// Native tablet calibration and causal coordinate/pressure filters, plus the Windows
+    /// WinTab/Ink choice.
+    pub tablet_pressure: photocraft_paint::TabletPressureSettings,
     /// Arrow-key nudges of one thing (the selected layers, the selection outline, the Free
     /// Transform box) that follow each other within [`Tools::nudge_bundle_pause_ms`] are one
     /// History state (#2259). Off: every press is a state.
@@ -506,6 +509,7 @@ impl Default for Tools {
             use_tablet_pressure: true,
             tablet_input: TabletInput::WindowsInk,
             pressure_curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            tablet_pressure: Default::default(),
             bundle_nudges: true,
             nudge_bundle_pause_ms: 1000,
         }
@@ -1310,6 +1314,23 @@ impl LayerMaskOverlay {
     }
 }
 
+/// Painting colour controls (percentages use 0..100): the Color panel's own settings, as the
+/// reference application keeps them beside the colour field rather than in Photoshop's pages.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Painting {
+    /// Pigment mixing strength: 0 paints plain colour, 100 the full Kubelka-Munk response. The
+    /// engine copies it onto the brush's `pigmentMixStrength` as a 0..1 fraction.
+    pub pigment_mix_strength: f32,
+}
+
+impl Default for Painting {
+    fn default() -> Self {
+        // Off: a fresh install paints the colour picked, as the brush's own default does.
+        Self { pigment_mix_strength: 0.0 }
+    }
+}
+
 /// All preferences. JSON keys are the `edit.preferences.<section>` ids.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1319,6 +1340,7 @@ pub struct Preferences {
     pub interface: Interface,
     pub workspace: Workspace,
     pub tools: Tools,
+    pub painting: Painting,
     pub history_log: HistoryLog,
     pub file_handling: FileHandling,
     pub export: Export,
@@ -1407,10 +1429,39 @@ pub struct Preferences {
     pub layer_mask_overlay: LayerMaskOverlay,
 }
 
+/// Where a `tablet.<key>` value is stored: the page gathers settings from `tools`.
+fn tablet_storage_path(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "tabletInput" => "tools.tabletInput",
+        "enabled" => "tools.tabletPressure.enabled",
+        "maximumPressure" => "tools.tabletPressure.maximumPressure",
+        "deadZone" => "tools.tabletPressure.deadZone",
+        "elasticity" => "tools.tabletPressure.elasticity",
+        "coordinateWindow" => "tools.tabletPressure.coordinateWindow",
+        "pressureWindow" => "tools.tabletPressure.pressureWindow",
+        _ => return None,
+    })
+}
+
 impl Preferences {
     /// The preferences as JSON (camelCase keys).
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or(Value::Null)
+        let mut v = serde_json::to_value(self).unwrap_or(Value::Null);
+        // The pen's own page (Photoshop's Tablet page): the pressure filter and the Windows input
+        // source, which are stored under `tools` but are not tool settings.
+        if let Value::Object(m) = &mut v {
+            m.insert("tablet".into(), self.tablet_json());
+        }
+        v
+    }
+
+    /// The `tablet` page's values, gathered from `tools.tabletPressure` and `tools.tabletInput`.
+    fn tablet_json(&self) -> Value {
+        let mut t = serde_json::to_value(&self.tools.tablet_pressure).unwrap_or_else(|_| json!({}));
+        if let Value::Object(m) = &mut t {
+            m.insert("tabletInput".into(), json!(self.tools.tablet_input.name()));
+        }
+        t
     }
 
     /// Read a value by dotted path (`""` = everything).
@@ -1454,6 +1505,19 @@ impl Preferences {
             _ => value,
         };
         check_value(path, &value)?;
+        // The tablet page only mirrors `tools`: write what it shows back where it is stored.
+        if path == "tablet" || path.starts_with("tablet.") {
+            let changes: Vec<(String, Value)> = match (path.strip_prefix("tablet."), &value) {
+                (Some(key), v) => vec![(key.to_string(), v.clone())],
+                (None, Value::Object(o)) => o.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                (None, _) => return Err("`tablet` needs an object".into()),
+            };
+            for (key, v) in changes {
+                let target = tablet_storage_path(&key).ok_or_else(|| format!("unknown preference `tablet.{key}`"))?;
+                self.set(target, v)?;
+            }
+            return Ok(());
+        }
         let mut root = self.to_json();
         set_path(&mut root, path, value)?;
         *self = serde_json::from_value(root).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
@@ -1483,6 +1547,23 @@ impl Preferences {
             _ => {}
         }
         let def = Preferences::default().get(path).ok_or_else(|| format!("unknown preference `{path}`"))?;
+        // The tablet page gathers its values from `tools`, so a reset writes them back there.
+        if path == "tablet" || path.starts_with("tablet.") {
+            match def {
+                Value::Object(o) => {
+                    for (k, v) in o {
+                        let target = tablet_storage_path(&k).ok_or_else(|| format!("unknown preference `tablet.{k}`"))?;
+                        self.set(target, v)?;
+                    }
+                }
+                v => {
+                    let key = path.strip_prefix("tablet.").unwrap_or("");
+                    let target = tablet_storage_path(key).ok_or_else(|| format!("unknown preference `{path}`"))?;
+                    self.set(target, v)?;
+                }
+            }
+            return Ok(());
+        }
         if path == "shortcuts" {
             self.shortcuts.clear();
             return Ok(());
@@ -1535,9 +1616,23 @@ impl Session {
 
     /// Change preferences and apply the engine-side ones.
     pub fn edit_prefs<R>(&mut self, f: impl FnOnce(&mut Preferences) -> R) -> R {
+        let pigment = self.prefs().painting.pigment_mix_strength;
         let r = self.prefs.edit(f);
         self.apply_prefs();
+        self.sync_pigment_mix(pigment);
         r
+    }
+
+    /// The brush takes the Painting preference's mixing strength (0..100 → 0..1) when it
+    /// changes: one value for every brush, as the reference application's Mixing Strength row
+    /// sets it. Unrelated preference edits leave a brush's own value alone, so a preset that
+    /// carries its own pigment response keeps it.
+    pub(crate) fn sync_pigment_mix(&mut self, before: f32) {
+        let now = self.prefs().painting.pigment_mix_strength;
+        if now != before {
+            self.tools.brush.pigment_mix_strength = now / 100.0;
+            self.tools.brush_changed();
+        }
     }
 
     /// Push engine-relevant preferences into live state: every document's history limit and
@@ -1639,6 +1734,7 @@ impl Session {
         }
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
+        let pigment = self.prefs().painting.pigment_mix_strength;
         let mut invalid = Vec::new();
         let mut prefs: Preferences = read_lenient(v, &[], &mut invalid);
         // An Effect Cache the field no longer accepts (above the 32-bit cap, saved before the cap
@@ -1654,6 +1750,7 @@ impl Session {
             self.load_presets_json(v);
         }
         self.apply_prefs();
+        self.sync_pigment_mix(pigment);
         Ok(invalid)
     }
 

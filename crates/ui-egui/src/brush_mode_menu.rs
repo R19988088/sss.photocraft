@@ -60,7 +60,7 @@ impl Item {
 /// The Brush's and Pencil's Mode list in the options bar's order, Behind and Clear after Dissolve:
 /// `(mode, behind)`, `(None, false)` being Clear.
 pub(crate) fn choices() -> Vec<((Option<BlendMode>, bool), &'static str)> {
-    let mut choices: Vec<_> = BlendMode::LAYER_MODES.iter().map(|m| ((Some(*m), false), m.label())).collect();
+    let mut choices: Vec<_> = BlendMode::MENU_MODES.iter().map(|m| ((Some(*m), false), m.label())).collect();
     let at = choices.iter().position(|o| o.0 == (Some(BlendMode::Dissolve), false)).map_or(choices.len(), |i| i + 1);
     choices.insert(at, ((None, true), "Behind"));
     choices.insert(at + 1, ((None, false), "Clear"));
@@ -71,7 +71,7 @@ pub(crate) fn choices() -> Vec<((Option<BlendMode>, bool), &'static str)> {
 /// and Hue), with Behind and/or Clear after Dissolve.
 fn blend_items(behind: bool, clear: bool) -> Vec<Item> {
     let mut out = Vec::new();
-    for m in BlendMode::LAYER_MODES {
+    for m in BlendMode::MENU_MODES {
         if crate::panels::starts_blend_group(m) {
             out.push(Item::Separator);
         }

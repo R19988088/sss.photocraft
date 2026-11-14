@@ -29,6 +29,7 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
     if d.vector_owner.as_ref().is_some_and(|owner| !owner.valid(app)) {
         return;
     }
+    // The tablet response's delay line is flushed once the fixture's points are final below.
     let mut end = d.points.last().copied().unwrap_or([d.start[0], d.start[1], 1.0]);
     let (sx, sy) = snap_aliased_tip(app, d.tool, end[0], end[1]);
     end[0] = sx;
@@ -87,6 +88,8 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
     if live_retouch_command(d.tool).is_some() || crate::retouch_ui::dab_params(app, d.tool).is_some() || d.tool == Tool::ColorReplacement {
         app.live_stroke = None;
     }
+    // The stroke is over: flush the tablet response's delay line, so the next stroke starts clean.
+    app.stylus.finish_pressure_filter();
     let finished =
         crate::eraser_ui::finish_stroke(app, d.tool, &d.points, d.line) || crate::retouch_ui::finish_stroke(app, d.tool, &d.points, d.modifiers, d.line);
     app.session.clear_live_stroke();

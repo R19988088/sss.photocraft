@@ -201,6 +201,9 @@ pub(crate) fn active_layer_of(s: &Session) -> std::result::Result<&photocraft_do
 
 #[derive(Default)]
 pub struct Session {
+    /// Resident preview results waiting for the edit command that commits them (Liquify,
+    /// transform). Taken and cleared by the command's own edit, so undo sees one history state.
+    pub(crate) cached_transform_commit: Option<cmd::cached_transform::CachedCommit>,
     docs: Vec<DocState>,
     /// Override Open belongs only to one Batch scratch session, never to caller preferences.
     pub(crate) batch_open: Option<file_cmds::BatchOpen>,

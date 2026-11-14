@@ -30,6 +30,17 @@ pub(crate) type CmykPicks = Vec<([f32; 3], [f32; 4])>;
 
 /// Explicit choices override temporary pen and held-key tools, even when selecting the same tool.
 pub(crate) fn select(app: &mut PhotocraftApp, tool: Tool) {
+    // The tool Liquify was picked from, so Cancel can go back to it.
+    if tool == Tool::Liquify && app.ui.tool != Tool::Liquify {
+        app.distort.liquify_prev_tool = Some(app.ui.tool);
+    }
+    // Leaving Liquify keeps its strokes (Photoshop's Liquify workspace does the same when the
+    // tool changes): one history step, then the next tool works on the warped pixels.
+    if tool != app.ui.tool && app.distort.liquify_brush.is_some() {
+        crate::liquify_brush::commit(app);
+    }
+    // A fresh pick of Liquify tries to open it again after an earlier "nothing to warp" refusal.
+    app.distort.liquify_brush_failed = false;
     app.stylus.tool_before_eraser = None;
     app.ui.spring = None;
     if app.ui.tool == Tool::Frame && tool != Tool::Frame {

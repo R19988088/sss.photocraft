@@ -12,7 +12,10 @@ use crate::Buffer;
 
 mod channels;
 mod color;
+mod halftone;
 mod tone;
+
+pub use halftone::{HALFTONE_WHITE_MIN, HalftoneScreen, cell_noise};
 
 #[cfg(test)]
 use channels::lab_denorm;
@@ -272,6 +275,23 @@ fn apply_depth_mode(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer, dept
             map_rgb(buf, |c| std::array::from_fn(|ch| curves[ch].eval(c[ch])))
         }
         Adjustment::SelectiveColor { relative, adjustments } => map_rgb(buf, |c| selective_color(c, *relative, adjustments)),
+        Adjustment::Halftone { size, angle, density, contrast, brightness, jitter, shape, color, preserve_white, white, black } => {
+            // A dot screen: each pixel's tone picks its dot from the cell at its own document
+            // position, so the pass reads nothing around it (see `HalftoneScreen`).
+            let screen = HalftoneScreen::new(*size, *angle, *density, *contrast, *brightness, *jitter, *shape, *color, *preserve_white, *white, *black);
+            let (w, x0, y0) = (buf.rect.width().max(1) as usize, buf.rect.x0, buf.rect.y0);
+            for (i, p) in buf.px.iter_mut().enumerate() {
+                if p[3] <= 0.0 {
+                    continue;
+                }
+                let c = [p[0], p[1], p[2]];
+                if screen.preserve_white && c.iter().all(|v| *v >= halftone::HALFTONE_WHITE_MIN) {
+                    continue;
+                }
+                let o = screen.eval(c, x0 + (i % w) as i32, y0 + (i / w) as i32);
+                p[..3].copy_from_slice(&o);
+            }
+        }
         Adjustment::ColorLookup { lut: Some(table), size, tetrahedral, dither, .. } if lut3d_len(*size).is_some_and(|len| table.len() >= len) => {
             let (n, w, x0, y0) = (*size as usize, buf.rect.width().max(1) as usize, buf.rect.x0, buf.rect.y0);
             for (i, p) in buf.px.iter_mut().enumerate() {

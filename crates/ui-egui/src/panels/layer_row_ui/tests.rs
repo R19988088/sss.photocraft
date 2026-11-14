@@ -43,7 +43,17 @@ fn busy() -> photocraft_engine::Session {
 }
 
 fn harness(session: photocraft_engine::Session, ppp: f32, theme: &str, dock_width: f32) -> Harness<'static, PhotocraftApp> {
-    let mut h = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_pixels_per_point(ppp).with_max_steps(64).build_eframe(move |cc| {
+    harness_steps(session, ppp, theme, dock_width, 0.0)
+}
+
+/// The same panel at a fixed frame rate: two clicks a frame apart count as one double click only
+/// when the frame clock advances, so the click tests need 60 fps.
+fn harness_steps(session: photocraft_engine::Session, ppp: f32, theme: &str, dock_width: f32, step_dt: f32) -> Harness<'static, PhotocraftApp> {
+    let mut builder = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_pixels_per_point(ppp).with_max_steps(64);
+    if step_dt > 0.0 {
+        builder = builder.with_step_dt(step_dt);
+    }
+    let mut h = builder.build_eframe(move |cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
         PhotocraftApp::new(session, crate::Services::default())
     });
@@ -136,6 +146,51 @@ fn click(h: &mut Harness<'_, PhotocraftApp>, at: Pos2) {
     h.run_steps(1);
     h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
     h.run_steps(3);
+}
+
+/// A double click at `at`: two press/release pairs a frame apart, the second a pixel off, as a
+/// mouse's jitter makes it (egui still counts it as one double click).
+fn double_click_jittered(h: &mut Harness<'_, PhotocraftApp>, at: Pos2, jitter: f32) {
+    h.hover_at(at);
+    h.run_steps(1);
+    for i in 0..2 {
+        let p = at + vec2(if i == 0 { -jitter } else { jitter }, jitter);
+        // The move and the press land in the same frame, as a real click does.
+        if i == 1 {
+            h.event(egui::Event::PointerMoved(p));
+        }
+        h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Primary, modifiers: Modifiers::NONE, pressed: false });
+        h.run_steps(1);
+    }
+    h.run_steps(3);
+}
+
+/// Photoshop opens an adjustment layer's settings on a double click on its thumbnail, in the
+/// Properties panel: an adjustment has no Layer Style to open (#halftone).
+#[test]
+fn double_clicking_a_halftone_thumbnail_opens_properties_never_layer_style() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+    let id = s.execute("layer.newAdjustmentLayer.halftone", json!({})).unwrap()["layer"].as_u64().unwrap();
+    let mut h = harness_steps(s, 1.0, "promedium", 290.0, 1.0 / 60.0);
+    // The thumbnail's place, from the frame after the panel last settled (closing Properties moves
+    // the dock's rows, so a rect read before that is a frame stale).
+    let thumb = |h: &Harness<'_, PhotocraftApp>| recorded(&h.ctx).into_iter().find(|r| r.layer == id).and_then(|r| r.thumbnail).expect("adjustment layers show their thumbnail");
+    for (jitter, what) in [(0.0, "a double click")] {
+        h.state_mut().ui.panels.properties = false;
+        h.hover_at(pos2(400.0, 300.0));
+        h.run_steps(3);
+        let at = thumb(&h).center();
+        double_click_jittered(&mut h, at, jitter);
+        assert!(h.state().ui.panels.properties, "the thumbnail opens Properties on {what}");
+        assert!(!h.state().ui.dock.collapsed.iter().any(|g| *g == crate::dock::Group::Properties), "and expands its group on {what}");
+        assert_eq!(h.state().ui.dock_tabs.properties, 0, "on the Properties tab on {what}");
+        // An adjustment has no Layer Style: neither dialog opens on the way.
+        assert!(!h.state().ui.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::LayerStyle), "never the Layer Style dialog on {what}");
+        assert!(!h.state().ui.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::Command), "no generated command dialog on {what}");
+    }
 }
 
 #[test]

@@ -1102,6 +1102,89 @@ fn a_shapeless_group_holding_an_adjustment_reaches_the_canvas() {
 }
 
 #[test]
+fn halftone_prints_a_tone_as_dot_area() {
+    use photocraft_doc::adjust::HalftoneShape;
+    let screen = |shape: HalftoneShape, color: bool, preserve_white: bool, jitter: f32| Adjustment::Halftone {
+        size: 8.0,
+        angle: 45.0,
+        density: 50.0,
+        contrast: 0.0,
+        brightness: 0.0,
+        jitter,
+        shape,
+        color,
+        preserve_white,
+        white: 0.0,
+        black: 0.0,
+    };
+    // The tolerances clip the ends of the range: a tone inside the white tolerance prints as bare
+    // paper (no speck of dot at all), one inside the black tolerance as solid ink.
+    let tolerated = |white: f32, black: f32| Adjustment::Halftone {
+        size: 8.0,
+        angle: 45.0,
+        density: 50.0,
+        contrast: 0.0,
+        brightness: 0.0,
+        jitter: 0.0,
+        shape: HalftoneShape::Round,
+        color: false,
+        preserve_white: true,
+        white,
+        black,
+    };
+    let mut near_white = Buffer::filled(Rect::new(0, 0, 16, 16), [0.90, 0.90, 0.90, 1.0]);
+    adjust::apply(&tolerated(15.0, 0.0), &mut near_white);
+    assert!(near_white.px.iter().all(|p| (p[0] - 1.0).abs() < 1e-6), "within 15% of white prints as paper");
+    let mut plain_white = Buffer::filled(Rect::new(0, 0, 16, 16), [0.90, 0.90, 0.90, 1.0]);
+    adjust::apply(&tolerated(0.0, 0.0), &mut plain_white);
+    assert!(plain_white.px.iter().any(|p| p[0] < 0.99), "at no tolerance 90% grey still prints dots");
+    let mut near_black = Buffer::filled(Rect::new(0, 0, 16, 16), [0.10, 0.10, 0.10, 1.0]);
+    adjust::apply(&tolerated(0.0, 15.0), &mut near_black);
+    assert!(near_black.px.iter().all(|p| p[0] == 0.0), "within 15% of black prints as solid ink");
+    let mut plain_black = Buffer::filled(Rect::new(0, 0, 16, 16), [0.10, 0.10, 0.10, 1.0]);
+    adjust::apply(&tolerated(0.0, 0.0), &mut plain_black);
+    assert!(plain_black.px.iter().any(|p| p[0] > 0.01), "at no tolerance 10% grey still leaves paper");
+    // Over whole cells the ink covers the tone: a 75% grey prints a quarter of its cell.
+    for tone in [0.25f32, 0.5, 0.75] {
+        let mut buf = Buffer::filled(Rect::new(0, 0, 16, 16), [tone, tone, tone, 1.0]);
+        adjust::apply(&screen(HalftoneShape::Round, false, true, 0.0), &mut buf);
+        let ink = 1.0 - buf.px.iter().map(|p| p[0]).sum::<f32>() / 256.0;
+        assert!((ink - (1.0 - tone)).abs() < 0.03, "tone {tone} prints {ink}");
+        assert!(buf.px.iter().all(|p| p[3] == 1.0), "the screen keeps the alpha");
+    }
+    // Paper stays paper with Preserve White; without it a near-white tone keeps a speck of dot
+    // at every cell's centre (a dot below a pixel never covers more than its own area).
+    let mut kept = Buffer::filled(Rect::new(0, 0, 8, 8), [0.99, 0.99, 0.99, 1.0]);
+    adjust::apply(&screen(HalftoneShape::Round, false, true, 0.0), &mut kept);
+    assert!(kept.px.iter().all(|p| p[0] == 0.99), "Preserve White leaves near-white alone");
+    let mut dotted = Buffer::filled(Rect::new(0, 0, 8, 8), [0.99, 0.99, 0.99, 1.0]);
+    adjust::apply(&screen(HalftoneShape::Round, false, false, 0.0), &mut dotted);
+    assert!(dotted.px.iter().any(|p| p[0] < 0.95), "without it every cell centre keeps a speck of dot");
+    // In colour each channel has its own screen: a red patch keeps its red plate open and fills
+    // the green and blue ones.
+    let mut red = Buffer::filled(Rect::new(0, 0, 16, 16), [1.0, 0.0, 0.0, 1.0]);
+    adjust::apply(&screen(HalftoneShape::Round, true, true, 0.0), &mut red);
+    let mean = |c: usize| red.px.iter().map(|p| p[c]).sum::<f32>() / 256.0;
+    assert!((mean(0) - 1.0).abs() < 0.03, "the red plate stays open: {}", mean(0));
+    assert!(mean(1) < 0.05 && mean(2) < 0.05, "the green and blue plates fill: {} {}", mean(1), mean(2));
+    // Solid ink prints solid: the dot merges into its cell instead of leaving its corners pale.
+    let mut solid = Buffer::filled(Rect::new(0, 0, 16, 16), [0.0, 0.0, 0.0, 1.0]);
+    adjust::apply(&screen(HalftoneShape::Round, false, false, 0.0), &mut solid);
+    assert!(solid.px.iter().all(|p| p[0] == 0.0), "full ink fills the cell {}", solid.px[0][0]);
+    // The shape and the wobble change the screen itself, not just its amount of ink.
+    let tone = |shape: HalftoneShape, jitter: f32| {
+        let mut buf = Buffer::filled(Rect::new(0, 0, 16, 16), [0.5, 0.5, 0.5, 1.0]);
+        adjust::apply(&screen(shape, false, true, jitter), &mut buf);
+        buf.px.iter().map(|p| p[0]).collect::<Vec<_>>()
+    };
+    let round = tone(HalftoneShape::Round, 0.0);
+    let line = tone(HalftoneShape::Line, 0.0);
+    let wobbly = tone(HalftoneShape::Round, 60.0);
+    assert!(round.iter().zip(&line).any(|(a, b)| (a - b).abs() > 0.2), "a line screen prints bars, not dots");
+    assert!(round.iter().zip(&wobbly).any(|(a, b)| (a - b).abs() > 0.2), "the wobble moves the dots");
+}
+
+#[test]
 fn threshold_posterize_levels_curves() {
     let mut buf = Buffer::filled(Rect::new(0, 0, 1, 1), [0.3, 0.3, 0.3, 1.0]);
     adjust::apply(&Adjustment::Threshold { level: 0.5 }, &mut buf);

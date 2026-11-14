@@ -173,7 +173,7 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
     // `reset!` names each field once; one that is misspelt or gone fails to compile.
     macro_rules! reset {
         ($($f:ident),* $(,)?) => {{
-            let _ = |o: &ToolOptions| { $(let _ = &o.$f;)* };
+            let _ = |#[allow(unused_variables)] o: &ToolOptions| { $(let _ = &o.$f;)* };
             &[$(stringify!($f)),*]
         }};
     }
@@ -240,6 +240,8 @@ pub fn option_keys(tool: Tool) -> &'static [&'static str] {
         Tool::Smudge => reset!(strength, finger_painting),
         Tool::Dodge | Tool::Burn => reset!(tone_range, exposure, protect_tones),
         Tool::Sponge => reset!(sponge_mode, vibrance),
+        // Liquify keeps its size/hardness/scope in its own dialog state, not in ToolOptions.
+        Tool::Liquify => reset!(),
         Tool::Slice => reset!(slice_style, slice_width, slice_height),
         Tool::Pen => reset!(vector_mode, pen_path_op, pen_auto_add_delete),
         Tool::CurvaturePen => reset!(vector_mode, pen_path_op),

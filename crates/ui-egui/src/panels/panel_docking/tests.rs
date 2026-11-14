@@ -636,21 +636,31 @@ fn explicit_reveal_activates_existing_tab_and_expands_custom_group() {
     assert_eq!(app.ui.docking, before);
 }
 
-// #2455 in a custom workspace: the pro Color field fills a tall floating group, not 120 pt.
+// The reference Color layout in a tall custom group: its square SV field and the hue strip
+// beside it keep the 168 : 8 : 25 proportions instead of collapsing to a short band.
 #[test]
-fn pro_color_field_fills_a_tall_custom_group() {
+fn c2_color_field_and_hue_strip_keep_their_proportions_in_a_tall_group() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"color","x":40,"y":60,"width":320,"height":560})).unwrap();
     assert!(app.ui.docking.is_some());
     let h = harness(app, vec2(1280.0, 800.0));
-    // The SV field and the 14 pt hue strip beside it are draggable, equally tall and 8 pt apart.
     let drags: Vec<egui::Rect> =
         h.ctx.viewport(|v| v.this_pass.widgets.layers().flat_map(|(_, w)| w).filter(|w| w.sense.senses_drag()).map(|w| w.rect).collect());
+    // The hue strip is 25/168 of the field's width, 8/168 of it away, and exactly as tall.
     let field = drags
         .iter()
-        .find(|f| drags.iter().any(|s| s.width() == 14.0 && s.top() == f.top() && s.height() == f.height() && (s.left() - f.right() - 8.0).abs() < 0.5))
-        .expect("Color field with its hue strip");
-    assert!(field.height() > 300.0, "field stays short in a 560 pt group: {field:?}");
+        .find(|f| {
+            f.width() > 0.0
+                && drags.iter().any(|s| {
+                    (s.width() / f.width() - 25.0 / 168.0).abs() < 0.02
+                        && (s.top() - f.top()).abs() < 0.5
+                        && (s.height() - f.height()).abs() < 0.5
+                        && ((s.left() - f.right()) / f.width() - 8.0 / 168.0).abs() < 0.02
+                })
+        })
+        .expect("the Color field with its hue strip");
+    assert!((field.width() - field.height()).abs() < 1.0, "the SV field is square: {field:?}");
+    assert!(field.width() > 150.0, "and scales with the group, not to a 120 pt strip: {field:?}");
 }
 
 // #4028: in a custom workspace too, a new adjustment layer brings Properties to the front.
@@ -727,7 +737,7 @@ fn customized_panel_menus_and_rail_remain_reachable_after_float_and_restore() {
 /// A floated Color panel's menu still picks its mode (#6000): the shared docking renderer has
 /// its own panel menu, separate from the legacy dock's.
 #[test]
-fn floated_color_panel_menu_picks_the_mode() {
+fn floated_color_panel_menu_offers_no_mode_picker() {
     let mut app = app();
     app.run("window.panel.float", json!({"panel":"color","x":20,"y":40})).unwrap();
     let mut h = harness(app, vec2(1280.0, 800.0));
@@ -739,9 +749,9 @@ fn floated_color_panel_menu_picks_the_mode() {
         h.run_steps(1);
     }
     h.run_steps(2);
-    h.get_by_label("   RGB Sliders").click();
-    h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::RgbSliders);
+    // The floating panel's menu carries no display picker: the reference layout is its only face.
+    assert!(h.query_all_by_label("   RGB Sliders").count() == 0);
+    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::C2);
 }
 
 #[test]
@@ -2363,4 +2373,19 @@ fn native_migration_still_waits_and_runs_without_an_accepted_explicit_request() 
         assert!(h.state().ui.docking.is_some());
         assert!(h.ctx.data_mut(|data| data.get_persisted::<egui::PanelState>(key)).is_none(), "the unchanged native migration consumes its state once");
     }
+}
+
+/// Double-clicking an adjustment layer's row asks the Layers panel for Properties. In the Studio
+/// workspace that means switching to the panel (activating it), not just un-collapsing a tab: a
+/// Properties panel that was never activated has to come back to the front. The classic dock's
+/// case is covered by `layer_row_ui`'s double-click test.
+#[test]
+fn showing_properties_activates_the_workspace_panel() {
+    let mut app = app();
+    app.run("window.panel.close", json!({"panel":"properties"})).unwrap();
+    assert!(!lay(&app).panels().iter().any(|p| *p == "properties"), "a closed panel leaves the layout");
+    app.show_properties();
+    assert!(lay(&app).panels().iter().any(|p| *p == "properties"), "Properties comes back");
+    assert!(!hidden(&app, "properties"));
+    assert!(app.ui.panels.properties);
 }

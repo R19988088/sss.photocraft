@@ -19,7 +19,15 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
             }
             let x = egui::lerp((rect.left() + 8.5)..=(rect.right() - 8.5), how_on);
             ui.painter().circle_filled(pos2(x, rect.center().y), 6.5, Color32::WHITE);
-            ui.label(egui::RichText::new(tl!(label)).color(if *on { t.text } else { t.text_dim }));
+            // The caption is part of the switch's hit area: a click on the words toggles too.
+            let caption = ui.add(
+                egui::Label::new(egui::RichText::new(tl!(label)).color(if *on { t.text } else { t.text_dim }))
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+            );
+            if caption.clicked() {
+                *on = !*on;
+            }
             resp
         })
         .inner;

@@ -41,6 +41,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod bounds;
+#[cfg(not(target_arch = "wasm32"))]
+mod brush_stamp;
 mod camera_raw;
 mod fx;
 pub mod health;
@@ -58,6 +60,8 @@ use photocraft_doc::{DocId, Document, LayerContent, LayerId, Pattern};
 use photocraft_geom::{Rect, TILE_SIZE, TileCoord};
 use photocraft_raster::{Surface, Tile};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use brush_stamp::{install_process_stamper, BRUSH_STAMP_SHADER, BrushStamp, GpuStamper, StampOutput};
 pub use camera_raw::{CAMERA_RAW_SHADER, CameraRawDevelop};
 pub use health::{DeviceHealth, Fault};
 pub use plan::{Kernel, Plan, Role, Unsupported, plan};

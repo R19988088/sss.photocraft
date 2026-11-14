@@ -28,11 +28,12 @@ pub(super) fn simple_lock_toggle(background: bool, l: &Layer, targets: &Value) -
     ("layer.setProps".into(), p)
 }
 
-/// The Layers panel's blend modes: Photoshop's, plus the layer's own Paint.NET mode when it has one
-/// (an imported `.pdn`), so the menu matches Photoshop's for every other layer.
+/// The Layers panel's blend modes: the menu list (Photoshop's, with Shade in the darken group)
+/// plus the layer's own Paint.NET mode when it has one (an imported `.pdn`), so the menu matches
+/// Photoshop's for every other layer.
 pub(crate) fn blend_options(groups: bool, current: BlendMode) -> Vec<(BlendMode, &'static str)> {
-    let own = Some(current).filter(|m| !m.has_psd_equivalent());
-    std::iter::once(BlendMode::PassThrough).filter(|_| groups).chain(BlendMode::LAYER_MODES).chain(own).map(|m| (m, m.label())).collect()
+    let own = Some(current).filter(|m| !m.has_psd_equivalent() && !BlendMode::MENU_MODES.contains(m));
+    std::iter::once(BlendMode::PassThrough).filter(|_| groups).chain(BlendMode::MENU_MODES).chain(own).map(|m| (m, m.label())).collect()
 }
 
 /// Fit blend mode + Opacity into the available Layers-panel width (#2309).
@@ -556,11 +557,10 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.select_filter_mask_target(p.as_u64());
             continue;
         }
-        // Double-clicking a mask thumbnail opens its settings: show Properties.
+        // Double-clicking a mask or an adjustment layer's row opens its settings: show Properties,
+        // brought to the front even when its panel or tab was never activated.
         if id == "ui.properties" {
-            app.ui.panels.properties = true;
-            app.ui.dock_tabs.properties = 0;
-            app.ui.dock.collapsed.retain(|g| *g != crate::dock::Group::Properties);
+            app.show_properties();
             continue;
         }
         if p.is_null() || id == "layer.newFillLayer.solidColor" || id == photocraft_engine::pattern_fill_cmds::CREATE {

@@ -397,6 +397,8 @@ fn paint_canvas(
     // A flipped or pixel-aspect-corrected view draws through the CPU path (the GPU canvas shader
     // has no mirroring or non-square pixels). Rotation stays on the GPU: it is a view uniform.
     let gpu_ok = crate::gpu_canvas::gpu_view_ok(flip, view.rotation, aspect);
+    // View › Canvas Border › Drop Shadow. It is C3's shadow shader, drawn on both render paths.
+    let shadow_wanted = drop_shadow && !crate::theme::Tokens::get(ctx).bevel;
     if app.gpu.is_some() {
         if gpu_ok {
             crate::render_path::view_ok(app, doc.id.0);
@@ -423,10 +425,7 @@ fn paint_canvas(
                 xf.center[1] / k as f32 + (preview_size[1] as f32 - original_size[1] as f32) / 2.0,
             ],
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid: false,
             view_key: egui::Id::unique(("pc-canvas-proxy", ctx.viewport_id(), idx)).value(),
             display: sync_display_lut(app, &shown, key, output),
@@ -446,10 +445,7 @@ fn paint_canvas(
             zoom: point_zoom,
             center: xf.center,
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid,
             view_key: egui::Id::unique(("pc-canvas-pages", ctx.viewport_id(), doc.id.0)).value(),
             display: sync_display_lut(app, doc, key, output),
@@ -468,10 +464,7 @@ fn paint_canvas(
             zoom: point_zoom,
             center: xf.center,
             rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
-            shadow: {
-                let t = crate::theme::Tokens::get(ctx);
-                !t.bevel && !t.pro && drop_shadow
-            },
+            shadow: shadow_wanted,
             pixel_grid,
             view_key: egui::Id::unique(("pc-canvas", ctx.viewport_id(), idx)).value(),
             display: sync_display_lut(app, doc, doc.id.0, output),
@@ -499,9 +492,23 @@ fn paint_canvas(
         if area != doc.bounds() {
             edge_rect = xf.doc_rect(area);
         }
-        if !crate::theme::Tokens::get(ctx).bevel && drop_shadow {
-            let shadow_rect = edge_rect;
-            painter.add(egui::Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha(150) }.as_shape(shadow_rect, 0));
+        if shadow_wanted {
+            // The same C3 shader the GPU path draws, as a callback of its own.
+            let params = crate::gpu_canvas::ViewParams {
+                doc: doc.id.0,
+                doc_size: [area.width(), area.height()],
+                zoom: point_zoom,
+                center: xf.center,
+                rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
+                shadow: true,
+                pixel_grid: false,
+                view_key: egui::Id::unique(("pc-canvas-shadow", ctx.viewport_id(), idx)).value(),
+                display: 0,
+                output: 0,
+                hdr: None,
+                offset: [0.0, 0.0],
+            };
+            crate::gpu_canvas::GpuCanvas::paint_shadow(painter, rect, params);
         }
         let rotated = view.rotation.abs() > 0.05;
         let checkerboard = app.session.prefs().transparency_and_gamut.square().map(|square| (checker(app, ctx), square));
@@ -681,6 +688,34 @@ fn update_canvas_navigation(app: &mut PhotocraftApp, view: &mut View, input: Can
             let next = view.rotation + crate::rotate_view::screen_delta(delta, input.xf.flip);
             if next.is_finite() {
                 view.rotation = crate::rotate_view::wrap_deg(next);
+            }
+        }
+        // Held Escape over the canvas is the quick navigation gesture: drag up/down to zoom,
+        // left/right to turn the view. A tap of Escape (no drag) still reaches the tool's own
+        // cancel, because this only claims the key while the primary button is down.
+        let nav_id = input.response.id.with("escape-navigation");
+        let escape_down = input.ctx.input(|i| i.key_down(egui::Key::Escape));
+        let dragging = input.response.is_pointer_button_down_on() && input.ctx.input(|i| i.pointer.primary_down());
+        let modal_ok = !input.ctx.text_edit_focused()
+            && !crate::vector_ui::is_shape_tool(app.ui.tool)
+            && !crate::tool_feedback::is_selection_tool(app.ui.tool);
+        if modal_ok && escape_down && dragging {
+            crate::rotate_view::held_key_navigation(input.ctx, nav_id, view, &input.xf, true, input.ppp);
+            // The press that turns the view must not also reach the tool as a cancel.
+            input.ctx.data_mut(|d| d.insert_temp(nav_id.with("nav-dragged"), true));
+        } else {
+            crate::rotate_view::reset_held_nav(input.ctx, nav_id);
+        }
+        // A tap of Escape (released without dragging) puts the turned view back upright. When
+        // the key was used to navigate, the release only ends the gesture; any other Escape is
+        // left alone so tools keep their own cancel.
+        let navigated = input.ctx.data(|d| d.get_temp::<bool>(nav_id.with("nav-dragged")).unwrap_or(false));
+        if input.ctx.input(|i| i.key_released(egui::Key::Escape)) {
+            if navigated {
+                input.ctx.data_mut(|d| d.remove::<bool>(nav_id.with("nav-dragged")));
+            } else if modal_ok && view.rotation != 0.0 && !input.ctx.input(|i| i.modifiers.any()) {
+                view.rotation = 0.0;
+                input.ctx.request_repaint();
             }
         }
     }
@@ -1445,6 +1480,8 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     // The transform preview is image content: it goes under the grid and guides, which
     // stay visible across a layer being transformed (#5086); the box is drawn later.
     crate::transform_tool::draw_content(app, painter, xf);
+    // Liquify's proxy follows this frame's zoom before it is drawn (liquify_brush).
+    crate::distort_ui::prepare_content(app, xf.zoom);
     // So are Puppet Warp's, Perspective Warp's and Vanishing Point's warped pixels (#7781).
     crate::distort_ui::draw_content(app, painter, xf);
     if app.ui.extras.grid && app.ui.view.extras {
@@ -2117,6 +2154,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
     let curve = app.session.prefs().tools.pressure_curve.clone();
     app.stylus.set_pressure_curve(&curve);
+    // The custom tablet response: dead zone, full-pressure calibration, elasticity and
+    // pressure averaging, applied to every pen sample before the brush sees it.
+    let tablet_response = app.session.prefs().tools.tablet_pressure.clamped();
+    app.stylus.set_tablet_response(tablet_response);
     app.stylus.update_for_frame(ui.ctx().cumulative_frame_nr(), &ui.input(|i| i.events.clone()));
     crate::stylus::Stylus::sync_eraser_tool(app);
     // A Magnetic Lasso border left behind by a tool or document switch is dropped.

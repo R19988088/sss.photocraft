@@ -1186,6 +1186,7 @@
 	Cyan	青色
 	Cyan  ·  Red	青色  ·  红色
 	Darken	变暗
+	Shade	阴影
 	Darks	暗部
 	Data Sets	数据组
 	Default	默认
@@ -1683,6 +1684,7 @@
 	Stop playing/recording	停止播放/录制
 	Straighten	拉直
 	Straighten Layer	拉直图层
+	Strength	强度
 	Strength:	强度：
 	Strikethrough	删除线
 	Stroke	描边
@@ -2709,6 +2711,7 @@ fontWeight	Italic	斜体
 	Color Dodge (Paint.NET)	颜色减淡 (Paint.NET)
 	Stroke Options	描边选项
 	Solid	实线
+	Mixing Strength	混合强度
 	Dashed	虚线
 	Dotted	点线
 	Alignment	对齐
@@ -3326,3 +3329,303 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 # RAW Develop feature labels
 	RAW Develop	RAW 显影
 	RAW Develop Filter	RAW 显影滤镜
+	Enable Color Attributes	启用颜色属性
+	Enable Mixing	启用混合
+	Enable Pigment	启用颜料
+	Anchor Smooth	锚点平滑
+	Stroke Smoothing	笔画平滑
+	Saturation Record	饱和度记录
+	Saturation Protection	饱和度保护
+	Primary Strength	主笔刷强度
+	Secondary Strength	副笔刷强度
+	Smudge Output	涂抹输出
+	Output Strength	输出强度
+	Concentration	浓度
+	Water	水分
+	Liquidity	流动性
+	Fluid	流体
+	Pressure Controls Fluid	压感控制流体
+	Gaussian Mask	高斯遮罩
+	Mixing Pressure Curve	混合压力曲线
+	Blur Pressure Curve	模糊压力曲线
+	Minimum Strength	最小强度
+	Minimum Length	最小长度
+	Minimum Blur	最小模糊
+	Length Jitter	长度抖动
+	Strength Jitter	强度抖动
+	Blur Jitter	模糊抖动
+	Contour Strength	轮廓强度
+	Pressure Controls Contour	压感控制轮廓
+	Use Grain Parameters	使用颗粒参数
+	Use Wet Edge Parameters	使用湿边参数
+	Anchor Delay	锚点延迟
+	Anchor X	锚点 X
+	Anchor Y	锚点 Y
+	Blur Strength	模糊强度
+	Blend Attribute	混合属性
+	Choose Pattern	选择图案
+	Color Attribute	颜色属性
+	Grain Density	颗粒密度
+	Grain Size	颗粒大小
+	Highlight Brightness	高光亮度
+	Highlight Ratio	高光比例
+	Highlight Strength	高光强度
+	Fixed Width	固定宽度
+	Minimum Width	最小宽度
+	Expansion	扩展
+	Soft Coverage	柔边覆盖
+	Edge Control	边缘控制
+	Darkening	变暗
+	Texture Strength	纹理强度
+	Thickness	厚度
+	Coordinates:	坐标：
+	Canvas Locked	画布锁定
+	Stroke Locked	笔画锁定
+	Tip Local	笔尖局部
+	Keep the current pattern and scale when you switch to another textured brush preset.	切换到其他纹理笔刷预设时保留当前图案和比例。
+	Flow Algorithm:	流量算法：
+	Tablet	数位板
+	Tablet…	数位板…
+	Pressure dead zone	压力死区
+	Elasticity	弹性
+	Stroke stability	笔触稳定
+	Pressure calibration	压力校准
+	Retained peak	保留峰值
+	Tablet input mode	数位板输入模式
+	Windows Ink	Windows Ink
+	WinTab	WinTab
+	Image Palette Color	图像调色板颜色
+	Use Sampled Pattern	使用采样图案
+	C2 Color	C2 颜色
+	Drag panels	拖动面板
+	Complementary Color	互补色
+	Use the eyedropper on the canvas to sample a pattern.	在画布上用吸管采样图案。
+	Maximum pressure maps the pen's full press to 100%; the dead zone ignores a light resting touch, elasticity shapes the response curve, and stroke stability averages the last few positions.	最大压力把笔的满压映射为 100%；压力死区忽略轻放时的触碰，弹性决定响应曲线，笔触稳定会平均最近几帧的位置。
+	WinTab reads pressure, tilt, rotation and the eraser end from the tablet driver. Turn off Windows Ink in your tablet's software utility (for example Wacom Center) before using it.	WinTab 从数位板驱动读取压力、倾斜、旋转和橡皮端。使用前请先在数位板软件（如 Wacom Center）里关闭 Windows Ink。
+	Tilt Angle	倾斜角度
+	Tilt Size	倾斜大小
+	Tilt Opacity	倾斜不透明度
+	Follow Azimuth	随方位旋转
+	Wet Edge V4	湿边 V4
+	Backdrop Opacity	背景不透明度
+	Scales the whole field toward zero	将整个场向零收缩
+	Freeze every pixel	冻结所有像素
+	Mask Options: Mask None	蒙版选项：无蒙版
+
+# Halftone (网点) adjustment layer
+	Halftone…	网点…
+	Screen:	网屏：
+	Dot	圆点
+	Screen Size	网屏大小
+	Screen Angle	网屏角度
+	Dot Gain	网点增益
+	Preserve White	保留白色
+	White Strength	白色强度
+	Black Strength	黑色强度
+
+# Messages, panel labels and menu items added on main since this catalog was last
+# translated (2026-11-14), written from the English source.
+	A command was canceled or stopped during batch processing. Continue with the next file or stop?	批处理过程中有命令被取消或中断。继续处理下一个文件，还是停止？
+	A file is still being placed; try again when it has finished.	还有文件正在置入，等它完成后再试。
+	Advanced Blending	高级混合
+	Allow Tool Recording	允许记录工具
+	Allows rotation and scaling of selection	允许旋转和缩放选区
+	Always use Pressure for Opacity. When off, Brush Preset controls pressure	始终用压感控制不透明度。关闭时由画笔预设控制压感
+	Always use Pressure for Size. When off, Brush Preset controls pressure	始终用压感控制大小。关闭时由画笔预设控制压感
+	Answer the open import question first, then import this file again.	请先回答尚未处理的导入问题，然后再次导入此文件。
+	Anti-alias brush application	画笔应用抗锯齿
+	Apply to All	应用到全部
+	Are you sure you want to delete all notes?	确定要删除所有注释吗？
+	Arrowhead options	箭头选项
+	Arrowheads	箭头
+	Artboards	画板
+	Attribute	属性
+	Batch	批处理
+	Batch preview	批处理预览
+	Bottom align text	底端对齐文字
+	CPU Rendering	CPU 渲染
+	Calculating…	正在计算…
+	Cancelled placing {name}	已取消置入 {name}
+	Choose a menu command. Playback asks for its settings when needed.	请选择一个菜单命令。播放时会在需要时询问它的设置。
+	Choose a remix mode	选择重混模式
+	Click and move left or right to scale using the Zoom Tool (OpenGL only)	使用缩放工具时，按住并左右移动即可缩放（仅 OpenGL）
+	Click to open the Brush Preset picker	点击打开画笔预设选取器
+	Click to refresh histogram with uncached data	点击用未缓存的数据刷新直方图
+	Concavity	凹陷度
+	Confirm or cancel the pending Record Again editor first.	请先确认或取消待处理的“重新记录”编辑器。
+	Confirm or cancel the pending menu item first.	请先确认或取消待处理的菜单项。
+	Copy CSS	复制 CSS
+	Could not use the type tool because the layer is locked.	无法使用文字工具，因为图层已锁定。
+	Count:	计数：
+	Create new set	新建集
+	Data Sets as Files is unavailable on the web	网页版不提供“数据组为文件”
+	Delete Note	删除注释
+	Delete this note?	删除此注释？
+	Determines the spread of replaced color	决定替换颜色的扩散范围
+	Do not erase the foreground swatch color	不要擦掉前景色板的颜色
+	Drawn on the CPU: {reason}. Click for System Info.	由 CPU 绘制：{reason}。点击查看系统信息。
+	Draws background color over foreground colors	用背景色覆盖前景色
+	Dropped files weren't placed: their document was closed.	拖入的文件没有置入：它们的文档已关闭。
+	Dropped files weren't placed: too many are waiting for their document.	拖入的文件没有置入：等待同一文档的文件太多。
+	Duplicate	复制
+	Effect	效果
+	Empty	空白
+	Enable to remix all layers	启用后重混所有图层
+	End	终点
+	Erase range of similar colors	擦除相近颜色的范围
+	Filter for embedded smart objects	筛选嵌入的智能对象
+	Filter for linked smart objects that are missing	筛选缺失的链接智能对象
+	Filter for smart objects linked locally	筛选本地链接的智能对象
+	Halftone	网点
+	High Memory Photoshop Document	高内存 Photoshop 文档
+	How far to let the erasing spread	擦除可以扩散多远
+	Image Compression	图像压缩
+	Import a C3 preset with a packaged canvas pattern.	导入带打包画布图案的 C3 预设。
+	Import as New Group	作为新组导入
+	Import as New Group keeps “{group}” and adds the file as a new group beside it.	“作为新组导入”会保留“{group}”，并把文件作为新组加在它旁边。
+	Inertia	惯性
+	Insert Menu Item…	插入菜单项…
+	Insert Path	插入路径
+	Jitter	抖动
+	LZW	LZW
+	Layer Effects	图层效果
+	Length	长度
+	Level:	色阶：
+	Lining	等高
+	Linked	已链接
+	Little memory would be left after opening this file. Close other apps first, or PhotoCraft may run out of memory.	打开此文件后可用内存将所剩无几。请先关闭其他应用，否则 PhotoCraft 可能会内存不足。
+	Locked	已锁定
+	Minimizes clipping in shadows and highlights, and keeps colors from shifting hue	尽量减少阴影和高光的截断，并避免颜色发生色相偏移
+	No Adv. Blending	无高级混合
+	No Layer Effects	无图层效果
+	No Layer Mask	无图层蒙版
+	No Vector Mask	无矢量蒙版
+	No document.	没有文档。
+	No import is waiting. Import the file again.	没有等待中的导入。请重新导入该文件。
+	No matching fonts	没有匹配的字体
+	No menu item belongs to this chooser.	没有菜单项属于此选择器。
+	No menu item is waiting.	没有等待中的菜单项。
+	No note to delete	没有可删除的注释
+	No path to make a shape from: draw one with the Pen tool or select one in the Paths panel.	没有可用来创建形状的路径：请用钢笔工具绘制一条，或在“路径”面板中选择一条。
+	No pixels are selected.	没有选中像素。
+	No recorded step belongs to this editor.	没有记录步骤属于此编辑器。
+	No slices are selected. Click a slice in the preview to select it.	没有选中切片。请在预览中单击切片来选中它。
+	No step is waiting.	没有等待中的步骤。
+	Not Clipped	未剪贴
+	Not Empty	非空白
+	Not Linked	未链接
+	Not Locked	未锁定
+	Not Visible	不可见
+	Note deleted, but the preference could not be saved: {error}	注释已删除，但首选项无法保存：{error}
+	Nudge	微移
+	Numerals	数字形式
+	Open anyway	仍然打开
+	Open as Smart Object…	作为智能对象打开…
+	Opening this document uses more memory and may slow down your computer or other running applications.	打开此文档会占用更多内存，可能使电脑或其他运行中的应用变慢。
+	Opening “{name}” requires an estimated {est} GiB of memory ({avail} GiB available).	打开“{name}”估计需要 {est} GiB 内存（可用 {avail} GiB）。
+	Opening “{name}” requires an estimated {est} GiB of memory. The available memory could not be measured.	打开“{name}”估计需要 {est} GiB 内存。无法测出可用内存。
+	Outline	轮廓
+	Painting Mode	绘画模式
+	Pattern:	图案：
+	Percentile:	百分位：
+	Pick Color From Image	从图像中取色
+	Preparing Free Transform	正在准备自由变换
+	Pressure Controls Anchor Delay	压感控制锚点延迟
+	Primary Brush	主画笔
+	Proportional	比例
+	Proportional Lining	比例等高
+	Proportional Oldstyle	比例旧体
+	Record Again	重新记录
+	Replace deletes everything in “{group}” first, including presets you edited or moved there. This can't be undone.	“替换”会先删除“{group}”中的所有内容，包括您编辑过或移过去的预设。此操作无法撤销。
+	Resize windows when zooming using the Zoom Tool	使用缩放工具缩放时调整窗口大小
+	Saturation Boost	饱和度增强
+	Save Image Pyramid	存储图像金字塔
+	Save Transparency	存储透明度
+	Scroll all open document windows when using the hand tool	使用抓手工具时滚动所有打开的文档窗口
+	Search and select fonts	搜索并选择字体
+	Secondary Brush	副画笔
+	Select Pixels	选择像素
+	Select an action first.	请先选择一个动作。
+	Select an action step first.	请先选择一个动作步骤。
+	Selected Slices	选中的切片
+	Set 	样式集 
+	Set 1	样式集 1
+	Set 10	样式集 10
+	Set 11	样式集 11
+	Set 12	样式集 12
+	Set 13	样式集 13
+	Set 14	样式集 14
+	Set 15	样式集 15
+	Set 16	样式集 16
+	Set 17	样式集 17
+	Set 18	样式集 18
+	Set 19	样式集 19
+	Set 2	样式集 2
+	Set 20	样式集 20
+	Set 3	样式集 3
+	Set 4	样式集 4
+	Set 5	样式集 5
+	Set 6	样式集 6
+	Set 7	样式集 7
+	Set 8	样式集 8
+	Set 9	样式集 9
+	Set as default	设为默认
+	Set exposure for stroke	设置描边的曝光
+	Set flow rate for stroke	设置描边的流量
+	Set font size	设置字体大小
+	Set font style	设置字体样式
+	Set opacity for stroke	设置描边的不透明度
+	Set symmetry options for Painting	设置绘画的对称选项
+	Set text color	设置文字颜色
+	Set the brush angle	设置画笔角度
+	Show Channels in Color	以彩色显示通道
+	Show Statistics	显示统计数据
+	Single Tip	单一笔尖
+	Smoothing Options	平滑选项
+	Softness	柔和度
+	Source:	源：
+	Start	起点
+	Stroke Jitter	描边抖动
+	Stylistic Sets	样式集
+	Tabular	表格
+	Tabular Lining	表格等高
+	Tabular Oldstyle	表格旧体
+	The Record Again command changed.	“重新记录”命令已更改。
+	The action or insertion command changed. Request Insert Menu Item again.	动作或插入命令已更改。请再次请求“插入菜单项”。
+	The actions changed. Request Record Again again.	动作已更改。请再次请求“重新记录”。
+	The command permissions changed. Request Insert Menu Item again.	命令权限已更改。请再次请求“插入菜单项”。
+	The command permissions changed. Request Record Again again.	命令权限已更改。请再次请求“重新记录”。
+	The current scratch directory ({path}) doesn't report its free space, so PhotoCraft can't stop before it fills up, and large files get no extra room from it without a Scratch Size Limit. This warning applies to the current configuration; changes above take effect on Apply or OK. Set a limit or use a local disk.	当前暂存盘目录（{path}）不报告可用空间，因此 PhotoCraft 无法在它写满前停下来；没有设置暂存盘大小限制时，大文件也无法从它那里获得额外空间。此警告针对当前配置，上面的更改在点“应用”或“确定”后生效。请设置一个限制，或改用本地磁盘。
+	The document changed. Please choose Clear All again.	文档已更改。请重新选择“全部清除”。
+	The document changed. Request Record Again again.	文档已更改。请再次请求“重新记录”。
+	The document or its notes changed. Please delete the note again.	文档或其注释已更改。请重新删除该注释。
+	The preference could not be saved: {error}	首选项无法保存：{error}
+	The step editor could not be opened.	无法打开步骤编辑器。
+	The step has no command editor.	该步骤没有命令编辑器。
+	Tilt Delay	倾斜延迟
+	Tolerance for choosing related colors	选择相关颜色的容差
+	Top align text	顶端对齐文字
+	Uncached Refresh	未缓存刷新
+	Unknown	未知
+	Use relative positioning for reference point	对参考点使用相对定位
+	Use these settings for new arrows	新箭头使用这些设置
+	Useful mixer brush combinations	实用的混合画笔组合
+	Watercolor	水彩
+	Watercolor 2	水彩 2
+	Wet Edge Mode	湿边模式
+	Whole Stroke	整条描边
+	Width Mode	宽度模式
+	ZIP	ZIP
+	Zoom current window to 1:1	将当前窗口缩放到 1:1
+	Zoom current window to fill the screen	将当前窗口缩放到填满屏幕
+	Zoom current window to screen size	将当前窗口缩放到屏幕大小
+	brush tool	画笔工具
+	{message} into “{group}”	{message}到“{group}”中
+	{ok} written to {dir}	{ok} 已写入 {dir}
+@plural	The brush group “{group}” already has {n} brush of yours.|The brush group “{group}” already has {n} brushes of yours.	画笔组“{group}”中已有您的 {n} 支画笔。
+@plural	The gradient group “{group}” already exists ({n} gradient).|The gradient group “{group}” already exists ({n} gradients).	渐变组“{group}”已存在（{n} 个渐变）。
+@plural	{what}: {n} Image Assets output failed|{what}: {n} Image Assets outputs failed	{what}：{n} 个图像资源输出失败
+@plural	{what}: {n} file failed|{what}: {n} files failed	{what}：{n} 个文件失败
+	Liquify closed: the document changed. Open Liquify again to start over.	液化已关闭：文档已更改。请重新打开液化再操作。
+	Preferences can't be saved	首选项无法保存
+	The recovered document is no longer open	恢复的文档已不再打开

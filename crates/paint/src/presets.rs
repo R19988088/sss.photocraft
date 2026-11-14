@@ -279,7 +279,16 @@ fn special_effects(base: &BrushSettings) -> Vec<BrushPreset> {
                     flip_y_jitter: true,
                     ..Default::default()
                 },
-                scattering: Scattering { enabled: true, scatter: Dynamic::jitter(1.5), both_axes: true, count: 2, count_jitter: Dynamic::jitter(0.5) },
+                scattering: Scattering {
+                    enabled: true,
+                    scatter: Dynamic::jitter(1.5),
+                    range_jitter: 0.0,
+                    spacing_jitter: Dynamic::default(),
+                    both_axes: true,
+                    count: 2,
+                    minimum_count: None,
+                    count_jitter: Dynamic::jitter(0.5),
+                },
                 ..base.clone()
             },
         ),
@@ -322,7 +331,16 @@ fn special_effects(base: &BrushSettings) -> Vec<BrushPreset> {
                     flip_y_jitter: true,
                     ..Default::default()
                 },
-                scattering: Scattering { enabled: true, scatter: Dynamic::jitter(1.2), both_axes: true, count: 2, count_jitter: Dynamic::jitter(0.5) },
+                scattering: Scattering {
+                    enabled: true,
+                    scatter: Dynamic::jitter(1.2),
+                    range_jitter: 0.0,
+                    spacing_jitter: Dynamic::default(),
+                    both_axes: true,
+                    count: 2,
+                    minimum_count: None,
+                    count_jitter: Dynamic::jitter(0.5),
+                },
                 color_dynamics: ColorDynamics {
                     enabled: true,
                     per_tip: true,

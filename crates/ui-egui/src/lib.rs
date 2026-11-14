@@ -299,6 +299,7 @@ pub use tools::eyedropper_ui;
 pub use tools::frame_tool;
 pub use tools::gradient_ui;
 pub use tools::lasso_ui;
+pub use tools::liquify_brush;
 pub use tools::magnetic_lasso_ui;
 pub use tools::move_box;
 pub use tools::move_distance;

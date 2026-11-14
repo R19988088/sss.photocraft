@@ -348,8 +348,13 @@ fn long_press_brush_selects_color_replacement() {
     frame(&mut app, &ctx, 0.1, vec![]);
     let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::Brush)).unwrap();
     let slot = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).nth(index).copied().unwrap();
-    // Photoshop's Brush group, Color Replacement before the Mixer Brush.
-    assert_eq!(slot, &[Tool::Brush, Tool::Pencil, Tool::ColorReplacement, Tool::MixerBrush]);
+    // The custom build pins brush and pencil in the top section; Color Replacement and the
+    // Mixer Brush keep their own slot below.
+    assert_eq!(slot, &[Tool::Brush, Tool::Pencil]);
+    let mix_index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::ColorReplacement)).unwrap();
+    assert_eq!(TOOL_SECTIONS.iter().flat_map(|section| section.iter()).nth(mix_index).copied(), Some(&[Tool::ColorReplacement, Tool::MixerBrush][..]));
+    // The long press opens the flyout of the slot that holds Color Replacement.
+    let index = mix_index;
     let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
     let mut buttons: Vec<Rect> = ctx.viewport(|v| {
         v.prev_pass
@@ -369,8 +374,8 @@ fn long_press_brush_selects_color_replacement() {
     frame(&mut app, &ctx, 1.45, vec![]);
     let key = egui::Id::unique(("tool-slot", index));
     let menu = ctx.memory(|m| m.area_rect(key.with("flyout"))).unwrap();
-    // The third of the four 26-point rows.
-    let row = egui::pos2(menu.left() + 65.0, menu.bottom() - 46.0);
+    // The first of the slot's two 26-point rows (Color Replacement is listed first).
+    let row = egui::pos2(menu.left() + 65.0, menu.top() + 20.0);
     frame(&mut app, &ctx, 2.0, vec![egui::Event::PointerMoved(row), pointer(row, true)]);
     frame(&mut app, &ctx, 2.05, vec![pointer(row, false)]);
     assert_eq!(app.ui.tool, Tool::ColorReplacement);
@@ -494,11 +499,14 @@ fn slots_come_back_on_their_last_tool_after_a_restart() {
     buttons.sort_by(|a, b| a.top().total_cmp(&b.top()));
     let pointer = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
     let slots = [
+        // The custom build: Brush/Pencil pinned, every selection tool in one slot, and Blur and
+        // Sharpen share the pinned liquify slot, so Alt-click there lands on Sharpen.
         (Tool::Brush, Tool::Pencil),
         (Tool::Gradient, Tool::PaintBucket),
         (Tool::Lasso, Tool::PolygonLasso),
         (Tool::Blur, Tool::Sharpen),
-        (Tool::RectMarquee, Tool::SingleRowMarquee),
+        // The selection slot was left on PolygonLasso, so a click there picks it.
+        (Tool::RectMarquee, Tool::PolygonLasso),
     ];
     for (i, (first, last)) in slots.into_iter().enumerate() {
         let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&first)).unwrap();
@@ -521,10 +529,12 @@ fn visible_sections_drop_hidden_tools_from_alt_click_slots() {
         .flat_map(|s| s.iter())
         .find(|(_, tools)| tools.contains(&Tool::RectMarquee))
         .map(|(_, tools)| tools.as_slice())
-        .expect("marquee slot remains");
-    assert_eq!(marquee, &[Tool::RectMarquee, Tool::SingleColumnMarquee]);
-    assert_eq!(next_slot_tool(marquee, Tool::RectMarquee), Tool::SingleColumnMarquee);
-    assert_eq!(next_slot_tool(marquee, Tool::SingleColumnMarquee), Tool::RectMarquee, "wrap over the visible pair");
+        .expect("selection slot remains");
+    // The custom build puts every selection tool in one slot, and the two single-line marquees
+    // never appear on a button.
+    assert_eq!(marquee, &[Tool::RectMarquee, Tool::Lasso, Tool::PolygonLasso, Tool::MagneticLasso, Tool::ObjectSelection, Tool::QuickSelection, Tool::MagicWand]);
+    assert_eq!(next_slot_tool(marquee, Tool::RectMarquee), Tool::Lasso);
+    assert_eq!(next_slot_tool(marquee, Tool::MagicWand), Tool::RectMarquee, "wrap over the slot");
 }
 
 /// Photoshop: Alt/Option-click a toolbar button cycles its flyout tools without opening the menu.
@@ -537,7 +547,22 @@ fn alt_click_cycles_the_tool_flyout_slot() {
     frame(&mut app, &ctx, 0.1, vec![]);
     let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::RectMarquee)).unwrap();
     let slot = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).nth(index).copied().unwrap();
-    assert_eq!(slot, &[Tool::RectMarquee, Tool::EllipseMarquee, Tool::SingleRowMarquee, Tool::SingleColumnMarquee]);
+    // One merged selection slot in the custom build.
+    assert_eq!(
+        slot,
+        &[
+            Tool::RectMarquee,
+            Tool::EllipseMarquee,
+            Tool::SingleRowMarquee,
+            Tool::SingleColumnMarquee,
+            Tool::Lasso,
+            Tool::PolygonLasso,
+            Tool::MagneticLasso,
+            Tool::ObjectSelection,
+            Tool::QuickSelection,
+            Tool::MagicWand,
+        ]
+    );
     let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
     let mut buttons: Vec<Rect> = ctx.viewport(|v| {
         v.prev_pass
@@ -563,7 +588,18 @@ fn alt_click_cycles_the_tool_flyout_slot() {
     // Alt-click advances through every flyout entry, including ones Shift+M skips.
     // Clear i.modifiers before the release while keeping Alt on the release event, so a
     // regression that only reads i.modifiers (and ignores the pointer-release modifiers) fails.
-    for (t, want) in [(1.5, Tool::EllipseMarquee), (2.0, Tool::SingleRowMarquee), (2.5, Tool::SingleColumnMarquee), (3.0, Tool::RectMarquee)] {
+    // The custom build has one merged selection slot, and the two single-line marquees never
+    // take a button, so Alt-click steps through the rest of the slot.
+    for (t, want) in [
+        (1.5, Tool::EllipseMarquee),
+        (2.0, Tool::Lasso),
+        (2.5, Tool::PolygonLasso),
+        (3.0, Tool::MagneticLasso),
+        (3.5, Tool::ObjectSelection),
+        (4.0, Tool::QuickSelection),
+        (4.5, Tool::MagicWand),
+        (5.0, Tool::RectMarquee),
+    ] {
         frame(&mut app, &ctx, t, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
         frame(&mut app, &ctx, t + 0.05, vec![egui::Event::ModifiersChanged(Default::default()), pointer(at, false, alt)]);
         frame(&mut app, &ctx, t + 0.1, vec![]);
@@ -572,9 +608,9 @@ fn alt_click_cycles_the_tool_flyout_slot() {
     }
     // From another tool, Alt-click advances from the slot's remembered (shown) tool: Rect after the wrap.
     app.ui.tool = Tool::Brush;
-    frame(&mut app, &ctx, 4.0, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
-    frame(&mut app, &ctx, 4.05, vec![egui::Event::ModifiersChanged(Default::default()), pointer(at, false, alt)]);
-    frame(&mut app, &ctx, 4.1, vec![]);
+    frame(&mut app, &ctx, 6.0, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+    frame(&mut app, &ctx, 6.05, vec![egui::Event::ModifiersChanged(Default::default()), pointer(at, false, alt)]);
+    frame(&mut app, &ctx, 6.1, vec![]);
     assert_eq!(app.ui.tool, Tool::EllipseMarquee, "inactive slot cycles from its shown tool");
 }
 

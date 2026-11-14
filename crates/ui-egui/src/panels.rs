@@ -25,6 +25,7 @@ pub mod channels_panel;
 pub mod chrome_ui;
 pub mod clip_line_ui;
 mod color;
+pub mod color_c2;
 pub mod color_hud;
 pub mod color_panel_ui;
 pub mod comps_ui;

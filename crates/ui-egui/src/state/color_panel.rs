@@ -33,6 +33,14 @@ pub struct ColorPanelState {
     pub ramp: ColorRamp,
     /// Make Ramp Web Safe: the ramp shows (and picks) web colours only.
     pub web_safe_ramp: bool,
+    /// The colours picked most recently (newest first), drawn as the C2 layout's swatch column.
+    #[serde(default = "recent_default")]
+    pub recent: [[f32; 4]; 6],
+}
+
+/// The C2 layout's starting swatches, as the reference application shows them.
+fn recent_default() -> [[f32; 4]; 6] {
+    [[0.0, 0.0, 0.0, 1.0], [0.86, 0.12, 0.12, 1.0], [0.04, 0.32, 0.92, 1.0], [0.05, 0.52, 0.24, 1.0], [0.0; 4], [0.0; 4]]
 }
 
 /// The Color panel's display, Photoshop's panel menu choices in its order. Hue Cube is
@@ -40,7 +48,10 @@ pub struct ColorPanelState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ColorPanelMode {
+    /// The C2 layout: colour and pattern source, chips, a large saturation/brightness field with
+    /// its hue strip, and the recent and image swatch columns.
     #[default]
+    C2,
     HueCube,
     BrightnessCube,
     ColorWheel,
@@ -54,7 +65,8 @@ pub enum ColorPanelMode {
 
 impl ColorPanelMode {
     /// Every mode, in Photoshop's panel menu order.
-    pub const ALL: [ColorPanelMode; 9] = [
+    pub const ALL: [ColorPanelMode; 10] = [
+        ColorPanelMode::C2,
         ColorPanelMode::HueCube,
         ColorPanelMode::BrightnessCube,
         ColorPanelMode::ColorWheel,
@@ -69,6 +81,7 @@ impl ColorPanelMode {
     /// The panel menu item.
     pub fn label(self) -> &'static str {
         match self {
+            ColorPanelMode::C2 => "C2 Color",
             ColorPanelMode::HueCube => "Hue Cube",
             ColorPanelMode::BrightnessCube => "Brightness Cube",
             ColorPanelMode::ColorWheel => "Color Wheel",
@@ -83,7 +96,7 @@ impl ColorPanelMode {
 
     /// The slider modes, which show the colour ramp under their sliders.
     pub fn is_sliders(self) -> bool {
-        !matches!(self, ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel)
+        !matches!(self, ColorPanelMode::C2 | ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel)
     }
 }
 

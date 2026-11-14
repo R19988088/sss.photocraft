@@ -155,6 +155,7 @@ pub const TOOLS: &[(&str, &str, Option<&str>)] = &[
     ("tools.select.dodge", "Dodge Tool", Some("O")),
     ("tools.select.burn", "Burn Tool", Some("O")),
     ("tools.select.sponge", "Sponge Tool", Some("O")),
+    ("tools.select.liquify", "Liquify Tool", None),
     ("tools.select.quickSelection", "Quick Selection Tool", Some("W")),
     ("tools.select.objectSelection", "Object Selection Tool", Some("W")),
     ("tools.select.pen", "Pen Tool", Some("P")),

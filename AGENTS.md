@@ -212,3 +212,11 @@ If the field has a PSD equivalent, map it in `crates/io` too, and keep unknown P
 - Workflows in `.github/workflows/` call the shared workflows in [`storytold/craft-common-actions`](https://github.com/storytold/craft-common-actions) at `@main`, with their inputs and secrets. No other jobs: if no shared workflow does what's needed, it doesn't go here.
 - Don't add or change CI in a feature or fix PR. If the existing workflows can't build or test a change, link an existing craft-common-actions issue or PR, or open a new issue, or a PR only for a small fix that is safe for every app and does not increase CI time.
 - Some workflow files here still run their own jobs. Don't add to them. Moving a job into craft-common-actions is its own task, never part of another PR, and the job stays here until a shared workflow runs it.
+
+<!-- fork notes: this repository keeps upstream on `main` and its own changes on `custom-merged` -->
+## This repository (fork of storytold/photocraft)
+
+`main` holds the upstream tree unchanged; every change of ours lives on `custom-merged`
+(`upstream-YYYYMMDD` are the upstream snapshots it follows). Branch layout, the follow-upstream
+steps, the macOS release/zip commands, and the brush-spacing rules that must not regress are in
+[docs/custom/AGENTS.md](docs/custom/AGENTS.md) — read it before changing `crates/paint` or packaging.

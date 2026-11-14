@@ -1,6 +1,6 @@
 use super::*;
 
-const KINDS: [&str; 15] = [
+const KINDS: [&str; 16] = [
     "invert",
     "brightnessContrast",
     "threshold",
@@ -16,6 +16,7 @@ const KINDS: [&str; 15] = [
     "channelMixer",
     "gradientMap",
     "selectiveColor",
+    "halftone",
 ];
 
 /// A non-default parameter set per kind (RGB channel keys for Levels/Curves).
@@ -37,6 +38,10 @@ pub(crate) fn sample(kind: &str) -> Value {
         "channelMixer" => json!({"red": [80, 30, -10, 5], "blue": [0, 10, 90, 0]}),
         "gradientMap" => json!({"stops": [[0, "#000000"], [0.5, "#ff0000"], [1, [1, 1, 1]]], "reverse": true, "dither": true}),
         "selectiveColor" => json!({"method": "absolute", "reds": [10, 0, -20, 5]}),
+        "halftone" => json!({
+            "size": 6, "angle": 30, "density": 70, "contrast": 10, "brightness": -20, "jitter": 25,
+            "shape": "diamond", "color": true, "preserveWhite": false, "white": 12, "black": 8
+        }),
         _ => json!({}),
     }
 }
@@ -123,6 +128,11 @@ fn bad_params_are_errors_not_panics() {
         ("selectiveColor", json!({"method": 5})),
         ("selectiveColor", json!({"reds": "not-an-array"})),
         ("selectiveColor", json!({"colors": "reds", "cyan": "50"})),
+        ("halftone", json!({"shape": "hexagon"})),
+        ("halftone", json!({"shape": 3})),
+        ("halftone", json!({"size": "big"})),
+        ("halftone", json!({"color": 1})),
+        ("halftone", json!({"black": "lots"})),
         ("colorLookup", json!({"lut": 42})),
         ("colorLookup", json!({"interpolation": 5})),
         ("colorLookup", json!({"dither": "yes"})),
@@ -515,10 +525,11 @@ fn destructive_commands_apply_their_params_at_every_depth() {
             s.execute(&format!("image.adjustments.{kind}"), sample(kind)).unwrap_or_else(|e| panic!("{kind} @{depth}: {e}"));
             assert_ne!(pixels(&s), before, "{kind} @{depth} changed nothing");
             assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "{kind}: one history step");
-            // Identity params leave the pixels alone (within one 8-bit step).
+            // Identity params leave the pixels alone (within one 8-bit step). A screen never does:
+            // its defaults already print the tone as dots (halftone, like the quantizers above).
             let mut s = colourful("rgb", depth);
             s.execute(&format!("image.adjustments.{kind}"), to_params(&default_for(kind, ColorMode::Rgb).unwrap())).unwrap();
-            if !matches!(*kind, "threshold" | "posterize" | "blackWhite" | "gradientMap" | "photoFilter") {
+            if !matches!(*kind, "threshold" | "posterize" | "blackWhite" | "gradientMap" | "photoFilter" | "halftone") {
                 for (a, b) in pixels(&s).iter().zip(&before) {
                     assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.0 / 255.0 + 1e-4), "{kind} @{depth}: {a:?} vs {b:?}");
                 }

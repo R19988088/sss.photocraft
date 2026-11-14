@@ -81,7 +81,7 @@ pub fn body(ui: &mut egui::Ui, b: &mut BrushSettings, tolerance_control: &mut St
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        crate::brush_sections::ellipse_widget(ui, &mut b.angle, &mut b.roundness);
+        crate::panels::brush_sections::ellipse_widget(ui, &mut b.angle, &mut b.roundness);
         ui.vertical(|ui| {
             let mut angle = b.angle;
             ui.horizontal(|ui| {

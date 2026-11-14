@@ -454,7 +454,7 @@ fn check_layer_budget(doc_sel: Option<&Surface>, l: &Layer, h: &Homography) -> R
 /// is turned into a normal layer by the caller first ([`crate::extra_cmds::background_to_layer`]).
 /// Refused, with `l` untouched, when a result would take more than [`budget`].
 pub(crate) fn transform_layer(doc_sel: Option<&Surface>, group: Locks, l: &mut Layer, h: &Homography, affine: Option<Affine>, interp: Interp) -> Result<()> {
-    transform_layer_with(doc_sel, group, l, h, affine, interp, &Interrupt::NONE)
+    transform_layer_with(doc_sel, group, l, h, affine, interp, &Interrupt::NONE, None)
 }
 
 /// [`transform_layer`] with progress and cancellation for the pixel warp (the slow part on a
@@ -467,9 +467,10 @@ fn transform_layer_with(
     affine: Option<Affine>,
     interp: Interp,
     ctl: &Interrupt,
+    cached: Option<&crate::cmd::cached_transform::CachedCommit>,
 ) -> Result<()> {
     check_layer_budget(doc_sel, l, h)?;
-    apply_transform(doc_sel, group, l, h, affine, interp, ctl)
+    apply_transform(doc_sel, group, l, h, affine, interp, ctl, cached)
 }
 
 fn apply_transform(
@@ -480,6 +481,7 @@ fn apply_transform(
     affine: Option<Affine>,
     interp: Interp,
     ctl: &Interrupt,
+    cached: Option<&crate::cmd::cached_transform::CachedCommit>,
 ) -> Result<()> {
     crate::allocation::checkpoint("transforming pixels")?;
     let locks = transform_locks(l, group, false);
@@ -489,7 +491,7 @@ fn apply_transform(
     if h.is_identity() {
         if let LayerContent::Group(g) = &mut l.content {
             for c in g.children.iter_mut() {
-                apply_transform(None, locks, c, h, affine, interp, ctl)?;
+                apply_transform(None, locks, c, h, affine, interp, ctl, cached)?;
             }
         }
         return Ok(());
@@ -510,7 +512,7 @@ fn apply_transform(
     match &mut l.content {
         LayerContent::Group(g) => {
             for c in g.children.iter_mut() {
-                apply_transform(None, locks, c, h, affine, interp, ctl)?;
+                apply_transform(None, locks, c, h, affine, interp, ctl, cached)?;
             }
         }
         LayerContent::Text(t) => {
@@ -542,21 +544,27 @@ fn apply_transform(
             }
         }
         _ => {
+            let saved = cached.and_then(|c| c.pixels.get(&l.id));
+            
             if let Some(surf) = l.surface_mut() {
-                *surf = match doc_sel {
+                *surf = match (saved, doc_sel) {
+                    // The resident preview already warped these pixels at full resolution.
+                    (Some(saved), _) => saved.clone(),
+                    (None, sel) => match sel {
                     // Only the selected pixels move: lift them, clear them, warp and paste back. The
                     // lifted pixels' own bounds are the edge a stretch repeats (#3773).
-                    Some(sel) => {
-                        let (lifted, mut rest) = split_selected(surf, sel)?;
-                        let moved = warp_surface_with(&lifted, lifted.content_bounds(), h, interp, ctl)?.ok_or(EngineError::Cancelled)?;
-                        composite_over(&mut rest, &moved);
-                        rest.prune();
-                        rest
-                    }
-                    None => {
-                        let src = surf.content_bounds();
-                        warp_surface_with(surf, src, h, interp, ctl)?.ok_or(EngineError::Cancelled)?
-                    }
+                        Some(sel) => {
+                            let (lifted, mut rest) = split_selected(surf, sel)?;
+                            let moved = warp_surface_with(&lifted, lifted.content_bounds(), h, interp, ctl)?.ok_or(EngineError::Cancelled)?;
+                            composite_over(&mut rest, &moved);
+                            rest.prune();
+                            rest
+                        }
+                        None => {
+                            let src = surf.content_bounds();
+                            warp_surface_with(surf, src, h, interp, ctl)?.ok_or(EngineError::Cancelled)?
+                        }
+                    },
                 };
             }
         }
@@ -564,9 +572,13 @@ fn apply_transform(
     if let Some(m) = l.mask.as_mut()
         && m.linked
     {
-        m.surface = match mask_sel {
-            Some(sel) => warp_gray_selected(&m.surface, sel, h, interp)?,
-            None => warp_gray(&m.surface, h, interp)?,
+        m.surface = match cached.and_then(|c| c.masks.get(&l.id)) {
+            // The resident preview warped this linked mask at full resolution too.
+            Some(saved) => saved.clone(),
+            None => match mask_sel {
+                Some(sel) => warp_gray_selected(&m.surface, sel, h, interp)?,
+                None => warp_gray(&m.surface, h, interp)?,
+            },
         };
     }
     if let Some(vm) = l.vector_mask.as_mut()
@@ -645,7 +657,7 @@ pub(crate) fn transform_by_map(doc: &mut Document, id: LayerId, h: &Homography, 
     // Price the smart object caches before they are taken: the fallback warp below isn't budgeted.
     check_layer_budget(None, l, h)?;
     let taken = crate::smart_cmds::take_caches(std::slice::from_mut(l));
-    apply_transform(None, group, l, h, affine, interp, &Interrupt::NONE)?;
+    apply_transform(None, group, l, h, affine, interp, &Interrupt::NONE, None)?;
     let snapshot = doc.clone();
     if let Some(l) = doc.layer_mut(id) {
         refresh_text(&snapshot, l);
@@ -947,12 +959,15 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     let lone = lone.is_some();
     let layers: Vec<u64> = ids.iter().map(|id| id.0).collect();
     let p = p.clone();
+    // The resident preview's native pixels, staged before this edit (`Liquify`, the GPU canvas).
+    // They are the authoritative result for the layers they name, so no warp is run for those.
+    let cached = s.take_cached_transform();
     // A background job when started with `Session::start` (#1015): the warp of a large layer runs
     // on a worker with progress, and can be cancelled.
     crate::jobs::edit_job(
         s,
         step_name,
-        move |doc, _, ctx| ctx.stage(0.0, 1.0, "Transforming", |ctl| transform_doc(doc, id, &ids, &p, lone, &h, affine, interp, ctl)),
+        move |doc, _, ctx| ctx.stage(0.0, 1.0, "Transforming", |ctl| transform_doc(doc, id, &ids, &p, lone, &h, affine, interp, ctl, cached.as_ref())),
         move |()| json!({"rect": rect, "layers": layers}),
     )
 }
@@ -970,6 +985,7 @@ fn transform_doc(
     affine: Option<Affine>,
     interp: Interp,
     ctl: &Interrupt,
+    cached: Option<&crate::cmd::cached_transform::CachedCommit>,
 ) -> Result<()> {
     let sel = doc.selection.clone();
     // The selection outline moves too: price it before anything is built.
@@ -1012,7 +1028,7 @@ fn transform_doc(
         if !h.is_identity() {
             taken.extend(crate::smart_cmds::take_caches(std::slice::from_mut(l)));
         }
-        apply_transform(doc_sel, group, l, h, affine, interp, ctl)?;
+        apply_transform(doc_sel, group, l, h, affine, interp, ctl, cached)?;
     }
     if !h.is_identity() {
         // Type layers re-render from their new transform.

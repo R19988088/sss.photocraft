@@ -26,6 +26,26 @@ pub fn rand_signed(seed: u64, index: u64, stream: u64) -> f32 {
     rand01(seed, index, stream) * 2.0 - 1.0
 }
 
+/// The C3 brush engine's own scatter draw (`BrushScatterResolver.randomUnit`), kept bit-for-bit
+/// so a scatter ring matches the reference application. `channel` is one of
+/// [`stream::SCATTER_COUNT`] … [`stream::SCATTER_PARALLEL_SPACING`].
+#[inline]
+pub fn c3_scatter_unit(seed: u64, dab_index: u64, channel: u64, copy: u64) -> f32 {
+    let mut v = seed.wrapping_add(dab_index.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    v = v.wrapping_add(channel.wrapping_mul(0xD1B5_4A32_D192_ED03));
+    v = v.wrapping_add(copy.wrapping_mul(0x94D0_49BB_1331_11EB));
+    v = (v ^ (v >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    v = (v ^ (v >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    v ^= v >> 31;
+    (v >> 11) as f32 / 9_007_199_254_740_992.0
+}
+
+/// C3's signed draw, `[-1, 1)`.
+#[inline]
+pub fn c3_scatter_signed(seed: u64, dab_index: u64, channel: u64, copy: u64) -> f32 {
+    c3_scatter_unit(seed, dab_index, channel, copy) * 2.0 - 1.0
+}
+
 /// Hash of integer document coordinates to [0, 1) (noise, dissolve).
 #[inline]
 pub fn hash2(x: i32, y: i32, salt: u64) -> f32 {
@@ -55,6 +75,18 @@ pub mod stream {
     pub const DUAL_FLIP: u64 = 18;
     pub const WET: u64 = 19;
     pub const MIX: u64 = 20;
+    pub const HARDNESS: u64 = 21;
+    pub const SCATTER_RANGE: u64 = 22;
+    pub const SCATTER_SPACING_X: u64 = 23;
+    pub const SCATTER_SPACING_Y: u64 = 24;
+    // C3 BrushScatterRandomChannel raw values: count=1, range, perpendicular,
+    // perpendicularSpacing, parallel, parallelSpacing.
+    pub const SCATTER_COUNT: u64 = 1;
+    pub const SCATTER_RANGE_C3: u64 = 2;
+    pub const SCATTER_PERPENDICULAR: u64 = 3;
+    pub const SCATTER_PERPENDICULAR_SPACING: u64 = 4;
+    pub const SCATTER_PARALLEL: u64 = 5;
+    pub const SCATTER_PARALLEL_SPACING: u64 = 6;
 }
 
 /// Seed derived from arbitrary bytes (FNV-1a then mixed), for commands without an explicit seed.

@@ -2,7 +2,7 @@
 //! the reference compositor within 2/255 (premultiplied). Skips when no GPU adapter exists.
 
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
-use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel};
+use photocraft_doc::adjust::{CurvePoint, HalftoneShape, HueRange, LevelsChannel};
 use photocraft_doc::{Adjustment, Document, Fill, GradientStyle, Layer, LayerContent, LayerMask};
 use photocraft_geom::{Rect, Size, TILE_SIZE};
 use photocraft_gpu::{Compositor, render_to_vec};
@@ -748,6 +748,47 @@ fn adjustments() -> Vec<Adjustment> {
         Adjustment::ColorBalance { shadows: [10.0, 0.0, 0.0], midtones: [0.0, 0.0, 0.0], highlights: [0.0, 0.0, 10.0], preserve_luminosity: false },
         Adjustment::SelectiveColor { relative: true, adjustments: selective() },
         Adjustment::SelectiveColor { relative: false, adjustments: selective() },
+        // Halftone: a mono screen on paper, and colour screens that each turn their own angle,
+        // wobbled cells and a dot gain above 50 (both sides run compose::adjust::halftone).
+        Adjustment::Halftone {
+            size: 8.0,
+            angle: 45.0,
+            density: 50.0,
+            contrast: 0.0,
+            brightness: 0.0,
+            jitter: 0.0,
+            shape: HalftoneShape::Round,
+            color: false,
+            preserve_white: true,
+            white: 0.0,
+            black: 0.0,
+        },
+        Adjustment::Halftone {
+            size: 6.5,
+            angle: -20.0,
+            density: 78.0,
+            contrast: 25.0,
+            brightness: -12.0,
+            jitter: 40.0,
+            shape: HalftoneShape::Cross,
+            color: true,
+            preserve_white: false,
+            white: 18.0,
+            black: 6.0,
+        },
+        Adjustment::Halftone {
+            size: 3.0,
+            angle: 0.0,
+            density: 30.0,
+            contrast: -10.0,
+            brightness: 5.0,
+            jitter: 15.0,
+            shape: HalftoneShape::Line,
+            color: false,
+            preserve_white: false,
+            white: 0.0,
+            black: 25.0,
+        },
         lookup(17, false, false),
         lookup(5, true, false),
         lookup(33, false, true),
