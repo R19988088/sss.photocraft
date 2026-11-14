@@ -8,9 +8,16 @@ description = "PhotoCraft: an open-source, native image editor"
 build = "build.rs"
 
 [features]
-# Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
-# it; official builds (CI, packaging/, release) build with `--features heif`.
+# Custom fork: HEIF and the green (exe-relative) data folder are what we ship, so both are on
+# unless a build explicitly passes --no-default-features.
+default = ["heif", "portable-default"]
+# Open HEIC/HEIF photos (the optional photocraft-heif crate). Upstream leaves it off so
+# distributors choose it (official builds pass `--features heif`); our fork always enables it.
 heif = ["photocraft-codecs/heif"]
+# Windows: keep settings, presets, logs, window layout and autosaves beside the executable
+# (`PhotoCraftData\`) even without portable.txt, so a copied folder is green. Falls back to
+# %APPDATA% (with a warning) when the executable's folder isn't writable.
+portable-default = []
 
 [lints]
 workspace = true

@@ -7,6 +7,9 @@
 //!    everything in `<exe dir>/PhotoCraftData`, so a portable copy on a USB stick leaves nothing in
 //!    `%APPDATA%`. The Windows portable zip ships with `portable.txt`; the MSI doesn't. If that
 //!    folder can't be written (read-only medium, Program Files), the app warns and falls back.
+//!    Custom fork: with [`PORTABLE_BY_DEFAULT`] (the `portable-default` feature, on by default)
+//!    Windows builds need no marker — the folder beside the exe is tried first and the platform
+//!    convention is only the fallback, so an unpacked copy is green out of the box.
 //! 3. The platform convention: macOS `~/Library/Application Support/Photocraft`, Windows
 //!    `%APPDATA%\Photocraft`, Linux `$XDG_CONFIG_HOME/photocraft` or `~/.config/photocraft`.
 //!
@@ -21,6 +24,13 @@ use std::sync::OnceLock;
 pub const PORTABLE_MARKERS: [&str; 2] = ["portable.txt", "PhotoCraft.portable"];
 /// The data folder created beside the executable in portable mode.
 pub const PORTABLE_DATA_DIR: &str = "PhotoCraftData";
+
+/// Whether a Windows build keeps its data beside the executable without a marker file.
+///
+/// The `portable-default` feature (on in this fork's default features) makes a copied
+/// `photocraft.exe` green: the folder is created on first launch, and only an unwritable one
+/// falls back to `%APPDATA%`. Other platforms and non-default builds still need a marker.
+pub const PORTABLE_BY_DEFAULT: bool = cfg!(all(windows, feature = "portable-default"));
 
 /// How [`DataDir::dir`] was chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,7 +469,8 @@ pub fn resolve(env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -
         return DataDir { dir: Some(PathBuf::from(d)), mode: Mode::Override, warning: None };
     }
     let platform = platform_dir(&env);
-    let Some((exe_dir, marker)) = exe_dir.and_then(|d| portable_marker(d).map(|m| (d, m))) else {
+    let portable = exe_dir.and_then(|dir| portable_marker(dir).map(|marker| (dir, Some(marker))).or_else(|| PORTABLE_BY_DEFAULT.then_some((dir, None))));
+    let Some((exe_dir, marker)) = portable else {
         return DataDir { dir: platform, mode: Mode::Platform, warning: None };
     };
     let data = exe_dir.join(PORTABLE_DATA_DIR);
@@ -467,8 +478,8 @@ pub fn resolve(env: impl Fn(&str) -> Option<OsString>, exe_dir: Option<&Path>) -
         Ok(()) => DataDir { dir: Some(data), mode: Mode::Portable, warning: None },
         Err(e) => {
             let fallback = platform.as_ref().map_or_else(|| "nowhere (no user folder found)".to_string(), |p| p.display().to_string());
-            let warning =
-                format!("portable mode ({} found) but {} isn't writable ({e}); settings are kept in {fallback} instead", marker.display(), data.display());
+            let why = marker.map_or_else(|| "data lives beside the executable by default".to_string(), |m| format!("{} found", m.display()));
+            let warning = format!("portable mode ({why}) but {} isn't writable ({e}); settings are kept in {fallback} instead", data.display());
             DataDir { dir: platform, mode: Mode::Platform, warning: Some(warning) }
         }
     }

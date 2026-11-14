@@ -23,7 +23,9 @@
 4. 更新 `UPSTREAM.lock` 的 `upstream.commit` / `upstream.date`。
 5. 合并后按第 4 节跑测试，再按第 3 节出包。
 
-## 3. 出包（macOS arm64，本机无 libheif，不加 `--features heif`）
+## 3. 出包
+
+### 3.1 macOS arm64（heif 与绿色模式已默认开启，无需再传 `--features heif`）
 
 ```bash
 # 1) 编译
@@ -53,6 +55,58 @@ cd dist/release && ditto -c -k --keepParent PhotoCraft.app PhotoCraft-0.24.0-arm
 
 `ditto` 会把 bundle 里每项文件原有的修改时间封进 zip；只换二进制、不重建 bundle 的话，
 用户在 Finder 里看到的还是旧日期——所以第 2 步必须整个删掉重做。
+
+### 3.2 Windows x64 绿色版（默认开 heif，数据跟着 exe 走）
+
+`apps/photocraft/Cargo.toml` 的默认特性是本仓库定死的：
+
+```toml
+default = ["heif", "portable-default"]
+```
+
+- `heif`：HEIC/HEIF 打开能力。解码是纯 Rust 的 `heic-rs`（`crates/heif`），**不需要系统
+  libheif**，任何平台都能直接编进去；关掉后 HEIF 文件仍被识别，打开时给「不支持」。
+- `portable-default`：Windows 上 `app_dirs.rs` 的 `PORTABLE_BY_DEFAULT` 为真，不需要
+  `portable.txt`。首次启动就在 exe 旁建 `PhotoCraftData\`，preferences / Presets / logs /
+  `ui.ron` / Recovery 全在里面，不写 `%APPDATA%`、`%LOCALAPPDATA%`；只有 exe 所在目录不可写
+  （只读盘、Program Files）才回退到 `%APPDATA%\Photocraft` 并给出警告。
+
+编译（静态 CRT，拷走 exe 就能跑，不需要 VC++ 运行库；约 13–20 分钟）：
+
+```powershell
+Set-Location -LiteralPath 'E:\000 app\s.PhotoCraft\source\sss.photocraft'
+$env:RUST_MIN_STACK = '67108864'
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
+$env:PHOTOCRAFT_BUILD_SHA = (git rev-parse --short HEAD)
+$env:PHOTOCRAFT_BUILD_DATE = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+cargo build --release --locked -p photocraft -j 6 2>&1 |
+  Tee-Object -FilePath 'E:\000 app\s.PhotoCraft\build\build-<版本>-green.log'
+```
+
+`-j 6` 与 `RUST_MIN_STACK` 不能省（默认并发会让 rustc 崩，见根 `AGENTS.md`）。出包：
+
+```powershell
+$ver = '0.24.0'
+$stage = "E:\000 app\s.PhotoCraft\dist\photocraft-$ver-windows-x64-portable-green"
+Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $stage | Out-Null
+Copy-Item target\release\photocraft.exe $stage
+Copy-Item LICENSE-APACHE, LICENSE-MIT, NOTICE, ATTRIBUTION.md, README.md $stage
+Copy-Item packaging\windows\portable.txt $stage   # 只是给上游版式留个说明，本仓库不加也照样绿色
+Compress-Archive -Path "$stage\*" -DestinationPath "$stage.zip"
+```
+
+验证：删掉 `$stage\PhotoCraftData` 后运行 `photocraft.exe`，它应当在 exe 旁边重建
+`PhotoCraftData\`（含 `logs\`），而 `%APPDATA%\Photocraft` 的修改时间不变。
+
+要打安装版（MSI，装进 Program Files，目录只读）时反过来关掉绿色默认，否则每次启动都会
+走「不可写 → 回退 %APPDATA%」并提示：
+
+```powershell
+cargo build --release --locked -p photocraft -p photocraft-cli `
+  --no-default-features --features heif,portable-default  # 需要绿色时
+# 安装版：--no-default-features --features heif
+```
 
 ## 4. 测试
 

@@ -22,6 +22,7 @@ fn fake_home(root: &Path) -> impl Fn(&str) -> Option<OsString> + use<> {
     env_of(&[("HOME", &home), ("APPDATA", &appdata)])
 }
 
+#[cfg(not(all(windows, feature = "portable-default")))]
 #[test]
 fn no_marker_uses_the_platform_dir() {
     let root = temp("platform");
@@ -69,6 +70,47 @@ fn either_marker_keeps_everything_beside_the_exe() {
     }
 }
 
+/// The custom fork's Windows builds are green out of the box: no marker, and everything still
+/// lands in `PhotoCraftData` beside the exe while the user profile stays untouched.
+#[cfg(all(windows, feature = "portable-default"))]
+#[test]
+fn no_marker_keeps_everything_beside_the_exe_on_windows() {
+    let root = temp("portable-default");
+    let exe = root.join("PhotoCraft");
+    std::fs::create_dir_all(&exe).unwrap();
+    let d = resolve(fake_home(&root), Some(&exe));
+    assert_eq!(d.mode, Mode::Portable);
+    assert!(d.warning.is_none());
+    let dir = d.dir.unwrap();
+    assert_eq!(dir, exe.join(PORTABLE_DATA_DIR));
+    assert!(dir.is_dir(), "the data folder is created");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the write probe is removed");
+    for sub in ["preferences.json", "Presets", "Recovery", crate::gpu_startup::MARKER_FILE] {
+        assert!(dir.join(sub).starts_with(&exe));
+    }
+    assert!(!root.join("home").exists() && !root.join("appdata").exists(), "nothing written to the user folder");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// ... but an exe on read-only media (a locked USB stick, Program Files) still gets the platform
+/// folder and a warning that names it, rather than failing to start.
+#[cfg(all(windows, feature = "portable-default"))]
+#[test]
+fn an_unwritable_exe_folder_falls_back_to_the_platform_dir() {
+    let root = temp("portable-default-unwritable");
+    let exe = root.join("PhotoCraft");
+    std::fs::create_dir_all(&exe).unwrap();
+    std::fs::write(exe.join(PORTABLE_DATA_DIR), b"in the way").unwrap();
+    let env = fake_home(&root);
+    let d = resolve(&env, Some(&exe));
+    assert_eq!(d.mode, Mode::Platform);
+    assert_eq!(d.dir, platform_dir(&env));
+    let w = d.warning.unwrap();
+    assert!(w.contains("portable") && w.contains("isn't writable"), "{w}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(not(all(windows, feature = "portable-default")))]
 #[test]
 fn a_marker_folder_is_not_a_marker() {
     let root = temp("dir-marker");

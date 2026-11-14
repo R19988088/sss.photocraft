@@ -69,6 +69,17 @@
 - 选项栏**平铺显示当前工具所在组的全部工具**（不用 flyout）
 - 保留上游新增工具：`MixerBrush`、`ArtHistoryBrush`、`Star`
 
+### 2.5 默认工作区模板 D 与工具预设停靠
+
+- 右侧面板自上而下固定为：**颜色（C2 布局）→ 图层 → 画笔 → 工具预设**，颜色之上不再有属性卡。
+- `D` 是内置工作区模板（`Window › Workspace` 列表首位、顶栏工作区切换器第一项），也是
+  **启动默认**：没有记忆布局（首次启动、新装、Reset Workspace）时一律应用 D
+  （`crate::workspace_ui::DEFAULT`，`dock::restore`）。
+- 工具预设从浮动窗口改为**可停靠面板**（`dock::Group::ToolPresets`，面板 id `toolPresets`），
+  与画笔面板同一套行为：拖到右侧停靠区、合并成 tab、拖出浮动、Close 关闭都能用；
+  `Window › Tool Presets` 走 `window.panel.toolPresets → window.toggle.toolPresets`。
+- 旧版布局里没有 `panels.tool_presets` 字段，按关闭处理（serde 默认 false）。
+
 ---
 
 ## 3. 进度
@@ -94,6 +105,9 @@
 | 旧版色板（C2 布局）的实线/图案来源与吸管采样图案 | ✅ | 未提交（工作区） |
 | 颜料混合强度 `painting.pigmentMixStrength` + 颜色面板菜单滑条 | ✅ | 未提交（工作区） |
 | `pm.lut` 作为颜料混色的统一底层（涂抹 / 湿料拖色 / 传输 / 沉积） | ✅ | 未提交（工作区） |
+| HEIC/HEIF 打开能力默认开启（`default = ["heif"]`，纯 Rust heic-rs，无需系统 libheif） | ✅ | 2026-11-14 |
+| Windows 绿色版：默认 `portable-default`，数据跟着 exe（`PhotoCraftData\`），不写 `%APPDATA%` | ✅ | 2026-11-14 |
+| 右侧面板模板 D（颜色→图层→画笔→工具预设）+ 工具预设改为可停靠面板 | ✅ | 未提交（工作区） |
 
 **pm.lut 底层细节**（对照 `sssp_c3/backup/minimal_20261020_131735`，Swift/Metal 的 C3）：
 

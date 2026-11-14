@@ -1,9 +1,11 @@
 PhotoCraft portable mode
 
-While this file sits next to photocraft.exe, PhotoCraft keeps its preferences, brush presets,
-crash-recovery autosaves and startup state in the PhotoCraftData folder beside it, and writes
-nothing to %APPDATA% or %LOCALAPPDATA%. Copy the whole folder to move PhotoCraft with its settings.
+PhotoCraft keeps its preferences, brush presets, crash-recovery autosaves and startup state in
+the PhotoCraftData folder beside photocraft.exe, and writes nothing to %APPDATA% or
+%LOCALAPPDATA%. Copy the whole folder to move PhotoCraft with its settings.
 
-Delete this file to use the normal per-user folders instead: %APPDATA%\Photocraft for settings
-and %LOCALAPPDATA%\Photocraft\Recovery for crash-recovery autosaves. If PhotoCraftData can't be
-written (for example on a read-only drive), PhotoCraft says so and uses those folders instead.
+This fork's Windows builds do that by default, so this file is informational: it is the marker
+upstream builds need beside the executable to switch portable mode on. If PhotoCraftData can't
+be written (for example on a read-only drive), PhotoCraft says so and uses the per-user folders
+instead: %APPDATA%\Photocraft for settings and %LOCALAPPDATA%\Photocraft\Recovery for
+crash-recovery autosaves.
