@@ -1356,9 +1356,10 @@ fn dab_pitch_is_the_diameter_times_the_spacing_whatever_the_sampling() {
 }
 
 #[test]
-fn spacing_is_the_percentage_of_the_dab_diameter_under_pressure() {
-    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on: the dabs shrink, and the
-    // pitch shrinks with them, so the stroke keeps its density instead of opening gaps.
+fn pitch_is_the_size_times_the_spacing_whatever_the_pressure() {
+    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on: the dabs shrink, the
+    // distance between them must not — the pitch is the brush's own size times the spacing, as
+    // the user asked ("间距必须只和实际尺寸有关").
     let b = BrushSettings { size: 100.0, spacing: 0.1, pressure_size: true, ..brush() };
     let pts: Vec<StrokePoint> = (0..=40)
         .map(|i| {
@@ -1370,11 +1371,8 @@ fn spacing_is_the_percentage_of_the_dab_diameter_under_pressure() {
     let xs: Vec<f64> = d.iter().map(|d| d.center.x).collect();
     let gaps: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(!gaps.is_empty());
-    // 100 px at pressure 1.0 through 10 % spacing, 20 px at 0.2: 10 px pitch down to 2 px.
-    assert!((gaps[0] - 10.0).abs() < 0.3, "full pressure pitch: {}", gaps[0]);
-    assert!((gaps.last().copied().unwrap_or(0.0) - 2.0).abs() < 0.3, "light pressure pitch: {:?}", gaps.last());
-    assert!(gaps.windows(2).all(|w| w[1] <= w[0] + 1e-6), "the pitch must shrink with the dabs: {gaps:?}");
-    // And the dabs themselves follow the pressure, which is what the dynamics are for.
+    assert!(gaps.iter().all(|g| (g - 10.0).abs() < 1e-6), "pitch changed with pressure: {gaps:?}");
+    // The size itself still follows the pressure, which is what the dynamics are for.
     let ctx = BrushContext::new(&b);
     let first = ctx.dab_rect(&d[0], false);
     let last = ctx.dab_rect(d.last().unwrap(), false);
