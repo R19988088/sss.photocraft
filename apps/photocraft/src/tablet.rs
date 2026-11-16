@@ -73,16 +73,22 @@ pub fn install_wintab(cc: &eframe::CreationContext<'_>, feed: &StylusFeed) -> Op
     let sink = sink(feed.clone());
     let native = feed.clone();
     log::info!("WinTab backend active (system context): its packets carry the pen while they come");
-    let logged = std::cell::Cell::new(false);
+    let logged = std::cell::Cell::new(0usize);
     Some(Box::new(move |focused| {
         photocraft_tablet::wintab::poll(focused, &|sample| {
             // The driver's own values are the pen's while its packets come, and Ink's copy of the
             // same stroke is dropped meanwhile (the pen leaving, `None`, hands the pen back).
             native.set_native(sample.is_some());
-            if let Some(sample) = sample
-                && !logged.replace(true)
-            {
-                log::info!("WinTab sample: pressure={:.3} tilt=({:.1},{:.1}) eraser={}", sample.pressure, sample.tilt_x, sample.tilt_y, sample.eraser);
+            let seen = logged.get();
+            match sample {
+                Some(sample) => {
+                    logged.set(seen + 1);
+                    if seen < 40 && seen % 2 == 0 {
+                        log::info!("PENDBG wintab #{seen} pressure={:.4} tilt=({:.1},{:.1})", sample.pressure, sample.tilt_x, sample.tilt_y);
+                    }
+                }
+                None if seen > 0 => log::info!("PENDBG wintab pen left"),
+                None => {}
             }
             sink(sample);
         });

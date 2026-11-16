@@ -397,6 +397,23 @@ fn clear_off_on_background(app: &mut PhotocraftApp, tool: Tool) {
 
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static PENDBG: AtomicUsize = AtomicUsize::new(0);
+        match ev {
+            ToolEvent::Down { pressure, .. } => {
+                PENDBG.store(0, Ordering::Relaxed);
+                log::info!("PENDBG down pressure={pressure:.4}");
+            }
+            ToolEvent::Move { pressure, .. } => {
+                let n = PENDBG.fetch_add(1, Ordering::Relaxed);
+                if n < 20 {
+                    log::info!("PENDBG move#{n} pressure={pressure:.4}");
+                }
+            }
+            ToolEvent::Up { .. } => log::info!("PENDBG up"),
+        }
+    }
     if consumes_cancelled_vector_event(app, ev) {
         return;
     }

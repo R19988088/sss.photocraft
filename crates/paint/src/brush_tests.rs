@@ -1318,6 +1318,68 @@ fn brush_projection_foreshortens_along_tilt_and_turns_with_rotation() {
 }
 
 #[test]
+fn dab_pitch_is_the_diameter_times_the_spacing_whatever_the_sampling() {
+    // The same 400 px run of paint, handed over at four pointer rates: 1 px per sample (slow), 4,
+    // 40 and 120 px per sample (very fast). The pitch must be the same in all four, and exactly
+    // the diameter times the spacing percentage.
+    const RUN: f64 = 400.0;
+    let run = |step: f64, ms: f64| -> Vec<StrokePoint> {
+        let n = (RUN / step) as usize;
+        let mut pts: Vec<StrokePoint> =
+            (0..=n).map(|i| StrokePoint { time: i as f64 * ms, ..StrokePoint::new(i as f64 * step, 10.0, 1.0) }).collect();
+        if (n as f64) * step < RUN {
+            pts.push(StrokePoint { time: n as f64 * ms + ms, ..StrokePoint::new(RUN, 10.0, 1.0) });
+        }
+        pts
+    };
+    for size in [20.0_f32, 500.0] {
+        for spacing in [0.1_f32, 0.25] {
+            let b = BrushSettings { size, spacing, ..brush() };
+            let pitch = f64::from(size) * f64::from(spacing);
+            let mut reference: Option<Vec<f64>> = None;
+            for &(step, ms) in &[(1.0_f64, 16.0_f64), (4.0, 4.0), (40.0, 1.0), (120.0, 0.5)] {
+                let xs: Vec<f64> = dabs_of(&b, &run(step, ms)).iter().map(|d| d.center.x).collect();
+                let gaps: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+                println!("size={size:>5} spacing={spacing:<4} step={step:>5} ms={ms:>4} dabs={:>4}", xs.len());
+                if let Some(first) = &reference {
+                    assert_eq!(first.len(), gaps.len(), "size {size} spacing {spacing}: sampling at {step} px paints a different dab count");
+                    for (a, b) in first.iter().zip(&gaps) {
+                        assert!((a - b).abs() < 1e-9, "size {size} spacing {spacing}: pitch {b} vs {a} at step {step}");
+                    }
+                } else {
+                    assert!(gaps.iter().all(|g| (g - pitch).abs() < 1e-6), "size {size} spacing {spacing}: {gaps:?} is not {pitch}");
+                    reference = Some(gaps);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pitch_ignores_pressure_and_the_size_dynamics() {
+    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on: the dabs have to shrink,
+    // the distance between them must not — the pitch is the brush's own size times the spacing.
+    let b = BrushSettings { size: 100.0, spacing: 0.1, pressure_size: true, ..brush() };
+    let pts: Vec<StrokePoint> = (0..=40)
+        .map(|i| {
+            let t = i as f64 / 40.0;
+            StrokePoint { time: i as f64, ..StrokePoint::new(i as f64 * 10.0, 10.0, (1.0 - 0.8 * t) as f32) }
+        })
+        .collect();
+    let d = dabs_of(&b, &pts);
+    let xs: Vec<f64> = d.iter().map(|d| d.center.x).collect();
+    let gaps: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(!gaps.is_empty());
+    assert!(gaps.iter().all(|g| (g - 10.0).abs() < 1e-6), "pitch changed with pressure: {gaps:?}");
+    // The size itself still follows the pressure, which is what the dynamics are for.
+    let ctx = BrushContext::new(&b);
+    let first = ctx.dab_rect(&d[0], false);
+    let last = ctx.dab_rect(d.last().unwrap(), false);
+    let (fw, lw) = (f64::from(first.x1 - first.x0), f64::from(last.x1 - last.x0));
+    assert!(fw > lw * 3.0, "dabs did not shrink with pressure: {fw} vs {lw}");
+}
+
+#[test]
 fn spacing_is_the_size_times_the_percentage_at_any_pointer_speed() {
     // `step_len`: the dab pitch is the diameter times the spacing, nothing else — not the
     // pointer's speed, not the timestamps, not the legacy "Spacing" check box.

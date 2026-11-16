@@ -126,11 +126,14 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
 用户对笔迹的判断口径是画面：**直线棱角 = 点数不足；墨迹落后指针 / 每笔乱跑 = 定位被破坏**。
 下面几条是踩过坑之后定下来的，不要回退：
 
-1. **dab 间距只跟距离与尺寸有关**：`dynamics.rs` 的 `DabBuilder::step_len`（以及 Dual Brush 的
-   `DualBuilder::step_len`）= `max(0.5, 直径 × spacing%)`，直径取 `base_diameter(...)` 且不小于 1px。
+1. **dab 间距只跟笔刷尺寸与百分比有关**：`dynamics.rs` 的 `DabBuilder::step_len`（以及 Dual Brush 的
+   `DualBuilder::step_len`）= `max(0.5, 笔刷 size × spacing%)`，size 取笔刷面板本身的尺寸（不小于 1px）。
+   笔压/倾斜/速度带来的尺寸动力学只改 dab 的大小，**不再改 dab 的间距**（2026-11-16 用户要求「间距
+   完全对照笔刷尺寸的百分比」，此前 `step_len` 用的是 `base_diameter(...)`，开笔压尺寸或 Speed→Size
+   时轻压/快画会跟着变间距）。
    `PathWalker` 里**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
    `MIN_SPEED_STEP` 已删除）；`spacing_enabled` 只为老预设兼容，不再改变规则。
-   慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致。
+   慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::dab_pitch_is_...`）。
 2. **插值是采样点之间的线性等距插值**（`PathWalker::push` → `lerp_pt`）。不要引入 cubic / 曲线 /
    handle / 「曲线圆角」开关：试过，会让笔迹脱离指针（用户判为「强制开拉绳、乱定位」）。
 3. **指针稳定器只管压力**：`tablet_pressure.rs` 的 `TabletPressureFilter` 只在 `input/stylus.rs`
