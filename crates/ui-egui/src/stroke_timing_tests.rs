@@ -563,3 +563,40 @@ fn pressure_sized_smudge_release_matches_replay_and_undo_redo() {
     h.state_mut().run("edit.redo", json!({})).unwrap();
     assert_eq!(h.state().session.active().unwrap().doc, committed);
 }
+
+/// The same 160 px straight stroke, handed to the canvas at three pointer speeds, must paint
+/// exactly the same pixels: the dab pitch is a distance rule, so how fast the pointer crossed
+/// that distance cannot change where the stamps land.
+#[test]
+fn stamp_distance_does_not_follow_the_pointer_speed() {
+    let mut painted: Vec<Vec<f32>> = Vec::new();
+    for step in [2.0_f32, 10.0, 40.0] {
+        let mut h = harness();
+        h.state_mut().run("tools.setBrush", json!({"brush": {"size": 20, "hardness": 1.0, "spacing": 0.5, "smoothing": {"amount": 0.0}}})).unwrap();
+        h.state_mut().run("layer.new.layer", json!({})).unwrap();
+        h.run_steps(1);
+        move_to(&mut h, 20.0, 50.0);
+        button(&mut h, 20.0, 50.0, true);
+        let mut x = 20.0f32;
+        while x < 180.0 {
+            x = (x + step).min(180.0);
+            move_to(&mut h, x, 50.0);
+        }
+        button(&mut h, 180.0, 50.0, false);
+        h.run_steps(2);
+        let st = h.state().session.active().expect("a document");
+        let s = st.doc.layer(st.active_layer.expect("an active layer")).and_then(|l| l.surface()).expect("a raster layer");
+        let mut row = Vec::new();
+        for y in 0..100 {
+            for xx in 0..200 {
+                row.push(s.rgba(xx, y)[3]);
+            }
+        }
+        painted.push(row);
+    }
+    for (i, other) in painted.iter().enumerate().skip(1) {
+        assert_eq!(painted[0].len(), other.len());
+        let worst = painted[0].iter().zip(other).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(worst < 1.0 / 255.0, "speed {} paints different pixels: worst channel {worst}", [2.0, 10.0, 40.0][i]);
+    }
+}

@@ -551,12 +551,16 @@ impl DabBuilder {
         StepInput { speed: speed * speed * (3.0 - 2.0 * speed), distance: s.distance / (self.brush.size * self.brush.spacing.max(0.05) * 32.0).max(96.0), ..*s }
     }
 
-    pub fn step_len(&self, _s: &StepInput) -> f64 {
+    pub fn step_len(&self, s: &StepInput) -> f64 {
+        let s = self.controlled_input(s);
         let b = &self.brush;
-        // Distance to the next dab: the brush's own size times the spacing, at least half a pixel.
-        // The size dynamics (pressure, tilt, speed) shape the dabs; they never move them apart, so
-        // the pitch is one fixed percentage of the size at every pressure, tilt and speed.
-        f64::from(b.size.max(1.0) * b.spacing.max(0.01)).max(0.5)
+        // Distance to the next dab: the diameter of the dab being painted — the brush's size with
+        // the size dynamics (Pressure, Tilt, Speed) applied — times the spacing, at least half a
+        // pixel. Only distance and that diameter feed it: no flow, no time, no sampling rate.
+        // Tying the pitch to the diameter keeps the stroke's density the same where the pen thins
+        // it: a light dab is a small dab, and its gap shrinks with it instead of opening up.
+        let diameter = base_diameter(b, &s).max(1.0);
+        f64::from(diameter * b.spacing.max(0.01)).max(0.5)
     }
 
     fn diameter_at(&self, s: &StepInput, index: u64) -> f32 {

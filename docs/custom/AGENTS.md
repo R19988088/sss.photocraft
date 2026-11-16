@@ -126,11 +126,11 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
 用户对笔迹的判断口径是画面：**直线棱角 = 点数不足；墨迹落后指针 / 每笔乱跑 = 定位被破坏**。
 下面几条是踩过坑之后定下来的，不要回退：
 
-1. **dab 间距只跟笔刷尺寸与百分比有关**：`dynamics.rs` 的 `DabBuilder::step_len`（以及 Dual Brush 的
-   `DualBuilder::step_len`）= `max(0.5, 笔刷 size × spacing%)`，size 取笔刷面板本身的尺寸（不小于 1px）。
-   笔压/倾斜/速度带来的尺寸动力学只改 dab 的大小，**不再改 dab 的间距**（2026-11-16 用户要求「间距
-   完全对照笔刷尺寸的百分比」，此前 `step_len` 用的是 `base_diameter(...)`，开笔压尺寸或 Speed→Size
-   时轻压/快画会跟着变间距）。
+1. **dab 间距只跟距离与当前直径有关**：`dynamics.rs` 的 `DabBuilder::step_len`（以及 Dual Brush 的
+   `DualBuilder::step_len`）= `max(0.5, 直径 × spacing%)`，直径取 `base_diameter(...)`（笔压/倾斜/速度的
+   尺寸动力学已算进去）且不小于 1px。间距跟着**每个 dab 的实际直径**走：轻压的 dab 更小、间距也更近，
+   密度不变（PS/C3 行为）。2026-11-16 试过改成固定 `brush.size`，用户实测反馈「间距仍被速度影响」，
+   因为笔压一抖就只剩「小 dab + 大盘距」的疏点，已改回。
    `PathWalker` 里**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
    `MIN_SPEED_STEP` 已删除）；`spacing_enabled` 只为老预设兼容，不再改变规则。
    慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::dab_pitch_is_...`）。
