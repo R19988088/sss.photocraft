@@ -37,7 +37,7 @@ pub use planner::{
     F_ADD_DIFF, F_ATOP, F_BLEND_IF, F_CHANNELS, F_FIRST, F_GATE, F_HDR, F_KNOCKOUT, F_LAB, F_LAYER_SHAPE, F_NO_LAYER, F_OUTLINE, F_QUANT, F_REL, F_STROKE_OUT,
     F_TEXT_GAMMA, F_VECTOR, INIT_ALPHA, INIT_COVER, INIT_INSIDE, INIT_OPAQUE, INIT_OUTLINE, INIT_RELATIVE, INIT_SCALE, INIT_VSTROKE, SHAPE_MAP,
 };
-pub use types::{Checkpoint, DocCtx, FxLayer, Kernel, MapRef, MaskUse, Pass, Role, SurfaceRef, TexUse, Unsupported};
+pub use types::{FieldSpec, Checkpoint, DocCtx, FxLayer, Kernel, MapRef, MaskUse, Pass, Role, SurfaceRef, TexUse, Unsupported};
 
 /// Index of a chunk-sized accumulator texture.
 pub type Slot = u32;
@@ -51,20 +51,29 @@ pub struct Plan<'a> {
     pub fx: Vec<FxLayer<'a>>,
     /// Complete root stack units, where only the accumulated backdrop remains live.
     pub checkpoints: Vec<Checkpoint>,
+    /// Line-art fields the caller builds before executing the passes (C3's cached `maxDiff`).
+    pub fields: Vec<FieldSpec>,
 }
 
-/// Build the pass list for `doc`.
-pub fn plan(doc: &Document) -> Result<Plan<'_>, Unsupported> {
+/// Build the pass list for `doc`, drawing `region` (its line-art fields are scoped to it).
+pub fn plan_region(doc: &Document, region: Rect) -> Result<Plan<'_>, Unsupported> {
     if doc.mode == photocraft_color::ColorMode::Multichannel {
         return Err(Unsupported("Multichannel inks (printed on the CPU)".into()));
     }
-    let mut p = Planner::new(DocCtx::of(doc));
+    let mut cx = DocCtx::of(doc);
+    cx.region = region.intersect(&cx.canvas);
+    let mut p = Planner::new(cx);
     let root = p.clear();
     // Start at the topmost layer that hides everything beneath it (an opaque fill layer): the
     // layers below can't change the result, so they cost no passes or uploads.
     let start = doc.layers.iter().rposition(|l| photocraft_compose::occludes_below(l, doc.mode)).unwrap_or(0);
     let root = p.stack_inner(doc.layers.get(start..).unwrap_or(&doc.layers), root, Some(start))?;
     Ok(p.finish(root))
+}
+
+/// Build the pass list for the whole document.
+pub fn plan(doc: &Document) -> Result<Plan<'_>, Unsupported> {
+    plan_region(doc, doc.bounds())
 }
 
 #[cfg(test)]

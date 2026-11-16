@@ -165,14 +165,15 @@ impl Compositor {
             let lv = fr.luts.get(i).and_then(Option::as_ref).map_or(dummy, |(_, v)| v);
             let map = bound.maps[i].as_ref().map_or(dummy, |(v, _)| v);
             let pat = fr.patterns.get(i).and_then(Option::as_ref).unwrap_or(dummy);
+            let fld = p.field.and_then(|f| self.field_views.get(f)).and_then(Option::as_ref).map_or(dummy, |v| v);
             let run = runs.get(i).copied().unwrap_or(1);
             if run > 1 {
                 // The extra layers' pixels in tex_b, tex_c and map_tex (`batch_layer`).
                 let extra = |e: usize| bound.views.get(i + e).and_then(|v| v.0).map_or(dummy, |(k, _)| resident_views[k]);
-                bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), extra(1), tv, mv, lv, extra(2), extra(3), pat])));
+                bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), extra(1), tv, mv, lv, extra(2), extra(3), pat, fld])));
                 continue;
             }
-            bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), slot(p.b), tv, mv, lv, slot(p.c), map, pat])));
+            bg1.push(Some(texture_group(device, &self.kit.bgl1, &[slot(p.a), slot(p.b), tv, mv, lv, slot(p.c), map, pat, fld])));
         }
 
         for (ci, c) in chunks.iter().enumerate() {

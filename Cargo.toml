@@ -27,6 +27,7 @@ photocraft-affinity = { path = "crates/affinity" }
 photocraft-compose = { path = "crates/compose" }
 photocraft-gpu = { path = "crates/gpu" }
 photocraft-paint = { path = "crates/paint" }
+photocraft-sssp = { path = "crates/sssp" }
 photocraft-algo = { path = "crates/algo" }
 photocraft-io = { path = "crates/io" }
 photocraft-text = { path = "crates/text" }

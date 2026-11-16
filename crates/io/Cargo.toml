@@ -34,6 +34,7 @@ photocraft-raw = { workspace = true }
 photocraft-affinity = { workspace = true }
 photocraft-text = { workspace = true }
 photocraft-paint = { workspace = true }
+photocraft-sssp = { workspace = true }
 photocraft-vector = { workspace = true }
 photocraft-format = { path = "../format" }
 craft-docpath = { workspace = true }

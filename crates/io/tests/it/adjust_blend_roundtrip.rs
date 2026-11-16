@@ -134,6 +134,14 @@ fn adjustments() -> Vec<(Adjustment, bool)> {
             | Adjustment::GradientMap { .. }
             | Adjustment::SelectiveColor { .. }
             | Adjustment::Unsupported { .. } => {}
+            // `Halftone` has no PSD block at all — `adjust_map::write` writes nothing for it and
+            // the export warns that the screen is not saved — so it cannot appear in the round-trip
+            // list above; listing it here keeps the guard compiling for every other kind.
+            Adjustment::Halftone { .. }
+            // C3's CMYK screen print and line art also have no PSD block (`adjust_map::write`
+            // writes nothing for them and the export warns), so they stay out of the list too.
+            | Adjustment::CmykScreenPrint { .. }
+            | Adjustment::LineArt { .. } => {}
         }
     }
     all

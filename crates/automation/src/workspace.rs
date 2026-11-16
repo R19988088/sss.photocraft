@@ -1,5 +1,6 @@
 //! Capability-based filesystem policy for untrusted automation paths.
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Component, Components, Path, PathBuf, Prefix};
 use std::sync::Arc;
@@ -244,11 +245,57 @@ fn request_path(raw: &str, root: Option<&RootCapability>) -> Result<PathBuf, Aut
     let Some(root) = root.filter(|_| path.is_absolute()) else { return relative_path(raw) };
     // Prefer the trusted launch spelling: it can itself contain `..`. Only that
     // exact granted prefix is exempt; traversal in the remaining request still fails below.
-    let request = path_beneath_root(path, &root.configured_path)
-        .or_else(|| path_beneath_root(path, &root.path))
+    let request = beneath(path, &root.configured_path)
+        .or_else(|| beneath(path, &root.path))
+        .or_else(|| canonical_spelling_beneath(path, &root.path))
         .ok_or_else(|| path_error(raw, "absolute paths must be inside the automation root"))?;
-    let rest = request.map(|c| c.as_os_str().to_str().ok_or_else(|| path_error(raw, "path is not UTF-8"))).collect::<Result<Vec<_>, _>>()?;
+    let rest = request.iter().map(|c| c.to_str().ok_or_else(|| path_error(raw, "path is not UTF-8"))).collect::<Result<Vec<_>, _>>()?;
     relative_path(&rest.join("/"))
+}
+
+/// The request's components below `root`, or `None` when it isn't spelled beneath that root.
+fn beneath(path: &Path, root: &Path) -> Option<Vec<OsString>> {
+    path_beneath_root(path, root).map(|c| c.map(|x| x.as_os_str().to_os_string()).collect())
+}
+
+/// A path with the macOS `/private` prefix removed (`/private/var` and `/var` name the same
+/// directory there). Any other difference between two spellings is a link, not the same path.
+fn without_private(path: &Path) -> Vec<OsString> {
+    let mut parts: Vec<OsString> = path.components().map(|c| c.as_os_str().to_os_string()).collect();
+    let is_root = |s: &OsString| *s == std::ffi::OsStr::new("/");
+    if cfg!(unix) && parts.first().is_some_and(is_root) && parts.get(1).is_some_and(|c| c == std::ffi::OsStr::new("private")) {
+        parts.remove(1);
+    }
+    parts
+}
+
+/// The request's components below `root` when it spells the root's canonical path itself, allowing
+/// only the platform's own normalization (macOS `/var` → `/private/var`). A path that resolves
+/// elsewhere through a link is refused: only the granted spellings are exempt.
+fn canonical_spelling_beneath(path: &Path, root: &Path) -> Option<Vec<OsString>> {
+    let root_parts = without_private(root);
+    // The request may spell the same root with or without the platform prefix: take the matching
+    // number of its own components before resolving them.
+    let n = root_parts.len() + usize::from(has_private(path));
+    if path.components().count() < n {
+        return None;
+    }
+    let prefix: PathBuf = path.components().take(n).collect();
+    let canon = std::fs::canonicalize(&prefix).ok()?;
+    if without_private(&canon) != root_parts || without_private(&prefix) != without_private(&canon) {
+        return None;
+    }
+    Some(path.components().skip(n).map(|c| c.as_os_str().to_os_string()).collect())
+}
+
+/// Whether the path carries the macOS `/private` prefix, the one normalization `without_private`
+/// removes.
+fn has_private(path: &Path) -> bool {
+    if !cfg!(unix) {
+        return false;
+    }
+    let mut parts = path.components().map(|c| c.as_os_str().to_os_string());
+    parts.next().is_some_and(|s| s == std::ffi::OsStr::new("/")) && parts.next().is_some_and(|s| s == std::ffi::OsStr::new("private"))
 }
 
 /// Strip a granted root prefix without resolving the client path with ambient authority.

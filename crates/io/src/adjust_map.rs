@@ -705,7 +705,11 @@ pub fn write(adj: &Adjustment) -> Vec<([u8; 4], Vec<u8>)> {
         // Photoshop has no halftone adjustment layer, so there is no block to write: the export
         // warns that the layer's screen is not saved in PSD (the order of the stack and the
         // layer's own settings still are).
-        Adjustment::Halftone { .. } => {}
+        Adjustment::Halftone { .. }
+        // C3's CMYK screen print and line art: no PSD layer type either, so the layer keeps its
+        // pixels and settings without an adjustment block.
+        | Adjustment::CmykScreenPrint { .. }
+        | Adjustment::LineArt { .. } => {}
         Adjustment::Unsupported { psd_key, raw } => {
             let k = psd_key.as_bytes();
             if k.len() == 4 {

@@ -69,6 +69,8 @@ fn pixel(doc: &Document, x: f64, y: f64) -> Option<[f64; 2]> {
     if px < f64::from(i32::MIN) || px > f64::from(i32::MAX) || py < f64::from(i32::MIN) || py > f64::from(i32::MAX) {
         return None;
     }
+    // A point is stored at the centre of the pixel it sits on; document operations move it as a
+    // whole (#9302), and the list reports what the pixel centre is, not a pixel index.
     doc.bounds().contains(px as i32, py as i32).then_some([px + 0.5, py + 0.5])
 }
 

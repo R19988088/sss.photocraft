@@ -11,11 +11,35 @@ use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel, ToneSpace, lut
 use crate::Buffer;
 
 mod channels;
+mod cmyk_screen;
 mod color;
 mod halftone;
+mod line_art;
 mod tone;
 
+pub use cmyk_screen::apply as cmyk_screen_print;
 pub use halftone::{HALFTONE_WHITE_MIN, HalftoneScreen, cell_noise};
+pub use line_art::{
+    Field as LineArtField, LineArtParams, apply as line_art, apply_field as line_art_apply_field, apply_shared as line_art_apply_shared, field as line_art_field,
+    radius as line_art_radius,
+};
+
+/// Line art's parameters, when `adj` is a line art adjustment.
+pub fn line_art_params(adj: &Adjustment) -> Option<LineArtParams> {
+    match adj {
+        Adjustment::LineArt { intensity, sharpness, thickness, shadows, midtones, highlights, color, blend } => Some(LineArtParams {
+            intensity: *intensity,
+            sharpness: *sharpness,
+            thickness: *thickness,
+            shadows: *shadows,
+            midtones: *midtones,
+            highlights: *highlights,
+            color: *color,
+            blend: *blend,
+        }),
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 use channels::lab_denorm;
@@ -290,6 +314,16 @@ fn apply_depth_mode(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer, dept
                 }
                 let o = screen.eval(c, x0 + (i % w) as i32, y0 + (i / w) as i32);
                 p[..3].copy_from_slice(&o);
+            }
+        }
+        Adjustment::CmykScreenPrint { dot_size, angle, cyan, magenta, yellow, black } => {
+            // C3's four-ink screen print, ink by ink (see `cmyk_screen`).
+            cmyk_screen::apply(buf, *dot_size, *angle, [*cyan, *magenta, *yellow, *black]);
+        }
+        Adjustment::LineArt { .. } => {
+            // C3's edge-grown ink lines (see `line_art`); it reads the artwork below as its source.
+            if let Some(params) = line_art_params(adj) {
+                line_art::apply(buf, &params);
             }
         }
         Adjustment::ColorLookup { lut: Some(table), size, tetrahedral, dither, .. } if lut3d_len(*size).is_some_and(|len| table.len() >= len) => {

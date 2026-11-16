@@ -203,6 +203,8 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Image", "Adjustments"], "Gradient Map…", None, "image.adjustments.gradientMap"),
     (&["Image", "Adjustments"], "Selective Color…", None, "image.adjustments.selectiveColor"),
     (&["Image", "Adjustments"], "Halftone…", None, "image.adjustments.halftone"),
+    (&["Image", "Adjustments"], "CMYK…", None, "image.adjustments.cmykScreenPrint"),
+    (&["Image", "Adjustments"], "Line Art…", None, "image.adjustments.lineArt"),
     (&["Image", "Adjustments"], "---", None, "---"),
     (&["Image", "Adjustments"], "Shadows/Highlights…", None, "image.adjustments.shadowsHighlights"),
     (&["Image", "Adjustments"], "HDR Toning…", None, "image.adjustments.hdrToning"),
@@ -319,6 +321,8 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Layer", "New Adjustment Layer"], "Gradient Map…", None, "layer.newAdjustmentLayer.gradientMap"),
     (&["Layer", "New Adjustment Layer"], "Selective Color…", None, "layer.newAdjustmentLayer.selectiveColor"),
     (&["Layer", "New Adjustment Layer"], "Halftone…", None, "layer.newAdjustmentLayer.halftone"),
+    (&["Layer", "New Adjustment Layer"], "CMYK…", None, "layer.newAdjustmentLayer.cmykScreenPrint"),
+    (&["Layer", "New Adjustment Layer"], "Line Art…", None, "layer.newAdjustmentLayer.lineArt"),
     (&["Layer"], "Layer Content Options…", None, "layer.layerContentOptions"),
     (&["Layer"], "---", None, "---"),
     (&["Layer", "Layer Mask"], "Reveal All", None, "layer.layerMask.revealAll"),
@@ -812,3 +816,17 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Window"], "Tools", None, "window.panel.tools"),
     (&["Window"], "Contextual Task Bar", None, "window.panel.contextualTaskBar"),
 ];
+
+/// Menu actions whose feature only an `.sssp` project can store (PSD has no such layer): the row
+/// shows `SSSP` at its right, as the reference app marks its own additions.
+pub fn is_sssp_only(id: &str) -> bool {
+    matches!(
+        id,
+        "layer.newAdjustmentLayer.halftone"
+            | "image.adjustments.halftone"
+            | "layer.newAdjustmentLayer.cmykScreenPrint"
+            | "image.adjustments.cmykScreenPrint"
+            | "layer.newAdjustmentLayer.lineArt"
+            | "image.adjustments.lineArt"
+    )
+}

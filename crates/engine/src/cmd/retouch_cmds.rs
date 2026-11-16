@@ -148,6 +148,10 @@ pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
             None => base.smoothing.clone(),
         },
         erase: false,
+        // Retouching reads the brush as a footprint, not as paint: the C3 tip maths reaches a
+        // pixel past the nominal radius, which would widen every hole and let neighbouring
+        // strokes merge. Keep the geometry's footprint (upstream's) while painting keeps C3.
+        c3_tip_math: false,
         ..base.clone()
     }
 }

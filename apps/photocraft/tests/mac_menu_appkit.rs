@@ -94,6 +94,9 @@ fn main() {
     };
 
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), photocraft_ui_egui::Services::default());
+    // The AppKit layout asserted below is the English one; pin the UI language so the test does not
+    // depend on the Mac's system language (a zh-Hans system would build 文件/编辑/… instead).
+    photocraft_ui_egui::i18n::set_current(photocraft_ui_egui::i18n::Lang::EN);
     let ctx = egui::Context::default();
     let frame = |app: &mut PhotocraftApp, raw: egui::RawInput| {
         let mut out = ctx.run_ui(raw, |ui| {

@@ -359,6 +359,9 @@ pub fn liquify_targets(s: &Session, p: &Value) -> Result<Vec<LayerId>> {
 
 fn liquify(s: &mut Session, p: &Value) -> Result<Value> {
     let cached = s.take_cached_transform();
+    // A subset of colour components only receives the deformation of those components (a linked
+    // mask stays untouched), as the other geometric filters already do (`run_on_layer`).
+    let colors = crate::color_channels::target(s, p)?;
     let canvas = s.active().ok_or(EngineError::NoDocument)?.doc.bounds();
     let (strokes, cell) = liquify_params(LIQUIFY, p, canvas)?;
     let ids = liquify_targets(s, p)?;
@@ -389,6 +392,9 @@ fn liquify(s: &mut Session, p: &Value) -> Result<Value> {
             }
             let layer = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
             if let LayerContent::Raster(surface) = &mut layer.content {
+                // Component targeting keeps the untouched components as they were: the warp is
+                // written into the selected ones only.
+                let before = colors.map(|_| surface.clone());
                 if let Some(cached) = &cached {
                     *surface = cached.pixels.get(id).cloned().ok_or_else(|| bad(LIQUIFY, "missing resident layer output"))?;
                 } else {
@@ -398,8 +404,13 @@ fn liquify(s: &mut Session, p: &Value) -> Result<Value> {
                         None => warped,
                     };
                 }
+                if let (Some(colors), Some(before)) = (colors, before) {
+                    crate::color_channels::restrict_surface(&before, surface, colors)?;
+                }
             }
-            if let Some(mask) = &mut layer.mask
+            // A colour-component edit leaves the linked mask alone.
+            if colors.is_none()
+                && let Some(mask) = &mut layer.mask
                 && mask.linked
             {
                 if let Some(cached) = &cached {

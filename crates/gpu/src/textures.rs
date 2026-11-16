@@ -107,6 +107,17 @@ pub(crate) type ResKey = (LayerId, Role, Cell);
 /// larger than the texture limit.
 pub(crate) type FxKey = (LayerId, Option<Cell>);
 
+/// One line-art field: C3's `maxDiff` over a rect, uploaded as R32F and read pointwise.
+pub(crate) struct CachedField {
+    /// The adjustment layer it belongs to (its backdrop is the layers below this root index).
+    pub(crate) layer_index: usize,
+    pub(crate) thickness: f32,
+    pub(crate) rect: Rect,
+    pub(crate) texture: Tex,
+    /// GPU bytes of the texture (R32F).
+    pub(crate) bytes: u64,
+}
+
 pub(crate) struct CachedPattern {
     pub(crate) fingerprint: u64,
     pub(crate) format: PixelFormat,

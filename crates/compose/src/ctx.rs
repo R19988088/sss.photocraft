@@ -53,6 +53,9 @@ pub(crate) struct Ctx<'a> {
     pub(crate) fx_maps: std::sync::Mutex<std::collections::HashMap<u64, (std::sync::Arc<effects::FxMaps>, bool)>>,
     /// The rectangle being rendered (a band of [`render_bands`]); see [`effect_region`].
     pub(crate) fx_clip: std::sync::Mutex<Option<Rect>>,
+    /// Line art's field for this render, shared by all its tiles (C3 builds one field per ROI;
+    /// per-tile fields would ink tile edges with a clamped neighbourhood).
+    pub(crate) line_field: std::sync::Mutex<Option<(f32, std::sync::Arc<adjust::LineArtField>)>>,
     /// The whole-region effect maps of this render's layers wouldn't fit in the effect cache
     /// together ([`fx_over_budget`]), so local ones are clipped to the render rect (#8330).
     pub(crate) fx_over_budget: bool,
@@ -127,10 +130,34 @@ impl<'a> Ctx<'a> {
             vector_masks: RenderVectorMasks::default(),
             fx_maps: Default::default(),
             fx_clip: Default::default(),
+            line_field: Default::default(),
             fx_over_budget: fx_over_budget(&doc.layers, doc.bounds()),
             layer_keys: Default::default(),
             tone_luts: prepare_tones(&doc.layers, 0),
         }
+    }
+
+    /// Builds line art's field for this render's `rect` once, for every tile and band to share.
+    /// C3 does the same per ROI (`ensureLineArtField`); a per-tile field inks the tile edges from
+    /// a clamped neighbourhood, which is exactly the 256 px seams a raster compositor gets.
+    pub(crate) fn set_line_field(&self, doc: &Document, rect: Rect) {
+        let Some((index, thickness)) = doc.layers.iter().enumerate().find_map(|(i, l)| match &l.content {
+            LayerContent::Adjustment(a) if l.visible => adjust::line_art_params(a).map(|p| (i, p.thickness)),
+            _ => None,
+        }) else {
+            return;
+        };
+        let radius = adjust::line_art_radius(thickness) as i32;
+        let field_rect = rect.inflate(radius).intersect(&doc.bounds());
+        // One field texture per render, as the GPU's: a huge rect keeps the per-tile fallback.
+        if field_rect.is_empty() || u64::from(field_rect.width()) * u64::from(field_rect.height()) > (4 << 20) {
+            return;
+        }
+        let mut below = doc.clone();
+        below.layers.truncate(index);
+        let buf = crate::render::render(&below, field_rect);
+        let field = adjust::line_art_field(&buf, thickness);
+        *self.line_field.lock().unwrap_or_else(|e| e.into_inner()) = Some((thickness, std::sync::Arc::new(field)));
     }
 
     /// Start rendering `rect`: effect maps clipped to the previous rectangle are let go.
@@ -154,6 +181,14 @@ impl<'a> Ctx<'a> {
             let extrapolate = adjust::float_tone_extrapolates(adj, Some(self.depth), self.mode);
             adjust::apply_tone(buf, *space, luts.get_or_init(|| adjust::tone_luts_depth(adj, Some(self.depth))), identity, extrapolate);
         } else {
+            if let photocraft_doc::Adjustment::LineArt { thickness, .. } = adj {
+                let field = self.line_field.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let shared = field.as_ref().and_then(|(t, f)| (*t == *thickness).then_some(&**f));
+                if let Some(params) = adjust::line_art_params(adj) {
+                    adjust::line_art_apply_shared(buf, &params, shared);
+                }
+                return;
+            }
             adjust::apply_in(adj, buf, self.transfer, Some(self.depth), self.mode);
         }
     }

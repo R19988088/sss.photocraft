@@ -24,9 +24,11 @@ use crate::tone::{self, HistSource, Histograms};
 use crate::widgets::{self, hue_color};
 
 mod basic;
+mod cmyk_screen;
 mod curves;
 mod gradient_map;
 mod halftone;
+mod line_art;
 mod hue_saturation;
 mod levels;
 mod selective_color;
@@ -56,7 +58,7 @@ use selective_color::selective_color;
 pub use session::{layer_editor, layer_mem, properties_coalesce, properties_reset, session_start};
 
 /// Kinds edited here (Color Lookup has its own editor in `adjust_ui`; Invert has none).
-pub const KINDS: [&str; 15] = [
+pub const KINDS: [&str; 17] = [
     "brightnessContrast",
     "levels",
     "curves",
@@ -72,6 +74,9 @@ pub const KINDS: [&str; 15] = [
     "gradientMap",
     "selectiveColor",
     "halftone",
+    // C3's separate CMYK layer and its 线条强化.
+    "cmykScreenPrint",
+    "lineArt",
 ];
 
 pub fn has_editor(kind: &str) -> bool {
@@ -176,6 +181,8 @@ pub fn editor(ui: &mut egui::Ui, kind: &str, v: &mut Value, cx: &EditorCx) -> Ed
         "gradientMap" => gradient_map(ui, v, cx),
         "selectiveColor" => selective_color(ui, v, cx),
         "halftone" => halftone::halftone(ui, v, cx),
+        "cmykScreenPrint" => cmyk_screen::cmyk_screen(ui, v, cx),
+        "lineArt" => line_art::line_art(ui, v, cx),
         _ => Edit::default(),
     }
 }

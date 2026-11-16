@@ -53,10 +53,13 @@ impl Kit {
                 lut_texture(device, queue, &[row])
             });
             let mut views: Vec<&wgpu::TextureView> = d.views.iter().map(|v| v.as_ref().unwrap_or(&self.dummy)).collect();
+            // Binding 8 (line art's field) has no owner in an effect map.
+            views.push(&self.dummy);
             if let Some((_, lv)) = &lut {
                 views[4] = lv;
             }
             let bg1 = texture_group(device, &self.bgl1, &views);
+            // `d.views` is 0..7; the field slot stays the dummy for effect maps.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pc_fx_map"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

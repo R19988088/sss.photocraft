@@ -67,6 +67,10 @@ pub(super) fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: u
             }
             if let Some(sc) = &it.shortcut {
                 b = b.shortcut_text(crate::shortcuts::pretty(sc));
+            } else if crate::menu_catalog::is_sssp_only(&it.id) {
+                // 网点 and the other own-only adjustments live only in an `.sssp` project, so the
+                // row says so where a shortcut would sit.
+                b = b.shortcut_text("SSSP");
             }
             let hit = nav.row(ui, depth - 1, it.enabled, Some(&it.id), mnemonic, |ui, _| {
                 let r = ui.add_enabled(it.enabled, b);

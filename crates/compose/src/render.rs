@@ -62,6 +62,7 @@ pub(crate) fn render_tiled_with(doc: &Document, rect: Rect, tile: i32, cx: &Ctx)
         return buf;
     }
     cx.set_fx_clip(rect);
+    cx.set_line_field(doc, rect);
     if i64::from(rect.width()) <= i64::from(tile) && i64::from(rect.height()) <= i64::from(tile) {
         return photocraft_color::convert::with_cmyk_space(cmyk, || {
             let mut buf = multichannel::backdrop(doc, rect);
@@ -323,6 +324,7 @@ pub fn render_layer(layer: &Layer, rect: Rect) -> Buffer {
             vector_masks: RenderVectorMasks::default(),
             fx_maps: Default::default(),
             fx_clip: Default::default(),
+            line_field: Default::default(),
             fx_over_budget: false,
             tone_luts: prepare_tones(std::slice::from_ref(layer), 0),
             doc: None,

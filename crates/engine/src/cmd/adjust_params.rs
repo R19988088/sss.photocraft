@@ -160,6 +160,8 @@ pub fn adjustment_kind(a: &Adjustment) -> &'static str {
         Adjustment::SelectiveColor { .. } => "selectiveColor",
         Adjustment::ColorLookup { .. } => "colorLookup",
         Adjustment::Halftone { .. } => "halftone",
+        Adjustment::CmykScreenPrint { .. } => "cmykScreenPrint",
+        Adjustment::LineArt { .. } => "lineArt",
         Adjustment::Unsupported { .. } => "unsupported",
         _ => "invert",
     }

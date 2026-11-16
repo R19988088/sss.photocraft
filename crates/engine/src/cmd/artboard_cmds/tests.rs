@@ -727,7 +727,11 @@ fn moving_an_artboard_left_of_or_above_the_origin_grows_the_canvas_there() {
 fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_document() {
     // #9302: the re-based document moved everything but the Color Sampler points and the
     // painting symmetry, which then sat on other pixels. They follow, as with Canvas Size.
-    let samplers = |s: &Session| s.active().unwrap().color_samplers.clone();
+    // Points are stored at the centre of their pixel: report the pixel they sit on.
+    let samplers = |s: &Session| {
+        let d = s.active().unwrap();
+        d.color_samplers.iter().map(|p| [p[0] - 0.5, p[1] - 0.5]).collect::<Vec<_>>()
+    };
     let center = |s: &Session| s.active().unwrap().symmetry.as_ref().and_then(|y| y.preset()).map(|p| p.center);
     for (cmd, p) in [("layer.translate", json!({"dx": -60, "dy": -30})), ("layer.artboard.set", json!({"x": -50, "y": -20}))] {
         let mut s = session(8);
@@ -799,7 +803,8 @@ fn duplicating_a_board_beside_one_past_the_origin_moves_the_color_samplers_with_
             s.execute("layer.duplicate", json!({"layer": gid.0})).unwrap();
         }
         assert_eq!(board_rect(&s, gid.0), Rect::new(0, 10, 40, 50), "multi {multi}: the document shifted right 40");
-        assert_eq!(s.active().unwrap().color_samplers, vec![[105.0, 15.0]], "multi {multi}");
+        // The point sits at (105.5, 15.5), the centre of the pixel it samples.
+        assert_eq!(s.active().unwrap().color_samplers, vec![[105.5, 15.5]], "multi {multi}");
         assert!(red_at(&s, 105, 15), "multi {multi}: the sampler is still on the square");
     }
 }

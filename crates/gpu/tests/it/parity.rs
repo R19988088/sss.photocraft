@@ -263,6 +263,54 @@ fn tile_growth_rewrite_keeps_fresh_texels_in_the_overlap() {
     }
 }
 
+/// Line art across a chunk boundary: the plan reads C3's field for the drawn region and the
+/// per-pixel read never leaves the pixel, so a canvas wider than `CHUNK` has no seam — the GPU
+/// matches the CPU oracle on the columns around every chunk edge.
+#[test]
+fn line_art_field_has_no_seam_across_chunks() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::adjust::LineArtBlend;
+    // Two chunks wide plus a remainder, one chunk high: the seam sits at x = 1024.
+    let (w, h) = (1200u32, 300u32);
+    let mut doc = Document::new("line art seam", Size::new(w, h), ColorMode::Rgb, SampleType::U8);
+    let mut layer = Layer::raster("art", PixelFormat::RGBA8);
+    let mut px: Vec<f32> = Vec::with_capacity((w * h * 4) as usize);
+    let q = |v: f32| ((v.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            // A hard vertical edge plus fine detail, so any dropped neighbourhood shows.
+            let rgb = if (x / 7) % 2 == 0 { [0.12 + fy * 0.2, 0.55 - fx * 0.3, 0.8 - fy * 0.4] } else { [0.9 - fy * 0.5, 0.2 + fx * 0.3, 0.15] };
+            px.extend_from_slice(&[q(rgb[0]), q(rgb[1]), q(rgb[2]), 1.0]);
+        }
+    }
+    layer.surface_mut().unwrap().write_region(Rect::new(0, 0, w as i32, h as i32), &px);
+    doc.layers = vec![
+        layer,
+        Layer::new(
+            "adjustment",
+            LayerContent::Adjustment(Adjustment::LineArt {
+                intensity: 90.0,
+                sharpness: 70.0,
+                thickness: 3.0,
+                shadows: 70.0,
+                midtones: 50.0,
+                highlights: 30.0,
+                color: [0.05, 0.05, 0.05],
+                blend: LineArtBlend::Multiply,
+            }),
+        ),
+    ];
+    // The whole canvas at once takes the field path; the seam columns (x = 1020..1028) must
+    // agree with the CPU, which never chunks.
+    diff_rect(&mut g, &doc, doc.bounds(), "line art seam (whole canvas)").unwrap_or_else(|e| panic!("{e}"));
+    // And a render of one narrow column strip either side of the seam, which builds its own
+    // (much smaller) field for that region only.
+    for strip in [Rect::from_xywh(1010, 40, 40, 200), Rect::from_xywh(0, 0, 60, 60), Rect::from_xywh(w as i32 - 60, h as i32 - 60, 60, 60)] {
+        diff_rect(&mut g, &doc, strip, "line art seam (strip)").unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
 /// Closing a document frees what the compositor holds for it, however its canvas entry went
 /// (#4529): `retain_docs` drops the resident pages, effect maps and lower-stack composite of
 /// documents that aren't open, and keeps the open ones.
@@ -3456,4 +3504,60 @@ fn sibling_compositors_have_independent_residency_and_configuration() {
     assert!(worst_diff(&photocraft_compose::render(&d, d.bounds()).px, &out).0 <= TOL);
     assert!(g.comp.resident_bytes() > 0);
     assert_ne!(g.comp.resident_budget(), sibling.resident_budget());
+}
+
+/// C3's printing adjustments on the GPU: CMYK screen print is analytic per pixel, line art reads
+/// its neighbourhood through its own pass (`fs_adjust_near`). The canvas stays inside one chunk
+/// so the two read the same pixels (see the seam note in `compose.wgsl`).
+#[test]
+fn c3_printing_adjustments_match_cpu() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::adjust::LineArtBlend;
+    let (w, h) = (200u32, 160u32);
+    let mut doc = Document::new("printing", Size::new(w, h), ColorMode::Rgb, SampleType::U8);
+    let mut layer = Layer::raster("art", PixelFormat::RGBA8);
+    let mut px: Vec<f32> = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            // A soft rainbow with a hard dark edge down the middle, so line art has both tone
+            // steps and flat areas to work with.
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            let rgb = if x < w / 2 {
+                [0.15 + fx * 0.5, 0.1 + fy * 0.4, 0.35]
+            } else {
+                [0.85 - fy * 0.3, 0.7 + fx * 0.2, 0.2 + fy * 0.5]
+            };
+            // 8-bit steps through the u8 surface, as the reference (CPU) render sees them.
+            let q = |v: f32| ((v.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+            px.extend_from_slice(&[q(rgb[0]), q(rgb[1]), q(rgb[2]), 1.0]);
+        }
+    }
+    layer.surface_mut().unwrap().write_region(Rect::new(0, 0, w as i32, h as i32), &px);
+    for adj in [
+        Adjustment::CmykScreenPrint { dot_size: 9.0, angle: 15.0, cyan: 20.0, magenta: -10.0, yellow: 35.0, black: 0.0 },
+        Adjustment::CmykScreenPrint { dot_size: 4.0, angle: 0.0, cyan: 0.0, magenta: 0.0, yellow: 0.0, black: 60.0 },
+        Adjustment::LineArt {
+            intensity: 80.0,
+            sharpness: 55.0,
+            thickness: 3.0,
+            shadows: 60.0,
+            midtones: 40.0,
+            highlights: 25.0,
+            color: [0.05, 0.04, 0.03],
+            blend: LineArtBlend::Multiply,
+        },
+        Adjustment::LineArt {
+            intensity: 120.0,
+            sharpness: 90.0,
+            thickness: 1.0,
+            shadows: 100.0,
+            midtones: 100.0,
+            highlights: 100.0,
+            color: [1.0, 1.0, 1.0],
+            blend: LineArtBlend::Screen,
+        },
+    ] {
+        doc.layers = vec![layer.clone(), Layer::new("adjustment", LayerContent::Adjustment(adj.clone()))];
+        check(&mut g, &doc, &format!("printing {adj:?}"));
+    }
 }

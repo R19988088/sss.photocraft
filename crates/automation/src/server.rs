@@ -1429,9 +1429,30 @@ mod tests {
         .unwrap()
         .unwrap();
         let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        // Hold the session lock while the wait is created, so the blur cannot start yet: however
+        // fast the machine is, the drop then lands on a job that has started, not one that ended.
+        let Backend::Headless(session) = &*mcp.backend else { panic!("headless") };
+        let (session, (locked, is_locked)) = (session.clone(), std::sync::mpsc::channel());
+        let holder = std::thread::spawn(move || {
+            let _held = session.lock().unwrap();
+            locked.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+        is_locked.recv().unwrap();
         let mut waiter = Waiter::new(None);
-        let waited = mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1));
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), waited).await.is_err(), "the blur ended before it was dropped");
+        let mut waited = Box::pin(mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1)));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut waited).await.is_err(), "the start waits for the lock");
+        holder.join().unwrap();
+        // The job starts once the lock is free; drop the wait while it runs.
+        let started = std::time::Instant::now();
+        loop {
+            if mcp.headless_op(|h| Ok(h.session.has_jobs())).await.unwrap().unwrap() {
+                break;
+            }
+            assert!(started.elapsed().as_secs() < 30, "the blur never started");
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        drop(waited);
         let t = std::time::Instant::now();
         loop {
             let (running, cancelled) =

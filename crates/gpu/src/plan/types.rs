@@ -18,6 +18,8 @@ pub enum Kernel {
     LayerBatchNormal,
     Atop,
     Adjust,
+    /// Adjustment that reads the neighbours of its source pixel (C3's line art).
+    AdjustNear,
     AdjMix,
     Lerp,
     /// Effect chain start: the layer at fill opacity, or an opaque copy of a clipping base.
@@ -60,6 +62,7 @@ impl Kernel {
             Kernel::LayerBatchNormal => "fs_layerbatch_normal",
             Kernel::Atop => "fs_atop",
             Kernel::Adjust => "fs_adjust",
+            Kernel::AdjustNear => "fs_adjust_near",
             Kernel::AdjMix => "fs_adjmix",
             Kernel::Lerp => "fs_lerp",
             Kernel::FxInit => "fs_fxinit",
@@ -96,7 +99,7 @@ impl Kernel {
     }
 
     /// Every kernel with a pipeline.
-    pub const DRAWN: [Kernel; 24] = [
+    pub const DRAWN: [Kernel; 25] = [
         Kernel::Content,
         Kernel::Mask,
         Kernel::Blend,
@@ -105,6 +108,7 @@ impl Kernel {
         Kernel::LayerBatchNormal,
         Kernel::Atop,
         Kernel::Adjust,
+        Kernel::AdjustNear,
         Kernel::AdjMix,
         Kernel::Lerp,
         Kernel::FxInit,
@@ -139,6 +143,20 @@ pub struct TexUse<'a> {
     pub layer: LayerId,
     pub role: Role,
     pub surface: SurfaceRef<'a>,
+}
+
+/// A line-art field (`compose::adjust::line_art::field`) the plan asks the compositor to build:
+/// C3's `maxDiff` cache, computed for the drawn region only and uploaded as one texture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldSpec {
+    /// The adjustment layer the field describes: its backdrop is every layer below it.
+    pub layer: LayerId,
+    /// Where that layer sits in `doc.layers` (root layers only; a nested one falls back to the
+    /// per-chunk ring pass, as its backdrop is a group composite).
+    pub layer_index: usize,
+    pub thickness: f32,
+    /// The field's rect in document pixels (the drawn region, grown by the ring and clipped).
+    pub rect: Rect,
 }
 
 /// An effect map sampled by a pass: map `map` of enabled effect `item` of `plan.fx[fx]`.
@@ -176,6 +194,8 @@ pub struct Pass<'a> {
     pub extra: [f32; 4],
     /// Extra shader flags (`F_KNOCKOUT`, …).
     pub flags: u32,
+    /// Index into [`Plan::fields`]: the line-art field this pass reads (`fs_adjust` kind 29).
+    pub field: Option<usize>,
     /// 4096-entry LUT rows (Levels / Curves / Gradient map / gradient stops).
     pub lut: Option<Vec<[f32; 4096]>>,
     pub gradient: bool,
@@ -232,6 +252,7 @@ impl<'a> Pass<'a> {
             params: [[0.0; 4]; 4],
             extra: [0.0; 4],
             flags: 0,
+            field: None,
             lut: None,
             gradient: false,
             map: None,
@@ -278,6 +299,9 @@ pub struct Checkpoint {
 #[derive(Clone, Copy)]
 pub struct DocCtx<'a> {
     pub canvas: Rect,
+    /// The region this render draws: line art's field is only computed for it (C3 computes its
+    /// field for the visible ROI, never for the whole canvas).
+    pub region: Rect,
     pub transfer: Transfer,
     pub light: GlobalLight,
     pub patterns: &'a [Pattern],
@@ -293,6 +317,7 @@ impl<'a> DocCtx<'a> {
     pub fn of(doc: &'a Document) -> Self {
         DocCtx {
             canvas: doc.bounds(),
+            region: doc.bounds(),
             transfer: Transfer::for_document(doc.mode, doc.depth),
             light: doc.global_light,
             patterns: &doc.patterns,

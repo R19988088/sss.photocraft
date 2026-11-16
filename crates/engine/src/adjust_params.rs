@@ -234,6 +234,49 @@ pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: Color
                 black: r.num("black", bk0, 0.0, 100.0)?,
             }
         }
+        "cmykScreenPrint" => {
+            let (d0, a0, c0, m0, y0, k0) = match base {
+                Some(Adjustment::CmykScreenPrint { dot_size, angle, cyan, magenta, yellow, black }) => (*dot_size, *angle, *cyan, *magenta, *yellow, *black),
+                _ => (82.0, 15.0, 0.0, 0.0, 0.0, 0.0),
+            };
+            Adjustment::CmykScreenPrint {
+                dot_size: r.num("dotSize", d0, 2.0, 96.0)?,
+                angle: r.num("angle", a0, -180.0, 180.0)?,
+                cyan: r.num("cyan", c0, -100.0, 100.0)?,
+                magenta: r.num("magenta", m0, -100.0, 100.0)?,
+                yellow: r.num("yellow", y0, -100.0, 100.0)?,
+                black: r.num("black", k0, -100.0, 100.0)?,
+            }
+        }
+        "lineArt" => {
+            let defaults = photocraft_compose::adjust::LineArtParams::defaults();
+            let (i0, sh0, t0, sd0, m0, h0, col0, blend0) = match base {
+                Some(Adjustment::LineArt { intensity, sharpness, thickness, shadows, midtones, highlights, color, blend }) => {
+                    (*intensity, *sharpness, *thickness, *shadows, *midtones, *highlights, *color, *blend)
+                }
+                _ => (defaults.intensity, defaults.sharpness, defaults.thickness, defaults.shadows, defaults.midtones, defaults.highlights, defaults.color, defaults.blend),
+            };
+            let blend = match r.get("blend") {
+                None => blend0,
+                Some(v) => match v.as_str() {
+                    Some("normal") => photocraft_doc::adjust::LineArtBlend::Normal,
+                    Some("multiply") => photocraft_doc::adjust::LineArtBlend::Multiply,
+                    Some("screen") => photocraft_doc::adjust::LineArtBlend::Screen,
+                    Some("overlay") => photocraft_doc::adjust::LineArtBlend::Overlay,
+                    _ => return Err(bad(&cmd, "`blend` must be normal, multiply, screen or overlay")),
+                },
+            };
+            Adjustment::LineArt {
+                intensity: r.num("intensity", i0, 0.0, 300.0)?,
+                sharpness: r.num("sharpness", sh0, 0.0, 100.0)?,
+                thickness: r.num("thickness", t0, 0.1, 10.0)?,
+                shadows: r.num("shadows", sd0, 0.0, 100.0)?,
+                midtones: r.num("midtones", m0, 0.0, 100.0)?,
+                highlights: r.num("highlights", h0, 0.0, 100.0)?,
+                color: r.color("color", col0)?,
+                blend,
+            }
+        }
         "colorLookup" => crate::adjust_cmds::lookup_from_params(p, base.filter(|b| matches!(b, Adjustment::ColorLookup { .. })))?,
         other => return Err(bad("adjustment", format!("unknown adjustment kind `{other}`"))),
     })
@@ -242,6 +285,22 @@ pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: Color
 /// The complete parameter set of `adj` (the inverse of [`from_params`]).
 pub fn to_params(adj: &Adjustment) -> Value {
     match adj {
+        Adjustment::CmykScreenPrint { dot_size, angle, cyan, magenta, yellow, black } => {
+            json!({"dotSize": dot_size, "angle": angle, "cyan": cyan, "magenta": magenta, "yellow": yellow, "black": black})
+        }
+        Adjustment::LineArt { intensity, sharpness, thickness, shadows, midtones, highlights, color, blend } => {
+            let name = match blend {
+                photocraft_doc::adjust::LineArtBlend::Normal => "normal",
+                photocraft_doc::adjust::LineArtBlend::Multiply => "multiply",
+                photocraft_doc::adjust::LineArtBlend::Screen => "screen",
+                photocraft_doc::adjust::LineArtBlend::Overlay => "overlay",
+            };
+            json!({
+                "intensity": intensity, "sharpness": sharpness, "thickness": thickness,
+                "shadows": shadows, "midtones": midtones, "highlights": highlights,
+                "color": hex(*color), "blend": name,
+            })
+        }
         Adjustment::Invert | Adjustment::Unsupported { .. } => json!({}),
         Adjustment::BrightnessContrast { brightness, contrast, legacy } => json!({"brightness": brightness, "contrast": contrast, "legacy": legacy}),
         Adjustment::Threshold { level } => json!({"level": (level * 255.0).round()}),

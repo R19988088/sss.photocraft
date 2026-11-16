@@ -139,7 +139,8 @@ impl Compositor {
         });
         let bgl1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_compose_textures"),
-            entries: &(0..8).map(tex_entry).collect::<Vec<_>>(),
+            // 0..7 as before; 8 is line art's field texture (`field_tex`).
+            entries: &(0..9).map(tex_entry).collect::<Vec<_>>(),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pc_compose"),
@@ -229,6 +230,8 @@ impl Compositor {
             prefix: prefix::Prefix::default(),
             temps: Vec::new(),
             patterns: HashMap::new(),
+            line_fields: Vec::new(),
+            field_views: Vec::new(),
             pattern_mode: photocraft_color::ColorMode::Rgb,
             pattern_doc: DocId(0),
             pattern_budget: PATTERN_BUDGET,

@@ -884,3 +884,29 @@ fn a_masked_artboards_thumbnail_retargets_it_and_ends_the_mask_view() {
     assert!(!h.state().ui.mask_target, "the board is targeted again");
     assert!(!viewing(&h), "and the mask view ends");
 }
+
+/// C3's printing adjustments wear the `SSSP` pill: PSD has no layer that can hold them, so only
+/// an `.sssp` project keeps them (图层行与菜单两处都标).
+#[test]
+fn the_c3_printing_adjustments_are_sssp_only() {
+    use photocraft_doc::adjust::LineArtBlend;
+    use photocraft_doc::{Adjustment, Layer};
+
+    let line_art = Adjustment::LineArt {
+        intensity: 100.0,
+        sharpness: 50.0,
+        thickness: 2.0,
+        shadows: 100.0,
+        midtones: 100.0,
+        highlights: 100.0,
+        color: [0.0, 0.0, 0.0],
+        blend: LineArtBlend::Normal,
+    };
+    let cmyk = Adjustment::CmykScreenPrint { dot_size: 9.0, angle: 15.0, cyan: 0.0, magenta: 0.0, yellow: 0.0, black: 0.0 };
+    for adj in [line_art, cmyk] {
+        let layer = Layer::new("printing", LayerContent::Adjustment(adj.clone()));
+        assert!(super::sssp_only(&layer), "{adj:?} must wear the SSSP pill");
+    }
+    // A plain adjustment survives in a PSD, so it carries no pill.
+    assert!(!super::sssp_only(&Layer::new("invert", LayerContent::Adjustment(Adjustment::Invert))));
+}

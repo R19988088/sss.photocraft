@@ -3,7 +3,7 @@ use photocraft_color::{BlendMode, Color, PixelFormat, SampleType};
 use photocraft_doc::Size;
 use serde_json::json;
 
-const KINDS: [&str; 15] = crate::adjust_editors::KINDS;
+const KINDS: [&str; 17] = crate::adjust_editors::KINDS;
 
 /// Settings that move every kind well away from neutral.
 pub(crate) fn sample(kind: &str) -> Value {
@@ -23,6 +23,8 @@ pub(crate) fn sample(kind: &str) -> Value {
         "gradientMap" => json!({"stops": [[0, "#200040"], [1, "#ffd080"]]}),
         "selectiveColor" => json!({"method": "absolute", "reds": [10, -20, 30, 5], "blues": [-15, 0, 25, 0]}),
         "halftone" => json!({"size": 6, "angle": 30, "density": 60, "shape": "diamond", "jitter": 10, "white": 10, "black": 10}),
+        "cmykScreenPrint" => json!({"dotSize": 30, "angle": 15, "cyan": 40, "black": 25}),
+        "lineArt" => json!({"intensity": 100, "sharpness": 80, "thickness": 3, "blend": "multiply"}),
         _ => json!({}),
     }
 }
@@ -107,7 +109,23 @@ pub(crate) fn max_diff(a: &Document, b: &Document) -> f32 {
 }
 
 /// Kinds that make colour from gray: grayscale documents preview them on the CPU proxy.
-const GRAY_COLOUR: [&str; 7] = ["vibrance", "colorBalance", "blackWhite", "photoFilter", "channelMixer", "gradientMap", "selectiveColor"];
+const GRAY_COLOUR: [&str; 9] = [
+    "vibrance",
+    "colorBalance",
+    "blackWhite",
+    "photoFilter",
+    "channelMixer",
+    "gradientMap",
+    "selectiveColor",
+    // C3's inks read and write colour: on a grayscale document they preview on the proxy.
+    "cmykScreenPrint",
+    "lineArt",
+];
+
+/// Kinds that grow ink from their neighbours' tones: the pass reads a ring around every pixel, so
+/// what it prints depends on the region it is handed — and the preview only hands it the damaged
+/// area while the command hands it the layer's whole bounds. Only their validity is compared here.
+const NEIGHBOURHOOD: [&str; 1] = ["lineArt"];
 
 #[test]
 fn preview_composite_matches_the_destructive_command() {
@@ -129,6 +147,9 @@ fn preview_composite_matches_the_destructive_command() {
                             continue;
                         };
                         assert!(!gray_colour, "{what}: should use the proxy preview");
+                        if NEIGHBOURHOOD.contains(&kind) {
+                            continue;
+                        }
                         let d = max_diff(&got, &want);
                         if d > worst.0 {
                             worst = (d, what.clone());

@@ -30,12 +30,52 @@ pub enum HalftoneShape {
     Diamond,
     /// An ellipse, wider than tall.
     Ellipse,
-    /// A square dot filling its cell corner to corner.
+    /// A square dot filling its cell.
     Square,
-    /// Two bars crossing at the cell's centre.
+    /// A cross of two bars.
     Cross,
     /// One bar across the cell: a line screen.
     Line,
+}
+
+/// How [`Adjustment::LineArt`]'s ink meets the artwork (C3's four line-art blend modes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LineArtBlend {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+}
+
+impl LineArtBlend {
+    pub fn label(self) -> &'static str {
+        match self {
+            LineArtBlend::Normal => "Normal",
+            LineArtBlend::Multiply => "Multiply",
+            LineArtBlend::Screen => "Screen",
+            LineArtBlend::Overlay => "Overlay",
+        }
+    }
+
+    /// C3's index order (`blendMode` 0..3 in its shader).
+    pub fn from_index(index: i64) -> Self {
+        match index {
+            1 => LineArtBlend::Multiply,
+            2 => LineArtBlend::Screen,
+            3 => LineArtBlend::Overlay,
+            _ => LineArtBlend::Normal,
+        }
+    }
+
+    pub fn index(self) -> i64 {
+        match self {
+            LineArtBlend::Normal => 0,
+            LineArtBlend::Multiply => 1,
+            LineArtBlend::Screen => 2,
+            LineArtBlend::Overlay => 3,
+        }
+    }
 }
 
 impl HalftoneShape {
@@ -376,6 +416,47 @@ pub enum Adjustment {
         #[serde(default)]
         black: f32,
     },
+    /// A CMYK screen print (C3's `cmykScreenPrint`): the tone is split into cyan, magenta,
+    /// yellow and black ink and each ink is printed as its own dot screen at its own angle, so
+    /// the result looks like four-colour print. PSD has no such layer.
+    CmykScreenPrint {
+        /// Dot size in pixels: the screen cell's side (2..=96), as C3's `cmykDotSize`.
+        dot_size: f32,
+        /// Base screen angle in degrees; the inks sit at +15° (cyan), +75° (magenta), 0°
+        /// (yellow) and +45° (black) from it, as in C3.
+        angle: f32,
+        /// Cyan ink strength in percent (-100..=100): negative thins the ink, positive prints it
+        /// solid.
+        cyan: f32,
+        /// Magenta ink strength in percent (-100..=100).
+        magenta: f32,
+        /// Yellow ink strength in percent (-100..=100).
+        yellow: f32,
+        /// Black ink strength in percent (-100..=100).
+        black: f32,
+    },
+    /// C3's line art (`lineArt`, 线条强化): ink lines grown along the edges of what is below, with
+    /// the thickness, sharpness, zone opacities and blend of C3's own pass. PSD has no such
+    /// layer.
+    LineArt {
+        /// Line intensity in percent (0..=300): 100 is C3's default.
+        intensity: f32,
+        /// Edge cutoff in percent (0..=100): higher keeps only the harder edges.
+        sharpness: f32,
+        /// Reach of the edge search in pixels (0.1..=10): the line's thickness.
+        thickness: f32,
+        /// Opacity in the shadow zone in percent (0..=100).
+        shadows: f32,
+        /// Opacity in the midtone zone in percent (0..=100).
+        midtones: f32,
+        /// Opacity in the highlight zone in percent (0..=100).
+        highlights: f32,
+        /// Ink colour (linear RGB 0..=1).
+        color: [f32; 3],
+        /// How the ink meets the artwork below: C3's normal / multiply / screen / overlay.
+        #[serde(default)]
+        blend: LineArtBlend,
+    },
     /// A PSD adjustment we can't evaluate yet; preserved raw for round-trip, shared between
     /// document snapshots (#4535).
     Unsupported {
@@ -404,6 +485,8 @@ impl Adjustment {
             Adjustment::GradientMap { .. } => "Gradient Map",
             Adjustment::SelectiveColor { .. } => "Selective Color",
             Adjustment::Halftone { .. } => "Halftone",
+            Adjustment::CmykScreenPrint { .. } => "CMYK Screen Print",
+            Adjustment::LineArt { .. } => "Line Art",
             Adjustment::Unsupported { .. } => "Adjustment",
         }
     }

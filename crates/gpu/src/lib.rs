@@ -77,6 +77,11 @@ pub struct Compositor {
     /// Effect temporaries (R32F, region sized) and the frame they were last used.
     temps: Vec<(Tex, u64)>,
     patterns: HashMap<String, CachedPattern>,
+    /// Line art's fields (C3's `maxDiff` texture), one per adjustment layer: pointwise passes
+    /// read them at `group(1) binding 8`.
+    line_fields: Vec<CachedField>,
+    /// One view per `Plan::fields` entry for this render (missing ones bind the dummy).
+    field_views: Vec<Option<wgpu::TextureView>>,
     /// The colour mode of the document being encoded: patterns paint in it
     /// (`photocraft_compose::pattern::pattern_rgba`).
     pattern_mode: photocraft_color::ColorMode,
@@ -139,6 +144,8 @@ mod consts;
 pub mod context;
 mod convert;
 mod encode;
+mod fields;
+use crate::textures::CachedField;
 mod fx_passes;
 mod kit;
 mod paging;

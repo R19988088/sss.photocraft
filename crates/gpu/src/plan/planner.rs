@@ -1,7 +1,7 @@
 use super::lower::{
     Paint, adjustment_on_gpu, adjustment_program, check_gradient_stops, gradient_rows, placement, single_content_pass, stroke_widths, style_index,
 };
-use super::types::{Checkpoint, DocCtx, FxLayer, Kernel, MapRef, MaskUse, Pass, Role, SurfaceRef, TexUse, Unsupported};
+use super::types::{Checkpoint, DocCtx, FieldSpec, FxLayer, Kernel, MapRef, MaskUse, Pass, Role, SurfaceRef, TexUse, Unsupported};
 use super::{Adjustment, BlendMode, Effect, Fill, FxPaint, Glow, Layer, LayerContent, LayerId, Plan, Rect, Slot, Surface, bounds, has_effects};
 
 pub(super) struct Planner<'a> {
@@ -14,6 +14,11 @@ pub(super) struct Planner<'a> {
     /// Layers planned so far, counting a layer each time it is planned (a clipped pass-through
     /// group is planned twice).
     visits: usize,
+    /// The root layer being planned, if the pass list is inside a root stack (a group's children
+    /// are planned with `None`): line art only has a whole-document backdrop at root level.
+    current_layer: Option<usize>,
+    /// The line-art fields this plan asks for (indices are [`Pass::field`]).
+    fields: Vec<FieldSpec>,
 }
 
 /// Most layer plannings one document may take: a pass-through group with clipped layers is
@@ -179,11 +184,21 @@ fn check_effect_gradients(items: &[&Effect]) -> Result<(), Unsupported> {
 
 impl<'a> Planner<'a> {
     pub(super) fn new(cx: DocCtx<'a>) -> Self {
-        Planner { passes: Vec::new(), free: Vec::new(), refs: Vec::new(), cx, fx: Vec::new(), checkpoints: Vec::new(), visits: 0 }
+        Planner {
+            passes: Vec::new(),
+            free: Vec::new(),
+            refs: Vec::new(),
+            cx,
+            fx: Vec::new(),
+            checkpoints: Vec::new(),
+            visits: 0,
+            current_layer: None,
+            fields: Vec::new(),
+        }
     }
 
     pub(super) fn finish(self, root: Slot) -> Plan<'a> {
-        Plan { passes: self.passes, slots: self.refs.len() as u32, root, fx: self.fx, checkpoints: self.checkpoints }
+        Plan { passes: self.passes, slots: self.refs.len() as u32, root, fx: self.fx, checkpoints: self.checkpoints, fields: self.fields }
     }
 
     fn alloc(&mut self) -> Slot {
@@ -241,7 +256,11 @@ impl<'a> Planner<'a> {
             }
             let clipped = &layers[i + 1..j];
             if base.visible {
-                backdrop = self.layer(base, clipped, backdrop)?;
+                let previous = self.current_layer;
+                self.current_layer = root_start.map(|start| start + i);
+                let planned = self.layer(base, clipped, backdrop);
+                self.current_layer = previous;
+                backdrop = planned?;
                 if let (LayerContent::Adjustment(_), Some(q)) = (&base.content, photocraft_compose::adjustment_quantum(self.cx.depth)) {
                     // compose: adjustment results are rounded to the document's depth.
                     let mut p = Pass::new(Kernel::Lerp, 0);
@@ -767,11 +786,39 @@ impl<'a> Planner<'a> {
         if let Adjustment::GradientMap { stops, .. } = adj {
             check_gradient_stops(stops)?;
         }
-        let mut p = Pass::new(Kernel::Adjust, 0);
+        // Line art reads its neighbours, which its own pass (`fs_adjust_near`) samples from A.
+        let kernel = if matches!(adj, Adjustment::LineArt { .. }) { Kernel::AdjustNear } else { Kernel::Adjust };
+        let mut p = Pass::new(kernel, 0);
         p.a = Some(src);
         let (kind, params, lut) = adjustment_program(adj, self.cx.transfer, self.cx.depth, self.cx.mode);
         p.adjust_kind = kind;
+        let mut params = params;
+        // Line art at root level reads C3's cached `maxDiff` field instead of its ring: the field
+        // is built for the drawn region only and uploaded as one texture, so no chunk boundary can
+        // cut its neighbours and the four appearance sliders cost a pointwise read.
+        if let (Adjustment::LineArt { thickness, .. }, Some(index)) = (adj, self.current_layer) {
+            let radius = photocraft_compose::adjust::line_art_radius(*thickness) as i32;
+            let rect = self.cx.region.inflate(radius).intersect(&self.cx.canvas);
+            // A field texture covers the drawn region in one go; a region too large for one
+            // stays on the per-chunk ring pass.
+            if crate::fields::field_fits(rect) {
+                let spec = FieldSpec { layer: self.cx.doc.layers[index].id, layer_index: index, thickness: *thickness, rect };
+                let slot = self.fields.iter().position(|f| *f == spec).unwrap_or_else(|| {
+                    self.fields.push(spec);
+                    self.fields.len() - 1
+                });
+                p.field = Some(slot);
+                p.adjust_kind = 29;
+                params[3] = [rect.x0 as f32, rect.y0 as f32, rect.width() as f32, rect.height() as f32];
+            }
+        }
         p.params = params;
+        if kernel == Kernel::AdjustNear && p.field.is_none() {
+            // The neighbourhood pass clamps its reads to the artwork, like the CPU sampler: `p3`
+            // carries the canvas rect in document pixels.
+            let c = self.cx.canvas;
+            p.params[3] = [c.x0 as f32, c.y0 as f32, c.x1 as f32, c.y1 as f32];
+        }
         p.lut = lut;
         Ok(self.emit(p))
     }

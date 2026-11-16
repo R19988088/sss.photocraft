@@ -72,6 +72,8 @@ const F_LAYER_SHAPE: u32 = 1048576u; // fx merge: B is the shape; layer = its co
 @group(1) @binding(5) var tex_c: texture_2d<f32>;
 @group(1) @binding(6) var map_tex: texture_2d<f32>;
 @group(1) @binding(7) var pat_tex: texture_2d<f32>;
+// Line art's cached field (C3's `maxDiff` texture): R32F over the drawn region.
+@group(1) @binding(8) var field_tex: texture_2d<f32>;
 
 // The full-chunk triangle's vertex stage lives in `vertex_shader` (kit.rs): one entry point per
 // pipeline build job, so no two threads share a compiled vertex shader.
@@ -740,6 +742,65 @@ fn halftone_dot(tone: f32, px: vec2<i32>, axis: i32) -> f32 {
     return 1.0 - hole;
 }
 
+
+// ---- C3's CMYK screen print (compose::adjust::cmyk_screen) ----------------------------------
+
+// C3's `webAdjustCMYKInkBySaturation`: a strength above 0 pushes an ink towards solid, a negative
+// one thins it towards the paper.
+fn cmyk_ink(ink: f32, adjustment: f32) -> f32 {
+    let amount = clamp(adjustment / 100.0, -1.0, 1.0);
+    let base = clamp(ink, 0.0, 1.0);
+    if (amount >= 0.0) { return base + (1.0 - base) * amount * (1.0 - base * 0.35); }
+    return base * (1.0 + amount);
+}
+
+// C3's `webScreenPrintDot`: a round dot of the ink's area inside a cell turned by `angle`.
+fn cmyk_dot(x: f32, y: f32, angle_deg: f32, cell: f32, ink: f32) -> f32 {
+    let a = angle_deg * 0.017453292;
+    let sa = sin(a);
+    let ca = cos(a);
+    let rx = x * ca - y * sa;
+    let ry = x * sa + y * ca;
+    let c = max(cell, 1.0);
+    let cx = fract(rx / c) - 0.5;
+    let cy = fract(ry / c) - 0.5;
+    let radius = sqrt(clamp(ink, 0.0, 1.0)) * 0.62;
+    let d = sqrt(cx * cx + cy * cy);
+    let edge = radius + 0.055;
+    if (d <= radius) { return 1.0; }
+    if (d >= edge) { return 0.0; }
+    let t = (d - radius) / (edge - radius);
+    return 1.0 - t * t * (3.0 - 2.0 * t);
+}
+
+// Line art's appearance mix, C3's `webApplyLineArtField`: given the pixel's edge amount the three
+// zone weights, sharpness, line colour and blend mode are a pointwise function, so the field build
+// never depends on them.
+fn line_art_ink(c: vec3<f32>, maxd: f32, src: vec4<f32>) -> vec4<f32> {
+    let intensity = op.p0.x / 100.0;
+    if (intensity <= 0.0) { return src; }
+    let sharpness = op.p0.y / 100.0;
+    let zones = vec3(op.p0.w, op.p1.x, op.p1.y) / 100.0;
+    let ink = vec3(op.p1.z, op.p1.w, op.p2.x);
+    let blend = i32(op.p2.y);
+    let centre = luma709(c);
+    let opacity = clamp(dot(zone_weights(centre), zones), 0.0, 1.0);
+    if (opacity <= 0.0) { return src; }
+    let edge_soft = max(0.085 - pow(sharpness, 1.35) * 0.082, 0.00001);
+    let mask = smooth01(0.06, 0.06 + edge_soft, maxd);
+    let alpha = clamp(mask * clamp(maxd * 1.2, 0.0, 1.0) * intensity * opacity, 0.0, 1.0);
+    if (alpha <= 0.0) { return src; }
+    var blended = ink;
+    if (blend == 1) {
+        blended = c * ink;
+    } else if (blend == 2) {
+        blended = 1.0 - (1.0 - c) * (1.0 - ink);
+    } else if (blend == 3) {
+        blended = select(2.0 * c * ink, 1.0 - 2.0 * (1.0 - c) * (1.0 - ink), c >= vec3<f32>(0.5));
+    }
+    return vec4(clamp(c + (blended - c) * alpha, vec3(0.0), vec3(1.0)), src.a);
+}
+
 fn adjust(c: vec3<f32>) -> vec3<f32> {
     let hdr = (op.flags & F_HDR) != 0u;
     let p0 = op.p0;
@@ -886,6 +947,33 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
             return o;
         }
         case 15: { return selective_color(c, p0.x > 0.5); }                       // Selective color
+        case 27: {                                                              // CMYK screen print (compose::adjust::cmyk_screen)
+            // p0 = cell side, base angle, cyan %, magenta %; p1 = yellow %, black %.
+            let rgb = clamp(c, vec3(0.0), vec3(1.0));
+            let pos = vec2<f32>(f32(adj_px.x) + 0.5, f32(adj_px.y) + 0.5);
+            let cmy = vec3(1.0 - rgb.r, 1.0 - rgb.g, 1.0 - rgb.b);
+            var k = min(min(cmy.r, cmy.g), cmy.b);
+            let denom = max(1.0 - k, 0.0001);
+            let plates = vec3(
+                cmyk_ink((cmy.r - k) / denom, op.p0.z),
+                cmyk_ink((cmy.g - k) / denom, op.p0.w),
+                cmyk_ink((cmy.b - k) / denom, op.p1.x),
+            );
+            k = cmyk_ink(clamp(k, 0.0, 1.0), op.p1.y);
+            let cell = max(op.p0.x, 1.0);
+            let angle = op.p0.y;
+            let cd = cmyk_dot(pos.x + 0.35, pos.y - 0.2, angle + 15.0, cell, plates.x);
+            let md = cmyk_dot(pos.x - 0.25, pos.y + 0.3, angle + 75.0, cell, plates.y);
+            let yd = cmyk_dot(pos.x + 0.15, pos.y + 0.18, angle, cell, plates.z);
+            let kd = cmyk_dot(pos.x, pos.y, angle + 45.0, cell * 0.86, k);
+            let inked = vec3(
+                clamp(1.0 - cd * 0.92, 0.0, 1.0),
+                clamp(1.0 - md * 0.90, 0.0, 1.0),
+                clamp(1.0 - yd * 0.86, 0.0, 1.0),
+            );
+            let paper = inked.x * inked.y * inked.z * (1.0 - kd * 0.94);
+            return clamp(rgb + (vec3<f32>(paper) - rgb) * 0.86, vec3(0.0), vec3(1.0));
+        }
         case 18: {                                                              // Halftone (compose::adjust::halftone)
             // p3 = (flags, white, black, 0): bit 0 one screen per channel, bit 1 Preserve White.
             let ht_flags = i32(p3.x + 0.5);
@@ -1101,6 +1189,110 @@ fn fs_adjust(in: VOut) -> @location(0) vec4<f32> {
     if (c.a <= 0.0) { return c; }
     adj_px = doc_px(p);
     return vec4(adjust(c.rgb), c.a);
+}
+
+// Adjustment that reads its neighbours: C3's line art (compose::adjust::line_art). The ring is
+// sampled from A itself, clamped to this pass's chunk, so the ink follows the artwork below.
+fn luma709(c: vec3<f32>) -> f32 { return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; }
+
+fn zone_weights(tone: f32) -> vec3<f32> {
+    let t = clamp(tone, 0.0, 1.0);
+    return vec3(clamp((0.5 - t) * 2.0, 0.0, 1.0), clamp(1.0 - abs(t - 0.5) * 2.0, 0.0, 1.0), clamp((t - 0.5) * 2.0, 0.0, 1.0));
+}
+
+fn smooth01(edge0: f32, edge1: f32, x: f32) -> f32 {
+    if (edge0 >= edge1) { return select(0.0, 1.0, x >= edge0); }
+    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// C3's `lineArtSampleWeight`: samples right next to the centre count less, and the reach fades out
+// over a soft edge, so a line has a body and a soft end.
+fn line_weight(d: f32, thickness: f32) -> f32 {
+    let reach = max(thickness, 0.1);
+    let soft = max(1.35, reach * 0.42);
+    let radial = 1.0 - smooth01(reach, reach + soft, d);
+    let fade = smooth01(0.12, max(0.45, reach * 0.28), d);
+    return clamp(radial * fade, 0.0, 1.0);
+}
+
+// The artwork's own rect (doc space, `op.p3`), as chunk-local indices: reads outside the art clamp
+// to its edge, as compose::adjust::line_art::sample does on the CPU.
+var<private> near_lo: vec2<i32>;
+var<private> near_hi: vec2<i32>;
+
+fn texel_at(p: vec2<i32>) -> vec3<f32> {
+    let dims = vec2<i32>(textureDimensions(tex_a));
+    let edge = dims - vec2<i32>(1, 1);
+    let lo = max(near_lo, vec2<i32>(0, 0));
+    let hi = min(near_hi, edge);
+    let q = clamp(p, lo, max(lo, hi));
+    return textureLoad(tex_a, q, 0).rgb;
+}
+
+// Bilinear read of A, as compose::adjust::line_art::sample does on the CPU.
+fn sample_near(p: vec2<f32>) -> vec3<f32> {
+    let f = p - 0.5;
+    let base = vec2<i32>(floor(f));
+    let t = f - floor(f);
+    let tl = texel_at(base);
+    let tr = texel_at(base + vec2<i32>(1, 0));
+    let bl = texel_at(base + vec2<i32>(0, 1));
+    let br = texel_at(base + vec2<i32>(1, 1));
+    let top = tl + (tr - tl) * t.x;
+    let bot = bl + (br - bl) * t.x;
+    return top + (bot - top) * t.y;
+}
+
+@fragment
+fn fs_adjust_near(in: VOut) -> @location(0) vec4<f32> {
+    let p = local(in.pos);
+    let src = textureLoad(tex_a, p, 0);
+    if (src.a <= 0.0) { return src; }
+    switch op.kind {
+        case 28: {                                                          // Line art ring (no field)
+            // p0 = intensity %, sharpness %, thickness px, shadows %; p1 = midtones %, highlights %,
+            // line colour r, g; p2 = line colour b, blend (0 normal, 1 multiply, 2 screen, 3 overlay).
+            let intensity = op.p0.x / 100.0;
+            if (intensity <= 0.0) { return src; }
+            let thickness = op.p0.z;
+            near_lo = vec2<i32>(i32(op.p3.x), i32(op.p3.y)) - chunk.origin;
+            near_hi = vec2<i32>(i32(op.p3.z) - 1, i32(op.p3.w) - 1) - chunk.origin;
+            let c = src.rgb;
+            let soft = max(1.35, thickness * 0.42);
+            let outer = thickness + soft;
+            let radius = i32(ceil(outer));
+            let dp = vec2<f32>(f32(p.x) + 0.5, f32(p.y) + 0.5);
+            var acc = 0.0;
+            var wsum = 0.0;
+            for (var oy = -radius; oy <= radius; oy = oy + 1) {
+                for (var ox = -radius; ox <= radius; ox = ox + 1) {
+                    if (ox == 0 && oy == 0) { continue; }
+                    let d2 = f32(ox * ox + oy * oy);
+                    if (d2 >= outer * outer) { continue; }
+                    let d = sqrt(d2);
+                    let wt = line_weight(d, thickness);
+                    if (wt <= 0.0) { continue; }
+                    let nb = sample_near(dp + vec2<f32>(f32(ox), f32(oy)));
+                    let dl = abs(luma709(nb) - luma709(c));
+                    let dc = length(nb - c);
+                    acc = acc + max(min(dl * 2.4, 1.0), min(dc * 1.45, 1.0)) * wt;
+                    wsum = wsum + wt;
+                }
+            }
+            return line_art_ink(c, clamp(acc / max(wsum, 0.00001), 0.0, 1.0), src);
+        }
+        case 29: {                                                          // Line art from the field
+            // (C3's c2LineArtFieldKernel + webApplyLineArtField): p3 = field rect in document
+            // pixels, one pointwise read per pixel, so no ring and no chunk seam.
+            let intensity = op.p0.x / 100.0;
+            if (intensity <= 0.0) { return src; }
+            let f = doc_px(p) - vec2<i32>(i32(op.p3.x), i32(op.p3.y));
+            if (f.x < 0 || f.y < 0 || f.x >= i32(op.p3.z) || f.y >= i32(op.p3.w)) { return src; }
+            return line_art_ink(src.rgb, clamp(textureLoad(field_tex, f, 0).r, 0.0, 1.0), src);
+        }
+        default: { return src; }
+    }
 }
 
 // Mix an adjusted result B back over the original A with blend mode, opacity and mask.

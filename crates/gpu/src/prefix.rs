@@ -45,11 +45,22 @@ pub(crate) struct Prefix {
     bytes: u64,
     budget: u64,
     step: i32,
+    /// The lowest root layer this render changed (line art's fields take it as their invalidation).
+    changed: Option<usize>,
 }
 
 impl Default for Prefix {
     fn default() -> Self {
-        Self { context: None, layers: Vec::new(), checkpoint: None, chunks: HashMap::new(), bytes: 0, budget: MAX_BYTES, step: 512 }
+        Self {
+            context: None,
+            layers: Vec::new(),
+            checkpoint: None,
+            chunks: HashMap::new(),
+            bytes: 0,
+            budget: MAX_BYTES,
+            step: 512,
+            changed: None,
+        }
     }
 }
 
@@ -152,7 +163,14 @@ impl Prefix {
         self.context = Some(context);
         self.layers = layers;
         self.checkpoint = checkpoint;
+        self.changed = if same_context { changed } else { Some(0) };
         checkpoint
+    }
+
+    /// The lowest root layer the last [`prepare`] saw changed (`None` when nothing below the
+    /// preparation changed): a field computed from the layers below `changed` is still valid.
+    pub(crate) fn changed(&self) -> Option<usize> {
+        self.changed
     }
 
     /// The checkpoint the cached pixels of `rect` hold, when every one of them is cached in its

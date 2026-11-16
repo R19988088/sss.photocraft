@@ -1388,12 +1388,17 @@ mod native {
             assert!(owned.read(&stamp).is_err());
             assert!(owned.overwrite(b"<svg/>").is_err());
             std::fs::remove_file(&owned.file).unwrap();
-            rustix::fs::mkfifoat(rustix::fs::CWD, &owned.file, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR).unwrap();
-            assert!(owned.stamp().is_err());
-            let began = Instant::now();
-            assert!(owned.read(&stamp).is_err());
-            assert!(began.elapsed() < Duration::from_secs(1));
-            assert_eq!(std::fs::read(&target).unwrap(), b"private contents");
+            // `rustix` only exposes `mkfifoat` off Apple targets (`cfg(not(any(..., apple, ...)))`),
+            // so the FIFO half of this test is skipped on macOS; the symlink half above still runs.
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                rustix::fs::mkfifoat(rustix::fs::CWD, &owned.file, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR).unwrap();
+                assert!(owned.stamp().is_err());
+                let began = Instant::now();
+                assert!(owned.read(&stamp).is_err());
+                assert!(began.elapsed() < Duration::from_secs(1));
+                assert_eq!(std::fs::read(&target).unwrap(), b"private contents");
+            }
         }
 
         #[cfg(windows)]

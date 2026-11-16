@@ -24,6 +24,8 @@ const GAP: f32 = 4.0;
 const ICON_W: f32 = 14.0;
 /// Width of the effects triangle beside the fx badge.
 const TRIANGLE_W: f32 = 10.0;
+/// Width of the `SSSP` pill on the rows of SSSP-only adjustments.
+pub const SSSP_PILL_W: f32 = 32.0;
 /// The blend-mode label is shown only while the name keeps at least this much room.
 pub const MIN_NAME_W: f32 = 64.0;
 
@@ -36,6 +38,9 @@ pub enum Indicator {
     FxTriangle,
     Fx,
     SmartFilters,
+    /// The layer is an SSSP-only adjustment (网点, CMYK, 线条强化): PSD has no such layer, so only
+    /// an `.sssp` project keeps it.
+    Sssp,
     Link,
     Blend,
 }
@@ -82,11 +87,35 @@ pub fn unsupported_key(l: &Layer) -> Option<&str> {
     }
 }
 
+/// Is `l` an adjustment Photoshop's PSD cannot store, so only an `.sssp` project keeps it?
+pub fn sssp_only(l: &Layer) -> bool {
+    // Halftone, C3's CMYK / line art, and any adjustment imported from an `.sssp` project that has
+    // no native equivalent
+    // (C3 stacks several kinds on one layer): those only survive in an SSSP project.
+    match &l.content {
+        LayerContent::Adjustment(Adjustment::Halftone { .. })
+        // C3's CMYK screen print and line art: no PSD layer type for either (PSD keeps its pixels
+        // only), so they survive in an SSSP project too.
+        | LayerContent::Adjustment(Adjustment::CmykScreenPrint { .. })
+        | LayerContent::Adjustment(Adjustment::LineArt { .. }) => true,
+        // An adjustment imported from an `.sssp` project that nothing here evaluates: its key is a
+        // C3 kind name (`gradientFault`, `screenPrint`), where a PSD adjustment keeps its 4 byte
+        // key. Those too survive only in an SSSP project.
+        LayerContent::Adjustment(Adjustment::Unsupported { psd_key, .. }) => {
+            psd_key.len() > 4 && psd_key.chars().all(|c| c.is_ascii_alphabetic())
+        }
+        _ => false,
+    }
+}
+
 /// Width the always-shown indicators of `l` take at the row's right (blend label excluded).
 pub fn reserved_width(l: &Layer) -> f32 {
     let mut w = RIGHT_PAD;
     if unsupported_key(l).is_some() {
         w += ICON_W + GAP;
+    }
+    if sssp_only(l) {
+        w += SSSP_PILL_W + GAP;
     }
     if l.locks.any() {
         w += ICON_W + GAP;
@@ -163,6 +192,10 @@ pub fn indicators(
     if unsupported.is_some() {
         items.push((Indicator::Unsupported, ICON_W));
     }
+    let sssp = sssp_only(l);
+    if sssp {
+        items.push((Indicator::Sssp, SSSP_PILL_W));
+    }
     if locked {
         items.push((Indicator::Lock, ICON_W));
     }
@@ -191,6 +224,19 @@ pub fn indicators(
                 let key = unsupported.unwrap_or_default();
                 let tip = crate::i18n::fmt(tl!("Not rendered: this adjustment ({key}) is kept as imported."), &[("key", key)]);
                 ui.interact(r, ui.scope_id().with(("row-unsupported", l.id.0)), Sense::hover()).on_hover_text(tip);
+            }
+            Indicator::Sssp => {
+                let pill = Rect::from_center_size(r.center(), vec2(SSSP_PILL_W, 13.0));
+                painter.rect_filled(pill, t.radius_sm, t.accent_soft);
+                painter.text(
+                    pill.center(),
+                    Align2::CENTER_CENTER,
+                    "SSSP",
+                    theme::semibold(8.5),
+                    t.accent_text,
+                );
+                ui.interact(r, ui.scope_id().with(("row-sssp", l.id.0)), Sense::hover())
+                    .on_hover_text(tl!("Only an SSSP project keeps this layer: PSD has no 网点 adjustment"));
             }
             Indicator::Lock => icons::paint(ui, Rect::from_center_size(r.center(), vec2(ICON_W, ICON_W)), "lock", 12.0, t.text_faint),
             Indicator::Link => icons::paint(ui, Rect::from_center_size(r.center(), vec2(ICON_W, ICON_W)), "link-2", 12.0, t.text_faint),

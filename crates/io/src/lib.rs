@@ -82,6 +82,7 @@ pub mod renderer;
 pub use renderer::{BandRenderer, CpuRenderer, RenderBand, RenderError};
 pub mod slices_map;
 pub mod smart_map;
+pub mod sssp;
 pub mod svg;
 mod text_import;
 pub mod text_styles_map;
@@ -113,6 +114,9 @@ pub use psd_import::{psd_to_document, psd_to_document_with};
 /// Errors from import/export.
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
+    /// SSSP (C3) project read failure.
+    #[error("SSSP: {0}")]
+    Sssp(String),
     /// Paint.NET document decode failure.
     #[error("PDN: {0}")]
     Pdn(String),
@@ -940,6 +944,8 @@ pub(crate) enum Route {
     Xcf,
     GzippedXcf,
     Pdn,
+    /// An SSSP (C3) project: a SQLite container.
+    Sssp,
     Raw,
     Svg,
     /// A `.psd`/`.psb`/`.psdt` with no raster signature.
@@ -980,6 +986,11 @@ pub(crate) fn route(name: &str, bytes: &[u8]) -> Route {
     }
     if has_extension(name, "pdn") || bytes.starts_with(b"PDN3") {
         return Route::Pdn;
+    }
+    // SSSP is SQLite, so both its signature and the suffix lead to the same reader; a raster
+    // signature still wins over a misleading suffix.
+    if has_extension(name, "sssp") || bytes.starts_with(b"SQLite format 3") {
+        return Route::Sssp;
     }
     if raw::is_raw(bytes) {
         return Route::Raw;
@@ -1022,6 +1033,7 @@ fn import_stages(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, o
         Route::Pdn => pdn::import(name, bytes, ctl),
         Route::Raw => raw::import_raw_demosaic(name, bytes, opts.demosaic),
         Route::Svg => svg::import_svg_with_group_depth(name, bytes, opts.max_group_depth),
+        Route::Sssp => sssp::import(name, bytes),
         Route::Flat => flat::import_flat_with_options(name, bytes, opts, ctl),
     }
 }
@@ -1195,6 +1207,10 @@ fn export_stages_with_renderer(
         return Err(IoError::Unsupported(
             "XCF is GIMP's own format and PhotoCraft only opens it; save as .pcraft to keep the layers, or export a flat image".into(),
         ));
+    }
+    if ext == "sssp" {
+        let res = sssp::export(doc, ctl)?;
+        return Ok(res.into());
     }
     if ext == "ora" {
         let mut res = ora::export(doc)?;

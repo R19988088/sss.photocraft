@@ -590,6 +590,7 @@ fn build() -> Vec<CommandSpec> {
                 let add_copy = layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
                 // The dialog offers Duplicate Layer's own name: only a different one was typed (#9023).
                 let mut typed = None;
+                let mut shift = (0, 0);
                 let nid = s.edit("Duplicate Layer", |doc, active| {
                     let mut dup = layer_copy(doc, id, add_copy)?;
                     if let Some(name) = name.as_ref().filter(|n| **n != dup.name) {
@@ -600,11 +601,12 @@ fn build() -> Vec<CommandSpec> {
                     // A lone copy joins its original's link group, as in the reference application (#11217).
                     crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
-                        crate::artboard_cmds::place_copy(doc, nid)?;
+                        shift = crate::artboard_cmds::place_copy(doc, nid)?;
                     }
                     *active = Some(nid);
                     Ok(nid)
                 })?;
+                crate::artboard_cmds::follow_shift(s, shift);
                 if let Some(name) = typed {
                     crate::type_cmds::note_typed_name(s, nid, &name);
                 }
@@ -1257,6 +1259,16 @@ fn build() -> Vec<CommandSpec> {
             "colorLookup",
             "Color Lookup…",
             r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
+        ),
+        (
+            "cmykScreenPrint",
+            "CMYK…",
+            r##"{"dotSize":2..96=82,"angle":-180..180=15,"cyan":-100..100=0,"magenta":-100..100=0,"yellow":-100..100=0,"black":-100..100=0} (C3's four-plate screen print: dotSize = the dot period in pixels, angle = the shared screen angle (the plates sit at +15/+75/0 and the black at +45), cyan…black = how much ink each plate lays down (0 prints the artwork's own ink, negative thins it)"##,
+        ),
+        (
+            "lineArt",
+            "Line Art…",
+            r##"{"intensity":0..300=100,"sharpness":0..100=100,"thickness":0.1..10=13,"shadows":0..100=24,"midtones":0..100=32,"highlights":0..100=90,"color":"#rrggbb"="#000000","blend":"normal|multiply|screen|overlay"="multiply"} (C3's 线条强化: ink grown along the edges of the layers below, intensity and thickness size it, sharpness narrows the edge it accepts, shadows/midtones/highlights are the tone zones it may touch, blend = how the ink meets the artwork)"##,
         ),
         (
             "halftone",

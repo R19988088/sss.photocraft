@@ -310,6 +310,20 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             );
             (18, screen.program_params(), None)
         }
+        Adjustment::CmykScreenPrint { dot_size, angle, cyan, magenta, yellow, black } => {
+            // C3's four-plate screen print: an analytic dot per plate at the pixel's own cell.
+            p[0] = [dot_size.clamp(2.0, 96.0), *angle, *cyan, *magenta];
+            p[1] = [*yellow, *black, 0.0, 0.0];
+            (27, p, None)
+        }
+        Adjustment::LineArt { intensity, sharpness, thickness, shadows, midtones, highlights, color, blend } => {
+            // C3's line art, drawn by `fs_adjust_near` (it samples the artwork's neighbours; the
+            // planner fills `p3` with the artwork rect it clamps those reads to).
+            p[0] = [intensity.clamp(0.0, 300.0), sharpness.clamp(0.0, 100.0), thickness.clamp(0.1, 10.0), *shadows];
+            p[1] = [*midtones, *highlights, color[0], color[1]];
+            p[2] = [color[2], photocraft_doc::adjust::LineArtBlend::index(*blend) as f32, 0.0, 0.0];
+            (28, p, None)
+        }
         Adjustment::SelectiveColor { relative, adjustments } => {
             // 9 ranges × CMYK don't fit the 16 params: they go in LUT row 0 (read texel-exact).
             p[0][0] = if *relative { 1.0 } else { 0.0 };
