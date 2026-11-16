@@ -1297,6 +1297,49 @@ fn fs_adjust_near(in: VOut) -> @location(0) vec4<f32> {
     }
 }
 
+// C3's `c2LineArtFieldKernel`: the edge field (`maxDiff`) of one region, computed once into a
+// texture that `case 29` above then reads pointwise. This is the pass that makes line art live:
+// the ring is hundreds of taps per pixel, which the CPU cannot afford inside a frame (about 0.5 s
+// at the default thickness, measured), and a GPU renders it in a few milliseconds.
+//
+// `tex_a` is that region's composited artwork (the layers below the adjustment, already extended
+// by the ring's reach). The taps clamp to it, as `line_art::field` clamps to its buffer.
+// `op.p0.z` = thickness; `op.p0.w` = the ring's normalising weight sum (`line_art::ring`, passed in
+// so the pass doesn't recompute it per pixel).
+@fragment
+fn fs_line_field(in: VOut) -> @location(0) vec4<f32> {
+    let p = local(in.pos);
+    let size = vec2<i32>(textureDimensions(tex_a));
+    let c0 = textureLoad(tex_a, p, 0);
+    if (c0.a <= 0.0) { return vec4(0.0); }
+    let thickness = op.p0.z;
+    let reach = max(thickness, 0.1);
+    let soft = max(1.35, reach * 0.42);
+    let outer = reach + soft;
+    // C3's `sampleRadius = 10`, the same cap `line_art::radius` applies.
+    let radius = min(i32(ceil(outer)), 10);
+    let c = c0.rgb;
+    let center_luma = luma709(c);
+    let edge = size - vec2<i32>(1, 1);
+    let outer_squared = outer * outer;
+    var acc = 0.0;
+    for (var oy = -radius; oy <= radius; oy = oy + 1) {
+        for (var ox = -radius; ox <= radius; ox = ox + 1) {
+            if (ox == 0 && oy == 0) { continue; }
+            let d2 = f32(ox * ox + oy * oy);
+            if (d2 >= outer_squared) { continue; }
+            let wt = line_weight(sqrt(d2), thickness);
+            if (wt <= 0.0) { continue; }
+            let q = clamp(p + vec2<i32>(ox, oy), vec2<i32>(0, 0), max(vec2<i32>(0, 0), edge));
+            let nb = textureLoad(tex_a, q, 0).rgb;
+            let dl = abs(luma709(nb) - center_luma);
+            let dc = length(nb - c);
+            acc = acc + max(min(dl * 2.4, 1.0), min(dc * 1.45, 1.0)) * wt;
+        }
+    }
+    return vec4(clamp(acc / max(op.p0.w, 0.00001), 0.0, 1.0), 0.0, 0.0, 0.0);
+}
+
 // Mix an adjusted result B back over the original A with blend mode, opacity and mask.
 // Both ordinary and clipped adjustments use this pass, retaining the original alpha.
 @fragment

@@ -20,6 +20,10 @@ pub enum Kernel {
     Adjust,
     /// Adjustment that reads the neighbours of its source pixel (C3's line art).
     AdjustNear,
+    /// Line art's edge field (C3's `c2LineArtFieldKernel`): the ring of `fs_adjust_near`'s `case 28`
+    /// rendered once into a texture that `case 29` then reads pointwise. Never planned: the
+    /// executor runs it in `fields::build_field`.
+    LineField,
     AdjMix,
     Lerp,
     /// Effect chain start: the layer at fill opacity, or an opaque copy of a clipping base.
@@ -63,6 +67,7 @@ impl Kernel {
             Kernel::Atop => "fs_atop",
             Kernel::Adjust => "fs_adjust",
             Kernel::AdjustNear => "fs_adjust_near",
+            Kernel::LineField => "fs_line_field",
             Kernel::AdjMix => "fs_adjmix",
             Kernel::Lerp => "fs_lerp",
             Kernel::FxInit => "fs_fxinit",
@@ -99,7 +104,7 @@ impl Kernel {
     }
 
     /// Every kernel with a pipeline.
-    pub const DRAWN: [Kernel; 25] = [
+    pub const DRAWN: [Kernel; 26] = [
         Kernel::Content,
         Kernel::Mask,
         Kernel::Blend,
@@ -109,6 +114,7 @@ impl Kernel {
         Kernel::Atop,
         Kernel::Adjust,
         Kernel::AdjustNear,
+        Kernel::LineField,
         Kernel::AdjMix,
         Kernel::Lerp,
         Kernel::FxInit,

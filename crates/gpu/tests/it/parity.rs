@@ -3640,3 +3640,57 @@ fn c3_printing_adjustments_match_cpu() {
         check(&mut g, &doc, &format!("printing {adj:?}"));
     }
 }
+
+/// The field is C3's `c2LineArtFieldKernel` run as a GPU pass (`fs_line_field`), not the CPU ring:
+/// the CPU needs ~0.5 s for the default thickness over a screen-sized region, which is what froze
+/// the canvas on every stroke drawn below the line art layer. Adapters without a float render
+/// target keep the CPU field (`fields_cpu` says so).
+#[test]
+fn line_art_field_is_built_on_the_gpu() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::adjust::LineArtBlend;
+
+    let (w, h) = (160u32, 120u32);
+    let mut doc = Document::new("line art field pass", Size::new(w, h), ColorMode::Rgb, SampleType::U8);
+    let mut art = Layer::raster("art", PixelFormat::RGBA8);
+    let mut px: Vec<f32> = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let v = if (x / 9 + y / 7) % 2 == 0 { 0.15 } else { 0.85 };
+            px.extend_from_slice(&[v, v, v, 1.0]);
+        }
+    }
+    art.surface_mut().unwrap().write_region(Rect::new(0, 0, w as i32, h as i32), &px);
+    doc.layers = vec![
+        art,
+        Layer::new(
+            "line art",
+            LayerContent::Adjustment(Adjustment::LineArt {
+                intensity: 100.0,
+                sharpness: 100.0,
+                thickness: 13.0,
+                shadows: 24.0,
+                midtones: 32.0,
+                highlights: 90.0,
+                color: [0.0, 0.0, 0.0],
+                blend: LineArtBlend::Multiply,
+            }),
+        ),
+    ];
+    let stats = diff_rect(&mut g, &doc, doc.bounds(), "line art field pass").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(stats.fields_built, 1, "the first render builds the field");
+    if stats.fields_cpu == 1 {
+        // No pipeline renders to a float target here (e.g. GL without float render targets), so
+        // the CPU field is the documented fallback — nothing to pin on this adapter.
+        eprintln!("line art field: CPU fallback (this adapter has no float render target)");
+        return;
+    }
+    assert_eq!(stats.fields_cpu, 0, "the field pass ran on the GPU");
+
+    // A stroke below the adjustment rebuilds the field, and again on the GPU.
+    doc.layers[0].surface_mut().unwrap().write_region(Rect::from_xywh(40, 40, 12, 12), &vec![1.0; 12 * 12 * 4]);
+    let stats = diff_rect(&mut g, &doc, doc.bounds(), "line art field after a stroke").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(stats.fields_built, 1, "a stroke below the adjustment rebuilds the field");
+    assert_eq!(stats.fields_cpu, 0, "the rebuilt field also ran on the GPU");
+}
+

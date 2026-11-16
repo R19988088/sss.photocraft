@@ -263,6 +263,13 @@ fn ring(thickness: f32) -> Ring {
     Ring { offsets, weight_sum, radius }
 }
 
+/// The ring's normalising total for `thickness`: the sum of C3's sample weights, i.e. what
+/// [`field`] divides the accumulated taps by. `fs_line_field` takes it as `op.p0.w` instead of
+/// re-deriving it for every pixel of the pass.
+pub fn ring_weight_sum(thickness: f32) -> f32 {
+    ring(thickness).weight_sum.max(1e-5)
+}
+
 /// Grow ink along the edges of `buf` from a [`Field`]: the cheap part C3 reruns while the
 /// intensity, sharpness, zone, colour and blend sliders move.
 pub fn apply_field(buf: &mut Buffer, field: &Field, params: &LineArtParams) {

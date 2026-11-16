@@ -179,7 +179,9 @@ impl Compositor {
         // Line art's fields (C3's `ensureLineArtField`): built once for the drawn region and
         // reused while the layers below the adjustment layer stay as they were.
         let changed = if flush { self.prefix.changed() } else { Some(0) };
-        stats.fields_built += self.sync_fields(device, queue, doc, &plan, changed);
+        let (fields, fields_cpu) = self.sync_fields(device, queue, doc, &plan, changed);
+        stats.fields_built += fields;
+        stats.fields_cpu += fields_cpu;
         let paged: Vec<bool> = plan.fx.iter().map(|f| self.fx_paged(f.region)).collect();
         let aprons: Vec<i32> = plan.fx.iter().zip(&paged).map(|(f, &pg)| if pg { Self::fx_apron(doc, f) } else { 0 }).collect();
         for (f, &pg) in plan.fx.iter().zip(&paged) {

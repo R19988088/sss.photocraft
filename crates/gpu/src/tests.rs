@@ -80,6 +80,20 @@ fn batch_records_hold_three_extra_layers_in_the_spare_words() {
 }
 
 #[test]
+fn the_line_field_record_carries_thickness_and_the_ring_weight_sum() {
+    let bytes = fields::field_op(13.0);
+    assert_eq!(bytes.len() as u64, OP_UNIFORM);
+    let word = |i: usize| <[u8; 4]>::try_from(&bytes[i * 4..i * 4 + 4]).unwrap();
+    let f = |i: usize| f32::from_le_bytes(word(i));
+    // p0 lands at word 20 (see `op_values`): x and y unused, z the thickness, w the weight sum the
+    // shader divides the accumulated taps by.
+    assert_eq!([f(20), f(21), f(22)], [0.0, 0.0, 13.0]);
+    let sum = photocraft_compose::adjust::line_art_ring_weight_sum(13.0);
+    assert!((f(23) - sum).abs() < 1e-6, "weight sum {} vs {sum}", f(23));
+    assert!(sum > 0.0);
+}
+
+#[test]
 fn runs_of_normal_layers_draw_with_normal_code_alone() {
     use photocraft_color::BlendMode;
     let pass = |mode: BlendMode, flags: u32| {

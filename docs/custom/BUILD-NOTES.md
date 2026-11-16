@@ -231,7 +231,50 @@ thickness 0.5/3/8/13/30）。
 
 结论：**场不能进滑杆循环**。缓存修好后一次拖拽最多一次重建（松手那下），但缩放/平移、改厚度、
 改下方图层仍各重建一次，默认厚度约 0.5 s。要消掉这一段得把 ring 搬到 GPU 专用 pass（C3 在
-Metal 里跑同一圈是毫秒级），那是下一步，不在这次改动里。
+Metal 里跑同一圈是毫秒级），那是下一步，不在这次改动里——下一节就是那一步。
+
+## 线条强化的场搬到 GPU（C3 的 `c2LineArtFieldKernel`）
+
+上一节只解决了一半：滑杆不再重建场，但**每画一笔**（下方图层一变）仍要在 CPU 上重算整幅场，
+1600×1000 + 默认厚度实测 454 ms——「不到 C3 千分之一」说的是这个。C3 在 Metal 里跑同一圈是毫秒级，
+因为它在 GPU 上跑。现在场由 GPU 专用 pass 算：
+
+- `compose.wgsl` 新增 `fs_line_field`：`tex_a` 是下方合成结果（RGBA32F，`spec.rect` 已按 ring 的
+  reach 外扩），环的枚举、`line_weight` 权重、`max(min(dl*2.4,1),min(dc*1.45,1))*wt` 度量、
+  `clamp01(acc/wsum)` 与 `line_art::field` 逐句同构；tap 用 `textureLoad` 并 clamp 到纹理边界
+  （等价 CPU 的 buffer 边界钳制）。`wsum` 不逐像素重算，由 `line_art::ring_weight_sum(thickness)`
+  经 `op.p0.w` 传入（新增 `compose::adjust::line_art_ring_weight_sum`）。
+- `plan/types.rs` 新增 `Kernel::LineField`（`entry()` = `fs_line_field`，进 `DRAWN`；**不是 map 内核**，
+  所以按 `acc_format` 建 pipeline，构建失败也不会连带关掉 effect maps）。
+- `fields.rs::build_field` 改成 GPU：下方合成结果上传为 `pc_line_src`（RGBA32F），目标 `pc_line_field`
+  用 `acc_format`（`TEXTURE_BINDING|RENDER_ATTACHMENT`），一个 render pass（Clear → draw 3）跑完；
+  uniform 用 `kit::uniform_group` + 动态偏移 `[0, STRIDE]`（`STRIDE = 256`，chunk 在 0、op 在 `STRIDE`），
+  纹理组 9 个槽只有 slot0 是 `pc_line_src`，其余 `kit.dummy`。
+- **回退**：拿不到 `(LineField, acc_format)` 的 pipeline（如 GL 不能渲染到 float 目标）时仍走 CPU
+  `line_art::field` 并上传 `R32Float`（`case 29` 只读 `.r`，两种格式通用）。新增 `Stats::fields_cpu`
+  记录回退次数，`parity::line_art_field_is_built_on_the_gpu` 在能渲染 float 的适配器上断言它为 0，
+  否则「静默退回 CPU」会让性能问题悄悄回来。
+
+一个反直觉的坑：**上传前把 `[f32;4]` 逐字节转 `Vec<u8>` 本身就比 ring 还贵**。1600×1000 的
+`flat_map(to_le_bytes).collect()` 实测 112 ms，当时测量里那段「GPU pass 要 100 ms」的假象就是它；
+换 `bytemuck::cast_slice` 零拷贝后同一段 0.02 ms（RGBA32F 的 texel 恰好是 `[f32;4]` 的小端布局）。
+
+实测（RTX 3080 Ti / Vulkan，release，1600×1000 栅格 + 线条强化 thickness 13、强度 100；探针为
+`parity::line_art_paint_frame_cost`，含每帧 6.4 MB 回读，所以「整帧」数比应用里实时呈现偏高）：
+
+| 场景 | 改前（CPU 场） | 改后（GPU 场） |
+|---|---|---|
+| 首次建场（cold） | 553.98 ms | 54.69 ms |
+| 同文档再渲染（场复用） | 37.39 ms | 24.72 ms |
+| 外观滑杆 tick（场复用） | 31.76 ms | 27.57 ms |
+| **下方画一笔（重建场）** | **454.47 ms** | **46.67 ms** |
+
+改后那一笔拆开：CPU 底图合成 4.9 ms + 上传 2.6 ms + GPU pass（含等待）约 9 ms + 整帧其余 25 ms。
+
+**还没做的**（再往 C3 靠要这些）：C3 只重算受影响区域（damage rect + ring reach），我们仍按整幅
+`spec.rect` 重建场——缩放/平移、改厚度、下方图层变动各一次。要把笔迹的脏矩形从 UI 传到
+`sync_fields`，用 scissor 只重画 `damage.inflate(reach)`，底图合成都按脏矩形增量做。另外
+`build_field` 每次重建都新建两张纹理，复用分配还能省 1–2 ms。
 
 ## GPU 读邻域的调整层：分块接缝
 

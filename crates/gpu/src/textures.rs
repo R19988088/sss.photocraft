@@ -48,6 +48,9 @@ pub struct Stats {
     /// Line art fields built this render (C3's `maxDiff` texture): they are rebuilt only when the
     /// layers below their adjustment layer change, so moving the appearance sliders builds none.
     pub fields_built: usize,
+    /// Of those, how many had to be computed by the CPU because the adapter has no pipeline that
+    /// renders the field pass (`fs_line_field`): a capable GPU builds none.
+    pub fields_cpu: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
