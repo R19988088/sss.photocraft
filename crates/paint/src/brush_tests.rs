@@ -1139,10 +1139,18 @@ fn tail_preview_shows_the_stroke_as_finishing_it_would() {
     let mut done = pre.clone();
     render_stroke(&mut done, &b, &pts, None, false, 1.0);
     assert!((0..60).all(|y| (0..120).all(|x| live.rgba(x, y) == done.rgba(x, y))));
-    // Without smoothing (and past the first dab) finishing adds nothing.
+    // Without smoothing the only thing finishing has left to do is walk the stretch the curve holds
+    // for want of a point after it: that tail, and nothing more.
     let mut r = StrokeRenderer::new(&brush(), Some(fmt), 1.0);
+    let base0 = Surface::new(fmt);
+    let mut live0 = base0.clone();
     r.push(&pts);
-    assert!(r.tail_preview().is_none());
+    r.composite(&base0, &mut live0, None, false, false);
+    let mut tail0 = r.tail_preview().expect("the curve holds the last stretch");
+    tail0.composite(&base0, &mut live0, None, false, false);
+    let mut done0 = base0.clone();
+    render_stroke(&mut done0, &brush(), &pts, None, false, 1.0);
+    assert!((0..60).all(|y| (0..120).all(|x| live0.rgba(x, y) == done0.rgba(x, y))));
 }
 
 #[test]
@@ -1380,6 +1388,47 @@ fn pitch_is_the_size_times_the_spacing_whatever_the_pressure() {
     assert!(fw > lw * 3.0, "dabs did not shrink with pressure: {fw} vs {lw}");
 }
 
+/// The turn between two consecutive steps of a dab list, degrees.
+fn turn(a: &Dab, b: &Dab, c: &Dab) -> f64 {
+    let (u1, v1) = (b.center.x - a.center.x, b.center.y - a.center.y);
+    let (u2, v2) = (c.center.x - b.center.x, c.center.y - b.center.y);
+    (u1 * v2 - v1 * u2).atan2(u1 * u2 + v1 * v2).to_degrees().abs()
+}
+
+#[test]
+fn a_corner_bends_instead_of_kinking() {
+    // A fast stroke: samples 40 px apart, a right angle at (100, 50). Drawn as straight chords the
+    // turn would be one 90° kink at the sample; the curve spreads it out.
+    let b = BrushSettings { size: 10.0, spacing: 0.25, ..brush() };
+    let pts = vec![
+        StrokePoint::new(40.0, 50.0, 1.0),
+        StrokePoint::new(100.0, 50.0, 1.0),
+        StrokePoint::new(100.0, 110.0, 1.0),
+        StrokePoint::new(100.0, 170.0, 1.0),
+    ];
+    let d = dabs_of(&b, &pts);
+    let turns: Vec<f64> = d.windows(3).map(|w| turn(&w[0], &w[1], &w[2])).collect();
+    let worst = turns.iter().cloned().fold(0.0, f64::max);
+    assert!(worst < 30.0, "a corner is still a kink: {worst} degrees, all {turns:?}");
+    // And the path still runs through the corner sample: a stamp lands next to it (the stamps sit
+    // on the curve's arc, so not necessarily on the sample itself).
+    let nearest = d
+        .iter()
+        .map(|q| ((q.center.x - 100.0).powi(2) + (q.center.y - 50.0).powi(2)).sqrt())
+        .fold(f64::INFINITY, f64::min);
+    assert!(nearest < 2.0, "the curve came no closer than {nearest} px to the sample");
+}
+
+#[test]
+fn a_straight_stroke_stays_straight() {
+    // Points in a row bend nothing: the curve through collinear points is the line.
+    let b = BrushSettings { size: 10.0, spacing: 0.1, ..brush() };
+    let pts: Vec<StrokePoint> = (0..=20).map(|i| StrokePoint::new(i as f64 * 10.0, 50.0, 1.0)).collect();
+    let d = dabs_of(&b, &pts);
+    assert!(d.iter().all(|q| (q.center.y - 50.0).abs() < 1e-9), "a straight line bent off its row");
+    assert!(d.windows(2).all(|w| w[1].center.x > w[0].center.x), "the stamps must advance in order");
+}
+
 #[test]
 fn spacing_is_the_size_times_the_percentage_at_any_pointer_speed() {
     // `step_len`: the dab pitch is the diameter times the spacing, nothing else — not the
@@ -1515,7 +1564,7 @@ fn huge_scatter_is_capped_and_renders_at_every_depth() {
     // A NaN amount scatters nothing, as a zero amount does.
     let none = all_dabs(&with(0.0), &pts);
     assert_eq!(all_dabs(&with(f32::NAN), &pts), none);
-    assert!(none.0.iter().all(|d| d.center.y == 10.0));
+    assert!(none.0.iter().all(|d| (d.center.y - 10.0).abs() < 1e-9), "a dab wandered off the row");
 }
 
 /// Control: an ordinary Scatter amount above 100 % still scatters, unchanged by the cap (#977).

@@ -134,8 +134,13 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    `PathWalker` 里**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
    `MIN_SPEED_STEP` 已删除）；`spacing_enabled` 只为老预设兼容，不再改变规则。
    慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::dab_pitch_is_...`）。
-2. **插值是采样点之间的线性等距插值**（`PathWalker::push` → `lerp_pt`）。不要引入 cubic / 曲线 /
-   handle / 「曲线圆角」开关：试过，会让笔迹脱离指针（用户判为「强制开拉绳、乱定位」）。
+2. **路径是过采样点的曲线**（`dynamics.rs` 的 `PathCurver` → `curve_pt`，照 procraft
+   `crates/engine/src/stroke.rs` 的 `catmull_rom` / `CURVE_STEP = 4px` / `MOST_PIECES = 64`）：
+   每一段是「起点 + 终点 + 前后邻居」的 centripetal Catmull–Rom，按 ≤4px 的弦走，两端严格过
+   采样点。形状要靠「终点后面那个点」才定得下来，所以 **最后一段在笔画期间压一个采样点**
+   （和 procraft 一样的一采样点滞后；`finish()` 立刻补走这段，`tail_preview` 也把它算进预览），
+   这不是「拉绳式平滑」，别把它当成滞后 bug 去掉。这解决「快画时采样点隔 20–40px、笔迹成
+   多边形折角」。别再退回纯直线插值；也不要换成需要**多个**后续点或会偏离采样点的平滑。
 3. **指针稳定器只管压力**：`tablet_pressure.rs` 的 `TabletPressureFilter` 只在 `input/stylus.rs`
    里给压力用；它不参与笔迹几何，不要把它接进 `DabGenerator`。
 4. **确定性的描边不插帧**：矢量 `path.stroke`（`vector_cmds/paths.rs`）与修图类工具

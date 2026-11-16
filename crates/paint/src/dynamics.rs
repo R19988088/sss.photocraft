@@ -45,6 +45,108 @@ fn lerp_pt(a: &StrokePoint, b: &StrokePoint, f: f64) -> StrokePoint {
 }
 
 // ---------------------------------------------------------------------------
+// The curve through the input's points
+// ---------------------------------------------------------------------------
+
+/// How long the chords of the curve are at most (canvas pixels), and the most of them one stretch
+/// may have: the reference app's `CURVE_STEP` and `MOST_PIECES` (`engine/src/stroke.rs`).
+const CURVE_STEP: f64 = 4.0;
+const MOST_PIECES: usize = 64;
+
+/// The centripetal knot between two points: the square root of their distance, which is what the
+/// reference's `knot` divides by (`stroke.rs:547`).
+fn knot(a: &StrokePoint, b: &StrokePoint) -> f64 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt().sqrt().max(1e-4)
+}
+
+/// The point at `t` (0 at `p1`, 1 at `p2`) of the centripetal Catmull–Rom curve through four points
+/// — the reference's `catmull_rom` (`stroke.rs:546`): through each of them, with no loops or cusps
+/// where they bunch up. With no point before `p1` (or after `p2`) it is the parabola through the
+/// three there are; with neither, the straight line. Ends are exact, so the path passes through
+/// every input point.
+fn curve_pt(
+    p0: Option<&StrokePoint>,
+    p1: &StrokePoint,
+    p2: &StrokePoint,
+    p3: Option<&StrokePoint>,
+    t: f64,
+) -> StrokePoint {
+    let t2 = knot(p1, p2);
+    let u = t2 * t;
+    let mix = |a: f64, b: f64, from: f64, to: f64| (a * (to - u) + b * (u - from)) / (to - from);
+    let a2 = (mix(p1.x, p2.x, 0.0, t2), mix(p1.y, p2.y, 0.0, t2));
+    let before = p0.map(|p0| {
+        let t0 = -knot(p0, p1);
+        (mix(mix(p0.x, p1.x, t0, 0.0), a2.0, t0, t2), mix(mix(p0.y, p1.y, t0, 0.0), a2.1, t0, t2))
+    });
+    let after = p3.map(|p3| {
+        let t3 = t2 + knot(p2, p3);
+        (mix(a2.0, mix(p2.x, p3.x, t2, t3), 0.0, t3), mix(a2.1, mix(p2.y, p3.y, t2, t3), 0.0, t3))
+    });
+    let (x, y) = match (before, after) {
+        (Some(b1), Some(b2)) => (mix(b1.0, b2.0, 0.0, t2), mix(b1.1, b2.1, 0.0, t2)),
+        (Some(b), None) | (None, Some(b)) => b,
+        (None, None) => a2,
+    };
+    let mut q = lerp_pt(p1, p2, t);
+    q.x = x;
+    q.y = y;
+    q
+}
+
+/// Bends the path into the curve the reference app draws: each stretch from one input point to the
+/// next is the Catmull–Rom stretch through it and its neighbours, walked in chords of at most
+/// [`CURVE_STEP`] pixels. A stretch needs the point after it to be shaped the way the reference
+/// shapes it, so the last point waits one sample — the one-sample hold the reference keeps too —
+/// and the pending stretch is walked when the stroke ends.
+#[derive(Clone, Debug, Default)]
+pub struct PathCurver {
+    /// The point before `from`: the curve's incoming neighbour.
+    prev: Option<StrokePoint>,
+    /// The point the held stretch walks from.
+    from: Option<StrokePoint>,
+    /// The held stretch's far end.
+    to: Option<StrokePoint>,
+}
+
+impl PathCurver {
+    fn walk(&self, from: &StrokePoint, to: &StrokePoint, next: Option<&StrokePoint>, out: &mut Vec<StrokePoint>) {
+        let span = ((to.x - from.x).powi(2) + (to.y - from.y).powi(2)).sqrt();
+        let pieces = ((span / CURVE_STEP).ceil() as usize).clamp(1, MOST_PIECES);
+        for i in 1..=pieces {
+            let t = i as f64 / pieces as f64;
+            out.push(curve_pt(self.prev.as_ref(), from, to, next, t));
+        }
+    }
+
+    pub fn push(&mut self, p: StrokePoint, out: &mut Vec<StrokePoint>) {
+        let Some(from) = self.from else {
+            self.from = Some(p);
+            out.push(p);
+            return;
+        };
+        let Some(to) = self.to else {
+            self.to = Some(p);
+            return;
+        };
+        self.walk(&from, &to, Some(&p), out);
+        self.prev = Some(from);
+        self.from = Some(to);
+        self.to = Some(p);
+    }
+
+    /// End of stroke: walk the stretch held for want of a point after it.
+    pub fn finish(&mut self, out: &mut Vec<StrokePoint>) {
+        if let (Some(from), Some(to)) = (self.from, self.to) {
+            self.walk(&from, &to, None, out);
+            self.prev = Some(from);
+            self.from = Some(to);
+            self.to = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Smoothing
 // ---------------------------------------------------------------------------
 
@@ -889,9 +991,11 @@ pub fn apply_pose(b: &BrushSettings, mut p: StrokePoint) -> StrokePoint {
 #[derive(Clone, Debug)]
 pub struct DabGenerator {
     smoother: Smoother,
+    curver: PathCurver,
     walker: PathWalker,
     dual_walker: Option<PathWalker>,
     dual_smoother: Option<Smoother>,
+    dual_curver: PathCurver,
     motion: crate::motion::Motion,
     dual_motion: crate::motion::Motion,
     inertia: crate::motion::Inertia,
@@ -924,6 +1028,7 @@ impl DabGenerator {
         }
         Self {
             smoother: Smoother::new(&brush.smoothing, zoom),
+            curver: PathCurver::default(),
             walker,
             // The second tip's pitch is the same distance rule.
             dual_walker: dual_on.then(|| PathWalker::new(None)),
@@ -931,6 +1036,7 @@ impl DabGenerator {
                 let secondary = brush.dual_brush.resolved_brush(&brush);
                 Smoother::new(secondary.as_ref().map_or(&brush.smoothing, |b| &b.smoothing), zoom)
             }),
+            dual_curver: PathCurver::default(),
             motion: crate::motion::Motion::default(),
             dual_motion: crate::motion::Motion::default(),
             inertia: crate::motion::Inertia::default(),
@@ -1002,7 +1108,11 @@ impl DabGenerator {
             let point = self.motion.resolve(*p, &brush.motion, brush.size);
             self.smoother.push(point, &mut sm);
         }
-        self.walk(&sm, dabs);
+        let mut curved = Vec::new();
+        for p in &sm {
+            self.curver.push(*p, &mut curved);
+        }
+        self.walk(&curved, dabs);
         self.scratch = sm;
         if let Some(smoother) = &mut self.dual_smoother {
             let mut secondary = Vec::new();
@@ -1011,7 +1121,11 @@ impl DabGenerator {
                 let point = brush.map_or(*p, |b| self.dual_motion.resolve(*p, &b.motion, b.size));
                 smoother.push(point, &mut secondary);
             }
-            self.walk_dual(&secondary, dual);
+            let mut curved = Vec::new();
+            for p in &secondary {
+                self.dual_curver.push(*p, &mut curved);
+            }
+            self.walk_dual(&curved, dual);
         }
     }
 
@@ -1019,11 +1133,21 @@ impl DabGenerator {
     pub fn finish(&mut self, dabs: &mut Vec<Dab>, dual: &mut Vec<Dab>) {
         let mut sm = Vec::new();
         self.smoother.finish(&mut sm);
-        self.walk(&sm, dabs);
+        let mut curved = Vec::new();
+        for p in &sm {
+            self.curver.push(*p, &mut curved);
+        }
+        self.curver.finish(&mut curved);
+        self.walk(&curved, dabs);
         if let Some(smoother) = &mut self.dual_smoother {
             let mut secondary = Vec::new();
             smoother.finish(&mut secondary);
-            self.walk_dual(&secondary, dual);
+            let mut curved = Vec::new();
+            for p in &secondary {
+                self.dual_curver.push(*p, &mut curved);
+            }
+            self.dual_curver.finish(&mut curved);
+            self.walk_dual(&curved, dual);
         }
         let mut steps = Vec::new();
         self.walker.finish(&mut |s| steps.push(s));
