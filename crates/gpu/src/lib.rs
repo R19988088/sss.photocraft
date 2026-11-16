@@ -64,7 +64,7 @@ use photocraft_raster::{Surface, Tile};
 pub use brush_stamp::{install_process_stamper, BRUSH_STAMP_SHADER, BrushStamp, GpuStamper, StampOutput};
 pub use camera_raw::{CAMERA_RAW_SHADER, CameraRawDevelop};
 pub use health::{DeviceHealth, Fault};
-pub use plan::{Kernel, Plan, Role, Unsupported, plan};
+pub use plan::{Kernel, Plan, Role, Unsupported, plan, plan_region};
 pub use timing::{GpuTimer, GpuTiming};
 
 /// GPU compositor. Create once per device; call [`Compositor::render`] per refresh.

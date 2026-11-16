@@ -4,7 +4,7 @@ use super::convert::lut_texture;
 use super::kit::FrameRes;
 use super::paging::{OVER_BUDGET, cell_rect, first_error, grid_rect_count, grid_rects, lru_victims, scoped_work, uniform_buffer_len};
 use super::textures::{ChunkOut, FxKey, ResKey, Resident, Stats};
-use super::{Compositor, Document, LayerId, Plan, Rect, Surface, Unsupported, plan, timing};
+use super::{Compositor, Document, LayerId, Plan, Rect, Surface, Unsupported, plan, plan_region, timing};
 
 impl Compositor {
     /// Composite `region` of `doc`. Each finished chunk is passed to `sink` while its encoder is
@@ -132,7 +132,12 @@ impl Compositor {
     ) -> Result<Stats, Unsupported> {
         let canvas = doc.bounds();
         let region = region.intersect(&canvas);
-        let plan = plan(doc)?;
+        // Plan the drawn region, not the whole document: line art's field (and the CPU composite
+        // behind it) is C3's `ensureLineArtField`, scoped to the region a refresh draws. Planning
+        // the whole canvas here made every stroke below the adjustment rebuild the field for the
+        // entire canvas (~0.5 s on the CPU ring, ~20 ms after the GPU move), however small the
+        // damage was.
+        let plan = plan_region(doc, region)?;
         self.check_fx(doc, &plan)?;
         self.pattern_mode = doc.pixel_format().mode;
         self.pattern_doc = doc.id;
@@ -179,9 +184,10 @@ impl Compositor {
         // Line art's fields (C3's `ensureLineArtField`): built once for the drawn region and
         // reused while the layers below the adjustment layer stay as they were.
         let changed = if flush { self.prefix.changed() } else { Some(0) };
-        let (fields, fields_cpu) = self.sync_fields(device, queue, doc, &plan, changed);
+        let (fields, fields_cpu, fields_px) = self.sync_fields(device, queue, doc, &plan, changed);
         stats.fields_built += fields;
         stats.fields_cpu += fields_cpu;
+        stats.fields_px += fields_px;
         let paged: Vec<bool> = plan.fx.iter().map(|f| self.fx_paged(f.region)).collect();
         let aprons: Vec<i32> = plan.fx.iter().zip(&paged).map(|(f, &pg)| if pg { Self::fx_apron(doc, f) } else { 0 }).collect();
         for (f, &pg) in plan.fx.iter().zip(&paged) {

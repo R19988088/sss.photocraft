@@ -3694,3 +3694,50 @@ fn line_art_field_is_built_on_the_gpu() {
     assert_eq!(stats.fields_cpu, 0, "the rebuilt field also ran on the GPU");
 }
 
+/// C3 builds its `maxDiff` field for the ROI a refresh draws, never for the whole canvas, and the
+/// compositor plans the region it renders (`plan_region`). Planning the whole document instead
+/// scoped every field to the canvas, so each brush stroke below a line art layer rebuilt a
+/// canvas-sized field — 0.5 s on the CPU ring, ~20 ms after the field moved to the GPU. This pins
+/// the field to `region` plus the ring's reach.
+#[test]
+fn line_art_field_covers_only_the_refreshed_region() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::adjust::LineArtBlend;
+
+    let (w, h) = (1600u32, 1000u32);
+    let mut doc = Document::new("line art region", Size::new(w, h), ColorMode::Rgb, SampleType::U8);
+    let mut art = Layer::raster("art", PixelFormat::RGBA8);
+    let mut px: Vec<f32> = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let v = if (x / 9 + y / 7) % 2 == 0 { 0.15 } else { 0.85 };
+            px.extend_from_slice(&[v, v, v, 1.0]);
+        }
+    }
+    art.surface_mut().unwrap().write_region(Rect::new(0, 0, w as i32, h as i32), &px);
+    doc.layers = vec![
+        art,
+        Layer::new(
+            "line art",
+            LayerContent::Adjustment(Adjustment::LineArt {
+                intensity: 100.0,
+                sharpness: 100.0,
+                thickness: 13.0,
+                shadows: 24.0,
+                midtones: 32.0,
+                highlights: 90.0,
+                color: [0.0, 0.0, 0.0],
+                blend: LineArtBlend::Multiply,
+            }),
+        ),
+    ];
+    // A stroke below the adjustment, then a refresh of the region around it: the field covers
+    // that region grown by the ring's reach (radius 10 at this thickness), not the 1.6 M-pixel
+    // canvas.
+    doc.layers[0].surface_mut().unwrap().write_region(Rect::from_xywh(800, 500, 40, 40), &vec![1.0; 40 * 40 * 4]);
+    let region = Rect::from_xywh(700, 400, 300, 300);
+    let stats = diff_rect(&mut g, &doc, region, "line art field region").unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(stats.fields_built, 1, "the stroke rebuilt the field");
+    assert!(stats.fields_px <= 400 * 400, "field covers {} px, not the region's ~{} px", stats.fields_px, 400 * 400);
+}
+

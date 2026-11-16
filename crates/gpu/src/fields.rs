@@ -31,8 +31,8 @@ impl super::Compositor {
     /// `changed` is the lowest root layer this render changed: a field describes the layers
     /// *below* its adjustment layer, so a change at the adjustment layer's own index (its
     /// sliders, its mask) or above it leaves the field valid, and only a change below it rebuilds
-    /// the field. Returns how many fields were built, and how many of those the CPU had to
-    /// compute because no field pipeline exists.
+    /// the field. Returns how many fields were built, how many of those the CPU had to compute
+    /// because no field pipeline exists, and the pixels they cover.
     pub(crate) fn sync_fields(
         &mut self,
         device: &wgpu::Device,
@@ -40,16 +40,16 @@ impl super::Compositor {
         doc: &Document,
         plan: &Plan<'_>,
         changed: Option<usize>,
-    ) -> (usize, usize) {
+    ) -> (usize, usize, u64) {
         self.field_views.clear();
         self.field_views.resize(plan.fields.len(), None);
         if plan.fields.is_empty() {
             self.line_fields.clear();
-            return (0, 0);
+            return (0, 0, 0);
         }
         let mut cached: Vec<Option<CachedField>> = std::mem::take(&mut self.line_fields).into_iter().map(Some).collect();
         let mut out = Vec::new();
-        let (mut built, mut on_cpu) = (0, 0);
+        let (mut built, mut on_cpu, mut px) = (0, 0, 0);
         for (slot, spec) in plan.fields.iter().enumerate() {
             // `changed >= spec.layer_index`: the edit is at or above this layer, so everything the
             // field was computed from is untouched. (`changed < layer_index` was the old test, and
@@ -62,6 +62,7 @@ impl super::Compositor {
             };
             let fresh = reusable.and_then(|at| cached[at].take()).unwrap_or_else(|| {
                 built += 1;
+                px += u64::from(spec.rect.width()) * u64::from(spec.rect.height());
                 let (field, cpu) = self.build_field(device, queue, doc, spec);
                 on_cpu += usize::from(cpu);
                 field
@@ -70,7 +71,7 @@ impl super::Compositor {
             out.push(fresh);
         }
         self.line_fields = out;
-        (built, on_cpu)
+        (built, on_cpu, px)
     }
 
     /// The field for `spec`: `true` alongside it when the CPU had to compute it (no pipeline that

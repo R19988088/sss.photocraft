@@ -271,10 +271,29 @@ Metal 里跑同一圈是毫秒级），那是下一步，不在这次改动里�
 
 改后那一笔拆开：CPU 底图合成 4.9 ms + 上传 2.6 ms + GPU pass（含等待）约 9 ms + 整帧其余 25 ms。
 
-**还没做的**（再往 C3 靠要这些）：C3 只重算受影响区域（damage rect + ring reach），我们仍按整幅
-`spec.rect` 重建场——缩放/平移、改厚度、下方图层变动各一次。要把笔迹的脏矩形从 UI 传到
-`sync_fields`，用 scissor 只重画 `damage.inflate(reach)`，底图合成都按脏矩形增量做。另外
-`build_field` 每次重建都新建两张纹理，复用分配还能省 1–2 ms。
+### 但真正的大头是「场按整幅画布算」：`plan_region`
+
+上表那 1600×1000 的「一笔」并不是应用里的真实一笔。应用画一笔只刷新脏矩形（`gpu_canvas::refresh`
+把 `damage` 当 region 传下去），可 `encode.rs` 里计划用的是 `plan(doc)`——`DocCtx::of(doc)` 把
+`region` 设成 **整个画布**，于是 `planner` 的 `spec.rect = cx.region.inflate(radius) ∩ canvas` 也
+是整幅画布：**每一笔都要在整幅画布上重建场**，无论脏矩形多小。这也是「不到 C3 千分之一」的真身：
+C3 的 `ensureLineArtField` 只算它要画的 ROI。
+
+`crates/gpu/src/plan.rs` 本来就有 `plan_region(doc, region)`（注释写着「its line-art fields are
+scoped to it」），只是 `encode.rs` 没用它。改成 `plan_region(doc, region)` 之后：场的矩形 =
+`region.inflate(radius) ∩ canvas`，脏矩形刷新时场也只有脏矩形那么大。新增 `Stats::fields_px` 把
+「这次建场覆盖多少像素」记下来，`parity::line_art_field_covers_only_the_refreshed_region` 断言
+300×300 的刷新建出的场不超过 400×400 px（不然就会又退回整幅画布）。
+
+实测（同一台机、release、1600×1000 文档 + 线条强化 thickness 13，刷新 300×300 的脏矩形）：
+
+| 场景 | 改前 | GPU 场 + `plan(doc)` | GPU 场 + `plan_region` |
+|---|---|---|---|
+| 建场后同区域再刷新 | 30 ms | 1.8–2.4 ms | 1.9 ms |
+| **画一笔后刷新该区域** | **约 550 ms（CPU 场，整幅）** | 23.7–25.2 ms | **3.2 ms** |
+
+拆开那 3.2 ms：CPU 底图合成（320×320）0.79 ms + GPU pass（含上传与等待）0.47 ms + 该区域自身的合成
+约 2 ms。也就是说一笔的线强化开销已经落到和 C3 同一量级（毫秒级），剩下的就是画布本身的合成。
 
 ## GPU 读邻域的调整层：分块接缝
 

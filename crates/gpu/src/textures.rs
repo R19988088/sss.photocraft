@@ -51,6 +51,9 @@ pub struct Stats {
     /// Of those, how many had to be computed by the CPU because the adapter has no pipeline that
     /// renders the field pass (`fs_line_field`): a capable GPU builds none.
     pub fields_cpu: usize,
+    /// Pixels the fields built this render cover: a refresh of a small region builds a field for
+    /// that region plus the ring's reach (`plan_region`), not one for the whole canvas.
+    pub fields_px: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
