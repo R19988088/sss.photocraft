@@ -160,6 +160,58 @@ fn every_adjustment_layer_edits_through_properties() {
     }
 }
 
+/// Line art splits C3's pass in two (#line-art): the appearance sliders are pointwise reads of the
+/// cached edge field and preview live, while thickness rebuilds that field (hundreds of taps per
+/// pixel) and so waits for the release instead of rendering on every drag tick.
+#[test]
+fn line_art_previews_appearance_and_commits_thickness_on_release() {
+    let mut h = app_harness("lineArt", "rgb", 8);
+    let (_, before) = layer(&h);
+    let Adjustment::LineArt { intensity, thickness, .. } = before else { panic!("line art layer") };
+    assert_eq!(thickness, 13.0, "a new line art layer opens on C3's default thickness");
+
+    // An appearance slider previews while the pointer is down and commits once on release.
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let r = label_rect(&h, "Intensity").expect("Intensity row");
+    let y = r.bottom() + 14.0;
+    let (from, to) = (Pos2::new(r.left() + 40.0, y), Pos2::new(r.left() + 150.0, y));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(to);
+    h.run_steps(1);
+    assert!(h.state().live_adjust.is_some(), "intensity previews during the drag");
+    h.drop_at(to);
+    h.run_steps(3);
+    assert!(h.state().live_adjust.is_none(), "intensity ends its preview on release");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 1, "one history step for the intensity gesture");
+    let (_, after_intensity) = layer(&h);
+    let Adjustment::LineArt { intensity: changed, .. } = after_intensity.clone() else { panic!("line art layer") };
+    assert_ne!(changed, intensity, "the intensity edit reached the layer");
+
+    // Thickness: the drag only moves the row; the release writes the value and rebuilds the field.
+    let r = label_rect(&h, "Thickness").expect("Thickness row");
+    let y = r.bottom() + 14.0;
+    let (from, to) = (Pos2::new(r.left() + 40.0, y), Pos2::new(r.left() + 150.0, y));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(to);
+    h.run_steps(1);
+    let (_, during) = layer(&h);
+    assert_eq!(during, after_intensity, "a thickness drag does not change the layer mid-gesture");
+    assert!(h.state().live_adjust.is_none(), "a thickness drag never previews");
+    h.drop_at(to);
+    h.run_steps(4);
+    let (_, after_thickness) = layer(&h);
+    let Adjustment::LineArt { thickness: thicker, .. } = after_thickness else { panic!("line art layer") };
+    assert!(thicker > 13.0, "the release applies the dragged thickness ({thicker})");
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), steps + 2, "one history step for the whole thickness gesture");
+    assert!(h.state().live_adjust.is_none(), "the release commits rather than previewing");
+}
+
 /// #3264: wheel browsing previews without recording one edit per selected LUT.
 #[test]
 fn color_lookup_picker_cycles_luts_with_the_mouse_wheel() {

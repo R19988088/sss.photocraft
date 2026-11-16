@@ -1261,7 +1261,9 @@ fn fs_adjust_near(in: VOut) -> @location(0) vec4<f32> {
             let c = src.rgb;
             let soft = max(1.35, thickness * 0.42);
             let outer = thickness + soft;
-            let radius = i32(ceil(outer));
+            // C3's `sampleRadius = 10`: the ring is capped like the CPU's (`line_art::radius`),
+            // so a thickness above ~7 softens the weights without widening the read.
+            let radius = min(i32(ceil(outer)), 10);
             let dp = vec2<f32>(f32(p.x) + 0.5, f32(p.y) + 0.5);
             var acc = 0.0;
             var wsum = 0.0;

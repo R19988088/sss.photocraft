@@ -45,6 +45,9 @@ pub struct Stats {
     pub layers_batched: usize,
     /// Batched passes drawn with Normal's code alone (`fs_layerbatch_normal`), summed over chunks.
     pub normal_batches: usize,
+    /// Line art fields built this render (C3's `maxDiff` texture): they are rebuilt only when the
+    /// layers below their adjustment layer change, so moving the appearance sliders builds none.
+    pub fields_built: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

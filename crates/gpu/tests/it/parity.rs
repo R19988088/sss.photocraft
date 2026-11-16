@@ -311,6 +311,85 @@ fn line_art_field_has_no_seam_across_chunks() {
     }
 }
 
+/// C3 keys its `maxDiff` field on origin, size and thickness, and its appearance sliders only
+/// read the cached field. Ours takes the topmost edited root layer as the invalidation, so an
+/// edit at the adjustment layer's own index — every intensity, sharpness, zone, ink or blend
+/// slider tick — must reuse the field, and only a thickness change or an edit *below* it may
+/// rebuild. This pinned the drag-stutter bug: the old rule rebuilt on `changed == layer_index`.
+#[test]
+fn line_art_field_is_reused_for_its_own_appearance_sliders() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::adjust::LineArtBlend;
+
+    let (w, h) = (200u32, 120u32);
+    let mut doc = Document::new("line art cache", Size::new(w, h), ColorMode::Rgb, SampleType::U8);
+    let mut art = Layer::raster("art", PixelFormat::RGBA8);
+    let mut px: Vec<f32> = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            // Hard checkerboard steps, so the ring sees real edges everywhere.
+            let v = if (x / 9 + y / 7) % 2 == 0 { 0.15 } else { 0.85 };
+            px.extend_from_slice(&[v, v, v, 1.0]);
+        }
+    }
+    art.surface_mut().unwrap().write_region(Rect::new(0, 0, w as i32, h as i32), &px);
+    let mut line_art = Adjustment::LineArt {
+        intensity: 100.0,
+        sharpness: 100.0,
+        thickness: 13.0,
+        shadows: 24.0,
+        midtones: 32.0,
+        highlights: 90.0,
+        color: [0.0, 0.0, 0.0],
+        blend: LineArtBlend::Multiply,
+    };
+    doc.layers = vec![art, Layer::new("line art", LayerContent::Adjustment(line_art.clone()))];
+
+    let mut built = |doc: &mut Document, what: &str| {
+        diff_rect(&mut g, doc, doc.bounds(), what).unwrap_or_else(|e| panic!("{e}")).fields_built
+    };
+    assert_eq!(built(&mut doc, "line art cache (first render)"), 1, "the first render builds the field");
+
+    let write = |doc: &mut Document, adj: &Adjustment| doc.layers[1].content = LayerContent::Adjustment(adj.clone());
+    for (what, edit) in [("intensity", 0), ("sharpness", 1), ("zone opacity", 2), ("ink colour", 3), ("blend mode", 4)] {
+        match edit {
+            0 => {
+                let Adjustment::LineArt { intensity, .. } = &mut line_art else { unreachable!() };
+                *intensity = 35.0;
+            }
+            1 => {
+                let Adjustment::LineArt { sharpness, .. } = &mut line_art else { unreachable!() };
+                *sharpness = 45.0;
+            }
+            2 => {
+                let Adjustment::LineArt { shadows, midtones, highlights, .. } = &mut line_art else { unreachable!() };
+                (*shadows, *midtones, *highlights) = (70.0, 55.0, 20.0);
+            }
+            3 => {
+                let Adjustment::LineArt { color, .. } = &mut line_art else { unreachable!() };
+                *color = [0.55, 0.12, 0.05];
+            }
+            _ => {
+                let Adjustment::LineArt { blend, .. } = &mut line_art else { unreachable!() };
+                *blend = LineArtBlend::Screen;
+            }
+        }
+        write(&mut doc, &line_art);
+        assert_eq!(built(&mut doc, what), 0, "{what}: a pointwise read of the field must not rebuild it");
+    }
+
+    // Thickness is part of the field's key.
+    let Adjustment::LineArt { thickness, .. } = &mut line_art else { unreachable!() };
+    *thickness = 3.0;
+    write(&mut doc, &line_art);
+    assert_eq!(built(&mut doc, "thickness"), 1, "a thickness change rebuilds the field");
+    assert_eq!(built(&mut doc, "same thickness again"), 0, "an unchanged thickness reuses it");
+
+    // An edit below the layer changes what the field sees.
+    doc.layers[0].surface_mut().unwrap().write_region(Rect::from_xywh(60, 40, 20, 20), &vec![1.0; 20 * 20 * 4]);
+    assert_eq!(built(&mut doc, "edit below the layer"), 1, "the layer below rebuilding the field");
+}
+
 /// Closing a document frees what the compositor holds for it, however its canvas entry went
 /// (#4529): `retain_docs` drops the resident pages, effect maps and lower-stack composite of
 /// documents that aren't open, and keeps the open ones.

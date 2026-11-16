@@ -20,8 +20,9 @@ mod tone;
 pub use cmyk_screen::apply as cmyk_screen_print;
 pub use halftone::{HALFTONE_WHITE_MIN, HalftoneScreen, cell_noise};
 pub use line_art::{
-    Field as LineArtField, LineArtParams, apply as line_art, apply_field as line_art_apply_field, apply_shared as line_art_apply_shared, field as line_art_field,
-    radius as line_art_radius,
+    DEFAULT_HIGHLIGHTS, DEFAULT_INTENSITY, DEFAULT_MIDTONES, DEFAULT_SHADOWS, DEFAULT_SHARPNESS, DEFAULT_THICKNESS, Field as LineArtField, LineArtParams,
+    MAX_RADIUS, THICKNESS_MAX, THICKNESS_MIN, apply as line_art, apply_field as line_art_apply_field, apply_shared as line_art_apply_shared,
+    field as line_art_field, radius as line_art_radius,
 };
 
 /// Line art's parameters, when `adj` is a line art adjustment.

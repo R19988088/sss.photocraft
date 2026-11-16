@@ -174,13 +174,64 @@ field 落地后，两条路径都只按「整段绘制区域」算一次场：
   「该层以下」并 `line_art::field` 一次，上传成 R32F 绑到 `group(1) binding 8`；`case 29` 做点查，
   `p3` = field 矩形。分组内的线条强化仍走 `case 28` 的逐块 ring（它的底图是组内合成，截断整个
   `doc.layers` 不成立）。
-- **失效**：`prefix::prepare` 现在记下「最上面被改的根层号」（`changed()`），`changed < 该层序号`
-  才重建场，拖强度/锐度/明暗/线色/混合滑杆、改上层或改自身蒙版都不重算（C3 的 key 里也没有
-  这些外观参数）。
+- **失效**：`prefix::prepare` 记下「最下面被改的根层号」（`changed()`），场只依赖该层**以下**的层，
+  所以 `changed >= 该层序号` 时场仍旧有效，`changed < 该层序号` 才重建（上一版把这条写反了，见下节）。
+  拖强度/锐度/明暗/线色/混合滑杆、改上层或改自身蒙版都不重算（C3 的 key 里也没有这些外观参数）。
 - **算力门槛**：一段区域超过 4 Mpx（16 MiB R32F）就用回逐块 ring，不把场纹理撑爆。
 
 测试：`gpu --test it line_art_field_has_no_seam_across_chunks`（画布 1200×300，跨 1024 的
 分块接缝 + 单条窄条的三种取景，GPU 与 CPU 逐像素同值）。
+
+## 线条强化：场的失效条件写反了（2026-11-16 修）
+
+`Compositor::sync_fields`（`crates/gpu/src/fields.rs`）原来把**复用**条件写成
+`changed < spec.layer_index`。`changed` 是最下面被改的根层号，而场的输入只有该层**以下**的层：
+拖强度/锐度/三档/线色/混合时 `changed == layer_index`，旧条件不成立 → **滑杆每一个 tick 都重建
+一次场**，1440×900、默认厚度 13（440 taps）就是每 tick 0.5 s 量级的 CPU 计算，界面直接卡死。
+这就是「线条强化特别差」的根因，也正是上一节那句 `changed < 该层序号 才重建` 和代码对不上的
+地方：文档写对了，代码取了反。
+
+- 现在：`changed.is_none_or(|ch| ch >= spec.layer_index)` —— 改在层自身或其上方则继续用缓存；
+  层以下变动（含从该处起新增/删层）才重建。`sync_fields` 顺带返回本次重建个数，累进
+  `Stats::fields_built`（`crates/gpu/src/textures.rs`、`encode.rs`）。
+- 回归测试 `gpu --test it line_art_field_is_reused_for_its_own_appearance_sliders`：首帧 1 次；
+  强度 / 锐度 / 三档不透明 / 线色 / 混合 各改一次都 `fields_built == 0`；改厚度、再用同一厚度
+  渲染、改下方图层则各 1 次。
+- CPU 侧 `Ctx::set_line_field` 仍是每次 `render` 现算（`Ctx` 只活一次 render），导出一帧，
+  不受影响；无 GPU 时的画布回退没有跨帧缓存，属已知限制。
+
+**厚度不再实时预览**：厚度是唯一进 `FieldSpec` 的滑块，一次拖拽要重建整个取景的场。现在
+`crates/ui-egui/src/dialogs/adjust_editors/line_art.rs` 的 `thickness_row` 把拖动中的值只放进
+egui temp（`line-thickness-drag`）让行控件跟手，**不写 `v`、不报 changed**；松手
+（`drag_stopped`）才写值并 `commit`，即一次 `layer.setAdjustment` + 一次场重建。双击复位与
+滚轮/箭头步进仍走 `Edit::of`。外观滑杆保持 C3 的实时点查预览。UI 回归：
+`ui-egui --lib line_art_previews_appearance_and_commits_thickness_on_release`（新层厚度 13、
+拖强度中途 `live_adjust.is_some()`、拖厚度中途 `live_adjust.is_none()` 且层内值不变、松手各 +1 步）。
+
+**默认值对齐 C3**（`crates/io/src/sssp.rs` 的 `line_art()` payload 是本地唯一权威记录）：强度 100、
+锐度 100、厚度 13、暗部 24 / 中间调 32 / 亮部 90、线色黑、混合 Multiply。为此厚度量程从
+`0.1..=10` 放宽到 `0.1..=30`（`adjust::THICKNESS_MIN/MAX`），否则 13 会被两处静默钳制吃掉：
+`engine` 的 `num_in`（超范围静默 clamp）钳到 10、GPU `plan/lower.rs` 的 `p[0]` 钳到 10。
+**环的读取半径仍按 C3 的 `sampleRadius = 10` 截断**（`line_art::radius`），所以 13 与 10 的 taps
+数一致、只是权重不同：默认值不再被吃掉，成本不变。`compose.wgsl` 的 `case 28` 也补了
+`min(i32(ceil(outer)), 10)`——之前 GPU 不截断，厚度 ≥ 7 时 CPU/GPU 会不一致。
+
+**场算法本身**（`line_art::field`）：每像素 luma 预算一次、环内走无钳制快路径（只有贴边才 clamp）、
+`tap_value` 用平方比较跳过 sqrt（`chroma²·2.1025 ≤ luma项²·0.9999` 时不必算距离，`luma项 ≥ 1`
+直接返回权重），与旧实现逐像素在 1e-6 内一致（`optimised_field_matches_the_plain_ring`，
+thickness 0.5/3/8/13/30）。
+
+实测（本机 Windows，1440×900 = 1,296,000 px，底图合成 13 ms 另算）：
+
+| 厚度 | taps | `field()` |
+|---|---|---|
+| 3 | 60 | 125 ms |
+| 13（默认） | 440 | 550 ms |
+| 30 | 440 | 487 ms |
+
+结论：**场不能进滑杆循环**。缓存修好后一次拖拽最多一次重建（松手那下），但缩放/平移、改厚度、
+改下方图层仍各重建一次，默认厚度约 0.5 s。要消掉这一段得把 ring 搬到 GPU 专用 pass（C3 在
+Metal 里跑同一圈是毫秒级），那是下一步，不在这次改动里。
 
 ## GPU 读邻域的调整层：分块接缝
 

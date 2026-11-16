@@ -318,8 +318,9 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
         }
         Adjustment::LineArt { intensity, sharpness, thickness, shadows, midtones, highlights, color, blend } => {
             // C3's line art, drawn by `fs_adjust_near` (it samples the artwork's neighbours; the
-            // planner fills `p3` with the artwork rect it clamps those reads to).
-            p[0] = [intensity.clamp(0.0, 300.0), sharpness.clamp(0.0, 100.0), thickness.clamp(0.1, 10.0), *shadows];
+            // planner fills `p3` with the artwork rect it clamps those reads to). Thickness keeps
+            // C3's own range so 13 (its default) is not clamped away.
+            p[0] = [intensity.clamp(0.0, 300.0), sharpness.clamp(0.0, 100.0), thickness.clamp(adjust::THICKNESS_MIN, adjust::THICKNESS_MAX), *shadows];
             p[1] = [*midtones, *highlights, color[0], color[1]];
             p[2] = [color[2], photocraft_doc::adjust::LineArtBlend::index(*blend) as f32, 0.0, 0.0];
             (28, p, None)

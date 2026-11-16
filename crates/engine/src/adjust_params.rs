@@ -269,7 +269,7 @@ pub fn from_params(kind: &str, p: &Value, base: Option<&Adjustment>, mode: Color
             Adjustment::LineArt {
                 intensity: r.num("intensity", i0, 0.0, 300.0)?,
                 sharpness: r.num("sharpness", sh0, 0.0, 100.0)?,
-                thickness: r.num("thickness", t0, 0.1, 10.0)?,
+                thickness: r.num("thickness", t0, photocraft_compose::adjust::THICKNESS_MIN, photocraft_compose::adjust::THICKNESS_MAX)?,
                 shadows: r.num("shadows", sd0, 0.0, 100.0)?,
                 midtones: r.num("midtones", m0, 0.0, 100.0)?,
                 highlights: r.num("highlights", h0, 0.0, 100.0)?,

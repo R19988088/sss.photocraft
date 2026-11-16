@@ -443,7 +443,8 @@ pub enum Adjustment {
         intensity: f32,
         /// Edge cutoff in percent (0..=100): higher keeps only the harder edges.
         sharpness: f32,
-        /// Reach of the edge search in pixels (0.1..=10): the line's thickness.
+        /// Reach of the edge search in pixels (0.1..=30): the line's thickness. C3's default is
+        /// 13 and its ring caps the read at 10 px, so thicker lines soften rather than widen.
         thickness: f32,
         /// Opacity in the shadow zone in percent (0..=100).
         shadows: f32,

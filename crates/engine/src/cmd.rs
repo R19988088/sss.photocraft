@@ -1268,7 +1268,7 @@ fn build() -> Vec<CommandSpec> {
         (
             "lineArt",
             "Line Art…",
-            r##"{"intensity":0..300=100,"sharpness":0..100=100,"thickness":0.1..10=13,"shadows":0..100=24,"midtones":0..100=32,"highlights":0..100=90,"color":"#rrggbb"="#000000","blend":"normal|multiply|screen|overlay"="multiply"} (C3's 线条强化: ink grown along the edges of the layers below, intensity and thickness size it, sharpness narrows the edge it accepts, shadows/midtones/highlights are the tone zones it may touch, blend = how the ink meets the artwork)"##,
+            r##"{"intensity":0..300=100,"sharpness":0..100=100,"thickness":0.1..30=13,"shadows":0..100=24,"midtones":0..100=32,"highlights":0..100=90,"color":"#rrggbb"="#000000","blend":"normal|multiply|screen|overlay"="multiply"} (C3's 线条强化: ink grown along the edges of the layers below, intensity and thickness size it, sharpness narrows the edge it accepts, shadows/midtones/highlights are the tone zones it may touch, blend = how the ink meets the artwork)"##,
         ),
         (
             "halftone",

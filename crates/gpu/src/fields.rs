@@ -6,7 +6,7 @@
 //! (`webApplyLineArtField`). Two things follow, and both matter for the chunked compositor:
 //!
 //! - no chunk boundary can cut a pixel's neighbours, because the read never leaves the pixel;
-//! - dragging the sliders costs one `textureLoad`, not a ring of 59 samples per pixel.
+//! - dragging the sliders costs one `textureLoad`, not a ring of up to 440 samples per pixel.
 //!
 //! The field only covers the drawn region (C3 does the same for its ROI fields), so a render of
 //! one screen never pays for the whole canvas. A document too large for one field texture falls
@@ -26,30 +26,38 @@ pub(crate) const MAX_FIELD_PIXELS: u64 = 4 << 20;
 impl super::Compositor {
     /// Uploads the fields `plan` asks for, reusing the cached ones whose backdrop still holds.
     /// `changed` is the lowest root layer this render changed: a field describes the layers
-    /// *below* its adjustment layer, so it survives changes at or above that layer (the sliders,
-    /// its own mask, the layers above it).
-    pub(crate) fn sync_fields(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, doc: &Document, plan: &Plan<'_>, changed: Option<usize>) {
+    /// *below* its adjustment layer, so a change at the adjustment layer's own index (its
+    /// sliders, its mask) or above it leaves the field valid, and only a change below it rebuilds
+    /// the field. Returns how many fields were built.
+    pub(crate) fn sync_fields(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, doc: &Document, plan: &Plan<'_>, changed: Option<usize>) -> usize {
         self.field_views.clear();
         self.field_views.resize(plan.fields.len(), None);
         if plan.fields.is_empty() {
             self.line_fields.clear();
-            return;
+            return 0;
         }
         let mut cached: Vec<Option<CachedField>> = std::mem::take(&mut self.line_fields).into_iter().map(Some).collect();
         let mut out = Vec::new();
+        let mut built = 0;
         for (slot, spec) in plan.fields.iter().enumerate() {
-            let reusable = if changed.is_none_or(|ch| ch < spec.layer_index) {
+            // `changed >= spec.layer_index`: the edit is at or above this layer, so everything the
+            // field was computed from is untouched. (`changed < layer_index` was the old test, and
+            // it rebuilt the field on every appearance-slider tick — a ring of hundreds of taps
+            // per pixel each frame, which is what made the panel unusable.)
+            let reusable = if changed.is_none_or(|ch| ch >= spec.layer_index) {
                 cached.iter().position(|f| matches!(f, Some(f) if f.layer_index == spec.layer_index && f.thickness == spec.thickness && f.rect == spec.rect))
             } else {
                 None
             };
-            let fresh = reusable
-                .and_then(|at| cached[at].take())
-                .unwrap_or_else(|| self.build_field(device, queue, doc, spec));
+            let fresh = reusable.and_then(|at| cached[at].take()).unwrap_or_else(|| {
+                built += 1;
+                self.build_field(device, queue, doc, spec)
+            });
             self.field_views[slot] = Some(fresh.texture.view.clone());
             out.push(fresh);
         }
         self.line_fields = out;
+        built
     }
 
     fn build_field(&self, device: &wgpu::Device, queue: &wgpu::Queue, doc: &Document, spec: &FieldSpec) -> CachedField {
