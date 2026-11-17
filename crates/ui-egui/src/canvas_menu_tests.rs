@@ -307,34 +307,6 @@ fn brush_picker_taps_preserve_pixels_selection_and_history_after_reopening() {
     }
 }
 
-#[test]
-fn brush_chip_toggles_after_canvas_and_control_opening() {
-    for tool in [Tool::Brush, Tool::Eraser] {
-        for scale in [1.0, 2.0] {
-            let mut h = harness(tool, true, scale);
-            let before = document_state(&h);
-            let at = fractional_point(&h, scale);
-            tap(&mut h, at, Modifiers::NONE, true);
-            assert!(h.state().ui.brush_picker.is_some());
-            for _ in 0..3 {
-                h.get_by_label(crate::i18n::t("Brush Preset picker")).click();
-                h.run_steps(3);
-                assert!(h.state().ui.brush_picker.is_none(), "the chip closes the open picker");
-                h.get_by_label(crate::i18n::t("Brush Preset picker")).click();
-                h.run_steps(3);
-                assert!(h.state().ui.brush_picker.is_some(), "the chip reopens the picker");
-                assert!(document_state(&h) == before, "pixels, selection, layers and history are unchanged");
-            }
-            dismiss_outside(&mut h, Popup::Brush);
-            control_tap(&mut h, at, Popup::Brush);
-            h.get_by_label(crate::i18n::t("Brush Preset picker")).click();
-            h.run_steps(3);
-            assert!(h.state().ui.brush_picker.is_none());
-            assert!(document_state(&h) == before, "pixels, selection, layers and history are unchanged");
-        }
-    }
-}
-
 /// #7268: the Quick Selection tool's brush chip still opens and closes the Brush Preset picker;
 /// only its canvas right-click is the selection menu.
 #[test]

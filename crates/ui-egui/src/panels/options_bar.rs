@@ -164,9 +164,11 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             // The Brush's own tooltips (#11813); the Eraser keeps its texts.
             let brush = app.ui.tool == Tool::Brush;
             let tip = |r: egui::Response, text: &str| if brush { r.on_hover_text(text) } else { r };
+            // Brush Settings sits directly after the tool icon, the Size field right of it.
+            crate::brush_picker::settings_toggle(app, ui);
             ui.add_enabled_ui(!block, |ui| {
-                brush_preset_chip(ui, b, &mut app.ui);
-                crate::brush_picker::settings_toggle(app, ui);
+                opt_label(ui, tl!("Size"));
+                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
             });
             widgets::vline(ui, 22.0);
             // The Eraser has no blend mode: its Mode is Brush, Pencil or Block (#2662).
@@ -261,9 +263,8 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             }
         }
         Tool::Brush | Tool::Eraser => {
-            brush_preset_chip(ui, b, &mut app.ui);
+            // Brush Settings sits directly after the tool icon, the Size field right of it.
             crate::brush_picker::settings_toggle(app, ui);
-            widgets::vline(ui, 22.0);
             // A Block-mode Eraser has a fixed size, opacity and flow (Photoshop, #2770).
             let block = crate::eraser_ui::block_mode(app, app.ui.tool);
             ui.add_enabled_ui(!block, |ui| {

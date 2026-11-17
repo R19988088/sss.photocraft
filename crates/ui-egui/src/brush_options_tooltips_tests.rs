@@ -1,6 +1,7 @@
 //! #11813: the Brush options-bar controls carry the reference application's tooltips (also their
 //! accessible descriptions), the Eraser keeps today's texts, and the smoothing options popup has
-//! a "Smoothing Options" title.
+//! a "Smoothing Options" title. The Brush and Eraser bars show the Brush Settings toggle and a
+//! Size field (the owner's layout), so their chip's picker texts are not among them.
 
 use egui::vec2;
 use egui_kittest::Harness;
@@ -43,8 +44,7 @@ fn descriptions(h: &Harness<'static, PhotocraftApp>, label: &str) -> Vec<String>
     h.query_all_by_label(label).filter_map(of).collect()
 }
 
-const BRUSH: [(&str, &str); 8] = [
-    ("Brush Preset picker", "Click to open the Brush Preset picker"),
+const BRUSH: [(&str, &str); 7] = [
     ("Mode", "Painting Mode"),
     ("Opacity", "Set opacity for stroke"),
     ("Always use pressure for opacity", "Always use Pressure for Opacity. When off, Brush Preset controls pressure"),
