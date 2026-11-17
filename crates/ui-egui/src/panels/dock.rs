@@ -334,31 +334,8 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
         (Group::Layers, 0) => layers(app, ui),
         (Group::Layers, 1) => channels(app, ui),
         (Group::Layers, _) => crate::vector_ui::paths_panel(app, ui),
-        (Group::Brushes, _) => {
-            // One compact panel instead of two: the brush list on the left, the tool presets on
-            // the right. Below the two-column width the brush list keeps the whole panel.
-            let width = ui.available_width();
-            let height = ui.available_height();
-            if width >= 260.0 {
-                let left = (width * 0.55).max(140.0);
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(left, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| crate::brushes_tab::show(app, ui),
-                    );
-                    ui.separator();
-                    let right = ui.available_width();
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(right, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| crate::preset_panels::tool_presets_panel(app, ui),
-                    );
-                });
-            } else {
-                crate::brushes_tab::show(app, ui);
-            }
-        }
+        (Group::Brushes, 0) => crate::brushes_tab::show(app, ui),
+        (Group::Brushes, _) => crate::preset_panels::tool_presets_panel(app, ui),
         (Group::ToolPresets, _) => crate::preset_panels::tool_presets_panel(app, ui),
     }
 }

@@ -171,10 +171,14 @@ impl Transport {
             let scale = self.carrier_radius / radius;
             (c, scale)
         });
-        for y in 0..side {
-            let dy = f64::from(y) + 0.5 - f64::from(side) * 0.5;
-            for x in 0..side {
-                let dx = f64::from(x) + 0.5 - f64::from(side) * 0.5;
+        let side_u = side as usize;
+        // Both loops below write one pixel from one pixel's own inputs, so their rows are
+        // independent: big dabs build their carrier and lay it down on the thread pool, and the
+        // pixels come out bit-for-bit the same as on one thread.
+        let build_row = |row: usize, out: &mut [f32]| {
+            let dy = row as f64 + 0.5 - f64::from(side) * 0.5;
+            for x in 0..side_u {
+                let dx = x as f64 + 0.5 - f64::from(side) * 0.5;
                 let mut sampled = [0.0f32; MAX_CH];
                 sample_into(work, center.x + dx - 0.5, center.y + dy - 0.5, &mut sampled);
                 premultiplied_into(&mut sampled[..n], alpha);
@@ -192,7 +196,7 @@ impl Transport {
                     sample_into(c, dx * f64::from(scale) + f64::from(c.rect.width()) * 0.5 - 0.5, dy * f64::from(scale) + f64::from(c.rect.height()) * 0.5 - 0.5, &mut previous);
                     alpha.map_or(1.0, |a| previous[a]) > 0.0001
                 });
-                let pixel = next.px_mut(x, y);
+                let pixel = &mut out[x * n..(x + 1) * n];
                 if has_previous {
                     for (out, (f, p)) in pixel.iter_mut().zip(fresh[..n].iter().zip(&previous[..n])) {
                         *out = f + (*p - *f) * keep;
@@ -201,16 +205,47 @@ impl Transport {
                     pixel.copy_from_slice(&fresh[..n]);
                 }
             }
+        };
+        if dab_rows_parallel(side_u) {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                use rayon::prelude::*;
+                next.data.par_chunks_mut(side_u * n).enumerate().for_each(|(row, out)| build_row(row, out));
+            }
+        } else {
+            for (row, out) in next.data.chunks_mut(side_u * n).enumerate() {
+                build_row(row, out);
+            }
         }
         let rect = fp.rect.intersect(&work.rect);
-        let mut carried = [0.0f32; MAX_CH];
-        for y in rect.y0..rect.y1 {
+        let work_rect = work.rect;
+        let work_width = work_rect.width() as usize;
+        let next_ref = &next;
+        let (concentration, output_strength, pigment) = (self.settings.concentration, self.settings.output_strength, self.pigment);
+        let lay_row = |row: usize, out: &mut [f32]| {
+            let y = work_rect.y0 + row as i32;
+            if y < rect.y0 || y >= rect.y1 {
+                return;
+            }
+            let mut carried = [0.0f32; MAX_CH];
             for x in rect.x0..rect.x1 {
                 let local_x = f64::from(x) + 0.5 - center.x + f64::from(side) * 0.5 - 0.5;
                 let local_y = f64::from(y) + 0.5 - center.y + f64::from(side) * 0.5 - 0.5;
-                sample_into(&next, local_x, local_y, &mut carried);
-                let coverage = (fp.at(x, y) * fp.dab.mix_strength * self.settings.concentration * self.settings.output_strength).clamp(0.0, 1.0);
-                over_carried(work.px_mut(x, y), &carried[..n], alpha, coverage, self.pigment);
+                sample_into(next_ref, local_x, local_y, &mut carried);
+                let coverage = (fp.at(x, y) * fp.dab.mix_strength * concentration * output_strength).clamp(0.0, 1.0);
+                let base = (x - work_rect.x0) as usize * n;
+                over_carried(&mut out[base..base + n], &carried[..n], alpha, coverage, pigment);
+            }
+        };
+        if dab_rows_parallel(work_width) {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                use rayon::prelude::*;
+                work.data.par_chunks_mut(work_width * n).enumerate().for_each(|(row, out)| lay_row(row, out));
+            }
+        } else {
+            for (row, out) in work.data.chunks_mut(work_width * n).enumerate() {
+                lay_row(row, out);
             }
         }
         self.carrier = Some(next);
@@ -538,6 +573,21 @@ pub fn sai_stretch_retention(stretch: f32, quality: f32, spatial_step: f32) -> f
 /// Channels a native pixel can have (`PixelFormat::channels` tops out at eight).
 const MAX_CH: usize = 8;
 
+/// Whether a dab of `width` × `width` pixels has enough independent rows for the thread pool.
+/// Below it the pool costs more than the rows it splits (the web has no pool at all).
+fn dab_rows_parallel(width: usize) -> bool {
+    const MIN_PIXELS: usize = 8 * 1024;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        width * width >= MIN_PIXELS
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (width, MIN_PIXELS);
+        false
+    }
+}
+
 /// Bilinear sample of `region` at (`x`, `y`) into `out`, no allocation.
 fn sample_into(region: &Region, x: f64, y: f64, out: &mut [f32; MAX_CH]) {
     let n = region.ch.min(MAX_CH);
@@ -563,8 +613,7 @@ fn premultiplied_into(pixel: &mut [f32], alpha: Option<usize>) {
     }
 }
 
-fn over_carried(destination: &mut [f32], carried: &[f32], alpha: Option<usize>, coverage: f32, pigment: f32) {
-    let da = alpha.map_or(1.0, |a| destination[a]);
+fn over_carried(destination: &mut [f32], carried: &[f32], alpha: Option<usize>, coverage: f32, pigment: f32) {    let da = alpha.map_or(1.0, |a| destination[a]);
     let sa = alpha.map_or(1.0, |a| carried[a]) * coverage;
     if sa <= 0.0 {
         return;

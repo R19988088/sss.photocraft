@@ -41,6 +41,9 @@ const PANELS: &[(&str, &str, Group)] = &[
     ("channels", "Channels", Group::Layers),
     ("paths", "Paths", Group::Layers),
     ("brushes", "Brushes", Group::Brushes),
+    // Tool Presets shares the Brushes tab strip (one small panel, two tabs), so it keeps its own
+    // panel id with the same label.
+    ("toolPresetsInBrushes", "Tool Presets", Group::Brushes),
     ("toolPresets", "Tool Presets", Group::ToolPresets),
 ];
 
