@@ -324,15 +324,23 @@ mod tests {
 
     #[test]
     fn opacity_numeric_edit_commits_once_and_undo_restores_the_gradient() {
-        let mut h = Harness::builder().with_size(vec2(280.0, 800.0)).build_ui_state(panel, app());
+        let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(280.0, 800.0)).build_ui_state(panel, app());
         PhotocraftApp::setup_context(&h.ctx, theme::ThemeKind::ProMedium);
         h.run_steps(3);
         click_strip(&mut h, 0.0, 6.0);
         let before = fill(h.state());
         let count = h.state().session.active().unwrap().history.past_len();
-        // Selected opacity and location precede angle and scale.
-        h.get_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().click();
-        h.run_steps(2);
+        // Selected opacity and location precede angle and scale. A number field opens its text
+        // editor on a double click: two clicks at one spot, so egui counts them as one double click.
+        let at = h.get_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().rect().center();
+        for _ in 0..2 {
+            h.event(egui::Event::PointerMoved(at));
+            h.run_steps(1);
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.run_steps(1);
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.run_steps(2);
+        }
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.event(egui::Event::Text("35".into()));
         h.run_steps(2);

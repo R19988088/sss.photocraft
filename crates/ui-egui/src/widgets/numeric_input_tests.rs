@@ -7,7 +7,11 @@ const LIMIT: usize = super::NUMERIC_INPUT_LIMIT;
 type Fields = (f32, String);
 
 fn fields() -> Harness<'static, Fields> {
-    let mut h = Harness::builder().with_size(egui::vec2(400.0, 180.0)).build_ui_state(
+    // A small step keeps a simulated double click inside egui's 0.3 s window.
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_size(egui::vec2(400.0, 180.0))
+        .build_ui_state(
         |ui, (number, text): &mut Fields| {
             super::value_field(ui, number, 0.01..=12800.0, "%", 90.0).accessible_name("Test number");
             ui.add(egui::TextEdit::multiline(text).hint_text("Document text"));
@@ -20,6 +24,9 @@ fn fields() -> Harness<'static, Fields> {
 
 fn focused() -> Harness<'static, Fields> {
     let mut h = fields();
+    // A number field opens its text editor on a double click (`fields::value_field`).
+    h.get_by_role(Role::SpinButton).click();
+    h.step();
     h.get_by_role(Role::SpinButton).click();
     h.run();
     h

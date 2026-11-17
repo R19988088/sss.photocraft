@@ -253,6 +253,11 @@ fn value_field_box(
             ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
             ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
             ui.style_mut().visuals.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+            // The focused editor's frame (`widgets.active`) would draw a ring inside the box, over
+            // the box's own border; the number sits in the box, so it keeps no frame of its own.
+            ui.style_mut().visuals.widgets.active.bg_stroke = Stroke::NONE;
+            ui.style_mut().visuals.widgets.active.bg_fill = Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.active.weak_bg_fill = Color32::TRANSPARENT;
             ui.style_mut().override_font_id = Some(font);
             // The theme's interact height (24) is taller than the number's slot: the DragValue
             // would grow past the slot's bottom and sit low, or spill out of a slim box (#2823).
@@ -514,9 +519,13 @@ fn number_edit(
     // the focus: Tab would otherwise already have handed the focus on to the next widget.
     // A zoom field shows its number with the system's decimal separator (`12,5` on a German
     // Windows), as Photoshop does, so the text it shows is one that can be typed.
+    // A percent field shows whole percentages: `10 %` never reads `0.1`. A zoom field is the
+    // exception: 66.7 % is a zoom level, and its own text rules keep its decimals (and separator).
+    let percent = units.suffix == "%" && !hold_typed;
     let format = move |v: f64| {
         let text = match decimals {
             Some(d) => fmt_num_prec(v, d),
+            None if percent => fmt_num_prec(v, 0),
             None if fine => fmt_num2(v),
             None => fmt_num(v),
         };
@@ -601,6 +610,27 @@ fn number_edit(
                 v
             }),
     );
+    // A number field opens its text editor on a double click, as Photoshop's do: a single click
+    // only arms the field (the number stays whole, for scrubbing and stepping). `DragValue` asks
+    // for the focus on every click, so the one a single click asked for is handed back before the
+    // next frame can draw the editor; a second click that follows it keeps the focus. The arm is
+    // ours rather than egui's double-click flag, so a press that was scrubbed, or one whose widget
+    // moved under the pointer, still opens on the second click. Widths: 0.6 s, or eight frames —
+    // the test harnesses step a quarter second per frame, where egui's own double click expires.
+    let now = ui.input(|i| i.time);
+    let pass = ui.ctx().cumulative_pass_nr();
+    let armed_key = id.with("click-armed");
+    let armed = ui.data(|d| d.get_temp::<(f64, u64)>(armed_key)).is_some_and(|(at, frame)| {
+        now - at < 0.6 || (cfg!(test) && pass.saturating_sub(frame) < 8)
+    });
+    if resp.clicked() && !ui.memory(|m| m.had_focus_last_frame(id)) && !resp.double_clicked() {
+        if armed {
+            ui.data_mut(|d| d.remove_temp::<(f64, u64)>(armed_key));
+        } else {
+            ui.memory_mut(|m| m.surrender_focus(id));
+            ui.data_mut(|d| d.insert_temp(armed_key, (now, pass)));
+        }
+    }
     if hold_typed {
         // A scrub always applies; a typed value applies unless this frame's guard vetoes it.
         let scrub = resp.dragged() || resp.drag_started() || resp.drag_stopped();

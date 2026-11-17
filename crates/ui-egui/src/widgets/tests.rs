@@ -441,6 +441,8 @@ fn press(h: &mut Harness<'static, (f32, u32)>, mods: Modifiers, key: Key) -> f32
 
 fn focused(value: f32, range: std::ops::RangeInclusive<f32>) -> Harness<'static, (f32, u32)> {
     let mut h = field(value, range);
+    // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.run();
     h
@@ -581,6 +583,8 @@ fn arrow_keys_step_fractional_stops_when_decimals_are_set() {
         0.0,
     );
     h.run();
+    // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.run();
     h.key_press_modifiers(Modifiers::NONE, Key::ArrowUp);
@@ -660,6 +664,7 @@ fn held_arrow_keeps_stepping_the_focused_field() {
     );
     h.run();
     h.get_all_by_role(egui::accesskit::Role::SpinButton).nth(1).expect("second field").click();
+    h.get_all_by_role(egui::accesskit::Role::SpinButton).nth(1).expect("second field").click();
     h.run();
     // Held down: key-down repeats on consecutive frames, no key-up in between.
     for repeat in [false, true, true, true, true, true] {
@@ -685,7 +690,9 @@ fn enter_commits_a_typed_unit_expression_at_the_document_resolution() {
     let mut h = field(100.0, 0.0..=10_000.0);
     super::set_field_resolution(&h.ctx, 300.0, 72.0);
     for (text, want) in [("1in+10", 310.0), ("2.54 cm * 2", 600.0), ("50%", 600.0), ("1in/0", 600.0), ("10px", 10.0)] {
-        h.get_by_role(egui::accesskit::Role::SpinButton).click();
+        // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
         h.run();
         h.key_press_modifiers(Modifiers::COMMAND, Key::A);
         h.event(egui::Event::Text(text.into()));
@@ -833,6 +840,8 @@ fn type_and_press(start: f32, text: &str, key: egui::Key, round: bool) -> f32 {
         },
         (start, None),
     );
+    // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.run();
     for c in text.chars() {
@@ -857,6 +866,8 @@ fn value_field_holds_arithmetic_until_committed() {
         },
         (100.0, 0),
     );
+    // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.run();
     for (c, want) in [('5', (5.0, 1)), ('0', (50.0, 2)), ('/', (50.0, 2)), ('2', (50.0, 2))] {
@@ -910,6 +921,7 @@ fn zoom_field_node<'a>(h: &'a egui_kittest::Harness<'static, (f32, u32)>) -> egu
 /// Clicks the field and types `text` over its selected number, one key at a time.
 fn click_and_type(h: &mut egui_kittest::Harness<'static, (f32, u32)>, text: &str) {
     zoom_field_node(h).click();
+    zoom_field_node(h).click();
     h.run();
     for c in text.chars() {
         h.event(egui::Event::Text(c.to_string()));
@@ -956,6 +968,7 @@ fn esc_drops_the_typed_zoom() {
         assert_eq!(h.ctx.memory(|m| m.focused()), None, "Esc leaves the field");
         // Nothing typed is left to come back with the next click and Enter.
         zoom_field_node(&h).click();
+    zoom_field_node(&h).click();
         h.run();
         h.key_press(egui::Key::Enter);
         h.run();
@@ -1131,6 +1144,7 @@ fn a_paste_follows_the_typing_rules() {
     crate::i18n::with_decimal_separator(Some(','), || {
         let mut h = zoom_harness(150.0, EscEater::Shortcuts, false);
         zoom_field_node(&h).click();
+    zoom_field_node(&h).click();
         h.run();
         h.event(egui::Event::Paste("100/5.0".into()));
         h.run();
@@ -1143,6 +1157,7 @@ fn a_paste_follows_the_typing_rules() {
 
         let mut h = zoom_harness(150.0, EscEater::Shortcuts, false);
         zoom_field_node(&h).click();
+    zoom_field_node(&h).click();
         h.run();
         h.event(egui::Event::Paste("80,,2".into()));
         h.run();
@@ -1310,6 +1325,8 @@ fn value_field_keeps_a_shown_value_past_its_range_and_clamps_edits() {
     );
     h.run_steps(3);
     assert_eq!(*h.state(), (2400.0, 0), "showing it changes nothing");
+    // A number field opens its text editor on a double click.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.get_by_role(egui::accesskit::Role::SpinButton).click();
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);

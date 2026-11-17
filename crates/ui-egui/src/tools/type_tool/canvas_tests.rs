@@ -51,7 +51,7 @@ fn focused_font_search_does_not_type_into_the_canvas_layer() {
 #[test]
 fn numeric_type_fields_have_localized_accessible_names() {
     let pt = crate::i18n::Lang::from_code("pt-br").unwrap();
-    let mut h = Harness::builder().build_ui_state(
+    let mut h = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
         move |ui, value: &mut f32| {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
@@ -66,6 +66,8 @@ fn numeric_type_fields_have_localized_accessible_names() {
     );
     PhotocraftApp::setup_context(&h.ctx, Default::default());
     h.run_steps(4);
+    // A number field opens its text editor on a double click.
+    h.get_by_role_and_label(egui::accesskit::Role::SpinButton, crate::i18n::tr(pt, "Font size")).click();
     h.get_by_role_and_label(egui::accesskit::Role::SpinButton, crate::i18n::tr(pt, "Font size")).click();
     h.run();
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);

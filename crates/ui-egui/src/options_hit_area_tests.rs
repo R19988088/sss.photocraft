@@ -10,7 +10,7 @@ fn harness() -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.ui.tool = crate::state::Tool::Brush;
     app.session.tools.brush.hardness = 0.5;
-    let mut h = Harness::builder().with_size(vec2(1400.0, 60.0)).build_ui_state(
+    let mut h = Harness::builder().with_step_dt(1.0 / 60.0).with_size(vec2(1400.0, 60.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 crate::panels::options_bar(app, ui);
@@ -93,12 +93,15 @@ fn options_hardness_gap_and_suffix_scrub() {
 }
 
 fn click(h: &mut Harness<'_, PhotocraftApp>, at: Pos2) {
-    h.hover_at(at);
-    h.run();
-    h.drag_at(at);
-    h.run();
-    h.drop_at(at);
-    h.run_steps(2);
+    // A number field opens its text editor on a double click (`widgets::fields`).
+    for _ in 0..2 {
+        h.hover_at(at);
+        h.run();
+        h.drag_at(at);
+        h.run();
+        h.drop_at(at);
+        h.run_steps(2);
+    }
 }
 
 #[test]
