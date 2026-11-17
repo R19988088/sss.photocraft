@@ -228,6 +228,8 @@ mod tests {
     #[test]
     fn a_focused_field_takes_the_wheel_wherever_the_pointer_is() {
         let mut h = harness(100.0);
+        // A number field opens its text editor on a double click.
+        h.get_by_role(Role::SpinButton).click();
         h.get_by_role(Role::SpinButton).click();
         h.run();
         let away = field(&h).center() + vec2(0.0, 60.0);
@@ -271,6 +273,8 @@ mod tests {
             for (m, want) in [(Modifiers::NONE, 100.0), (Modifiers::SHIFT, 110.0)] {
                 let mut h = harness(100.0);
                 if focus {
+                    // A number field opens its text editor on a double click.
+                    h.get_by_role(Role::SpinButton).click();
                     h.get_by_role(Role::SpinButton).click();
                     h.run();
                 }
@@ -402,6 +406,8 @@ mod tests {
             for focus in [false, true] {
                 let mut h = harness(100.0);
                 if focus {
+                    // A number field opens its text editor on a double click.
+                    h.get_by_role(Role::SpinButton).click();
                     h.get_by_role(Role::SpinButton).click();
                     h.run();
                 }

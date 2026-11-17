@@ -519,9 +519,10 @@ fn number_edit(
     // the focus: Tab would otherwise already have handed the focus on to the next widget.
     // A zoom field shows its number with the system's decimal separator (`12,5` on a German
     // Windows), as Photoshop does, so the text it shows is one that can be typed.
-    // A percent field shows whole percentages: `10 %` never reads `0.1`. A zoom field is the
-    // exception: 66.7 % is a zoom level, and its own text rules keep its decimals (and separator).
-    let percent = units.suffix == "%" && !hold_typed;
+    // A percent field shows whole percentages: `10 %` never reads `0.1`. Not for a field whose
+    // percent is a scale (zoom's 66.7 %, a 3200 % range) or a zoom field's own decimal text: there
+    // the fraction is the number the user is after.
+    let percent = units.suffix == "%" && !hold_typed && *range.start() >= -100.0 && *range.end() <= 100.0;
     let format = move |v: f64| {
         let text = match decimals {
             Some(d) => fmt_num_prec(v, d),
