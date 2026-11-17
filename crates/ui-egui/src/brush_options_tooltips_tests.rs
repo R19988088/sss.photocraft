@@ -112,3 +112,26 @@ fn the_smoothing_options_popup_has_a_title() {
     assert!(h.query_by_label("Smoothing Options").is_some());
     assert!(h.query_by_label("Pulled String Mode").is_some());
 }
+
+/// The owner's layout: the Brush Settings toggle first, its Size field right of it, Mode after.
+#[test]
+fn the_brush_bar_orders_the_settings_toggle_size_field_and_mode() {
+    for tool in [Tool::Brush, Tool::Eraser] {
+        for theme in [ThemeKind::ProMedium, ThemeKind::Classic] {
+            let h = bar_in(tool, theme);
+            let toggle = h.get_by_label(crate::i18n::t("Toggle the Brush Settings panel")).rect();
+            // The Pro themes caption the field "Size:" and the others "Size": its role is the
+            // first spin button right of the toggle, Opacity and Flow follow it.
+            let size = h
+                .get_all_by_role(egui::accesskit::Role::SpinButton)
+                .map(|n| n.rect())
+                .filter(|r| r.left() > toggle.right())
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .expect("the Size field");
+            let modes: Vec<_> = h.get_all_by_role(egui::accesskit::Role::ComboBox).map(|n| n.rect()).collect();
+            assert!(toggle.left() < size.left(), "{tool:?}/{theme:?}: Brush Settings {toggle:?} comes before Size {size:?}");
+            assert!(!modes.is_empty(), "{tool:?}/{theme:?}: the Mode dropdown");
+            assert!(modes.iter().all(|m| size.right() <= m.left()), "{tool:?}/{theme:?}: Size {size:?} comes before {modes:?}");
+        }
+    }
+}
