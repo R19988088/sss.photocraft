@@ -2313,6 +2313,48 @@ fn mixing_drags_the_paint_under_the_stroke() {
 }
 
 #[test]
+fn the_three_mixing_algorithms_produce_three_different_strokes() {
+    use crate::pigment_material::SignedCurve;
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // A hard red/blue seam and one low-flow white stroke across it: mixing drags both plateaus into
+    // the stroke. V1, V2 and V3 are three separate drag implementations, so their results must
+    // differ pairwise — identical output would be the user's "all three modes do nothing".
+    let flat = SignedCurve {
+        points: [[0.0, 1.0], [0.1, 1.0], [0.2, 1.0], [0.3, 1.0], [0.53, 1.0], [0.77, 1.0], [1.0, 1.0]],
+        enabled: true,
+    };
+    let run = |algorithm: MixAlgorithm| {
+        let b = BrushSettings {
+            size: 30.0,
+            spacing: 0.1,
+            flow: 0.35,
+            opacity: 1.0,
+            color: [1.0, 1.0, 1.0, 1.0],
+            mix_settings: BrushMixSettings {
+                enabled: true,
+                strength: 1.0,
+                algorithm,
+                mix_pressure_curve: Some(flat.clone()),
+                ..Default::default()
+            },
+            ..brush()
+        };
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[0.0, 0.0, 0.0, 1.0]);
+        s.fill_rect(Rect::new(0, 0, 64, 64), &[1.0, 0.0, 0.0, 1.0]);
+        s.fill_rect(Rect::new(64, 0, 128, 64), &[0.0, 0.0, 1.0, 1.0]);
+        let points = [StrokePoint::new(24.0, 32.0, 0.5), StrokePoint::new(104.0, 32.0, 0.5)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        (0..8).map(|i| s.rgba(66 + i * 4, 32)).collect::<Vec<_>>()
+    };
+    let v1 = run(MixAlgorithm::V1);
+    let v2 = run(MixAlgorithm::V2);
+    let v3 = run(MixAlgorithm::V3);
+    assert_ne!(v1, v2, "V1 and V2 must not be the same implementation");
+    assert_ne!(v2, v3, "V2 and V3 must not be the same implementation");
+    assert_ne!(v1, v3, "V1 and V3 must not be the same implementation");
+}
+
+#[test]
 fn blur_and_mixing_are_independent_pipelines() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
     // A hard blue/white seam; the stroke crosses it. Blur-only, mix-only and both must all produce

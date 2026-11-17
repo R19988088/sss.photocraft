@@ -1206,6 +1206,9 @@ pub struct StrokeRenderer {
     scratch: Vec<f32>,
     /// Wet Edges depth of the dab being accumulated (see [`CovTile::depth`]).
     depth_scratch: Vec<f32>,
+    /// Per-pixel pattern alpha of the dab being rastered, so the sampled-pattern loop can run its
+    /// rows in parallel and still scale the coverage in one serial pass afterwards.
+    pattern_alpha: Vec<f32>,
     dab_buf: Vec<Dab>,
     dual_buf: Vec<Dab>,
     all_dabs: Option<Vec<Dab>>,
@@ -1354,6 +1357,7 @@ impl StrokeRenderer {
                         dabs_done: p.dabs_done,
                         scratch: Vec::new(),
                         depth_scratch: Vec::new(),
+                        pattern_alpha: Vec::new(),
                         dab_buf: Vec::new(),
                         dual_buf: Vec::new(),
                         all_dabs: None,
@@ -1431,7 +1435,9 @@ impl StrokeRenderer {
             transports: [None, None],
             dabs_done: 0,
             scratch: Vec::new(),
+
             depth_scratch: Vec::new(),
+            pattern_alpha: Vec::new(),
             dab_buf: Vec::new(),
             dual_buf: Vec::new(),
             all_dabs: None,
@@ -1514,25 +1520,61 @@ impl StrokeRenderer {
                 {
                     base.read_region_into(rect, &mut base_pixels);
                 }
-                for row in 0..height {
+                // The sampled-pattern loop is the hot path of a textured brush: every covered pixel
+                // pays a five-tap alpha-weighted pattern sample. Its rows are independent, so they
+                // go to the thread pool above the general-loop threshold and the coverage scaling
+                // (which must touch `scratch` in order) happens in one serial pass below.
+                self.pattern_alpha.clear();
+                self.pattern_alpha.resize(width * height, 0.0);
+                let scratch = &self.scratch;
+                let depth = &self.depth_scratch;
+                let base_view = &base_pixels[..];
+                let sample_row = |row: usize, out: &mut [f32], alpha: &mut [f32]| {
+                    let mut native = [0.0f32; 8];
                     let sy = scale * (rect.y0 as f32 + row as f32 + 0.5 - d.center.y as f32);
                     for col_i in 0..width {
                         let i = row * width + col_i;
-                        let Some(coverage) = self.scratch.get_mut(i) else { break };
-                        if *coverage <= 0.0 {
+                        let Some(&coverage) = scratch.get(i) else { break };
+                        if coverage <= 0.0 {
                             continue;
                         }
                         let sx = scale * (rect.x0 as f32 + col_i as f32 + 0.5 - d.center.x as f32);
                         let mut rgba = pattern.sample_pigment(sx, sy);
-                        *coverage *= rgba[3];
+                        alpha[col_i] = rgba[3];
                         if let Some(w) = single {
                             let channels = f.channels();
-                            let base = base_pixels.get(i * channels..(i + 1) * channels).map_or([0.0; 4], |p| to_rgba(&f, p));
-                            rgba = w.color(rgba, base, self.depth_scratch[i], d.wet_edge);
+                            let base = base_view.get(i * channels..(i + 1) * channels).map_or([0.0; 4], |p| to_rgba(&f, p));
+                            rgba = w.color(rgba, base, depth[i], d.wet_edge);
                         }
                         from_rgba_into(&f, rgba, &mut native);
-                        colors[i * nc..(i + 1) * nc].copy_from_slice(&native[..nc]);
+                        out[col_i * nc..(col_i + 1) * nc].copy_from_slice(&native[..nc]);
                     }
+                };
+                let mut serial = |row: usize, out: &mut [f32], alpha: &mut [f32]| sample_row(row, out, alpha);
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut pooled = |row: usize, out: &mut [f32], alpha: &mut [f32]| sample_row(row, out, alpha);
+                #[cfg(not(target_arch = "wasm32"))]
+                let use_pool = parallel(width * height * GENERAL_LOOP_COST);
+                #[cfg(target_arch = "wasm32")]
+                let use_pool = false;
+                let _ = &mut serial;
+                if use_pool {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        use rayon::prelude::*;
+                        colors
+                            .par_chunks_mut(width * nc)
+                            .zip(self.pattern_alpha.par_chunks_mut(width))
+                            .enumerate()
+                            .for_each(|(row, (out, alpha))| pooled(row, out, alpha));
+                    }
+                } else {
+                    for (row, (out, alpha)) in colors.chunks_mut(width * nc).zip(self.pattern_alpha.chunks_mut(width)).enumerate() {
+                        serial(row, out, alpha);
+                    }
+                }
+                for (coverage, alpha) in self.scratch.iter_mut().zip(&self.pattern_alpha) {
+                    *coverage *= *alpha;
                 }
                 Some((colors.as_slice(), true))
             } else {
@@ -1786,7 +1828,9 @@ impl StrokeRenderer {
             transports: self.transports.clone(),
             dabs_done: self.dabs_done,
             scratch: Vec::new(),
+
             depth_scratch: Vec::new(),
+            pattern_alpha: Vec::new(),
             dab_buf: dabs,
             dual_buf: duals,
             all_dabs: None,
