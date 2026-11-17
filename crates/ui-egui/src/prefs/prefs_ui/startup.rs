@@ -45,6 +45,7 @@ pub fn load(app: &mut PhotocraftApp) {
     crate::dock::restore(app);
     crate::color_panel_ui::restore(app);
     crate::brush_picker::restore(app);
+    crate::brushes_tab::restore(app);
     crate::last_brush::restore(app);
     sync_rulers(app);
     crate::tool_memory::restore(app);

@@ -29,6 +29,10 @@ pub struct Region {
 }
 
 impl Region {
+    /// An empty region, for reuse buffers (`Region::new`/`read_into` grow it).
+    pub fn empty() -> Self {
+        Self { rect: Rect::EMPTY, ch: 0, data: Vec::new() }
+    }
     /// A zeroed region.
     pub fn new(rect: Rect, ch: usize) -> Self {
         Self { rect, ch, data: vec![0.0; rect.width() as usize * rect.height() as usize * ch] }
@@ -36,6 +40,39 @@ impl Region {
     /// Read `rect` from a surface.
     pub fn read(s: &Surface, rect: Rect) -> Self {
         Self { rect, ch: s.channels(), data: s.read_region(rect) }
+    }
+    /// [`read`](Self::read) into this buffer, reusing its allocation when the shape matches: a
+    /// per-dab working region must not allocate on every dab.
+    pub fn read_into(&mut self, s: &Surface, rect: Rect) {
+        let ch = s.channels();
+        let len = rect.width() as usize * rect.height() as usize * ch;
+        if self.rect != rect || self.ch != ch {
+            self.rect = rect;
+            self.ch = ch;
+            self.data = s.read_region(rect);
+            return;
+        }
+        self.data.clear();
+        self.data.resize(len, 0.0);
+        s.read_region_into(rect, &mut self.data);
+    }
+    /// Copy of the sub-rectangle `r` (clipped to `src`) into this buffer.
+    pub fn crop_into(&mut self, src: &Region, r: Rect) {
+        let r = r.intersect(&src.rect);
+        let (w, n) = (r.width() as usize, src.ch);
+        if self.rect != r || self.ch != n {
+            self.rect = r;
+            self.ch = n;
+            self.data = vec![0.0; w * r.height() as usize * n];
+        } else {
+            self.data.clear();
+            self.data.resize(w * r.height() as usize * n, 0.0);
+        }
+        for y in r.y0..r.y1 {
+            let s = src.index(r.x0, y) * n;
+            let d = (y - r.y0) as usize * w * n;
+            self.data[d..d + w * n].copy_from_slice(&src.data[s..s + w * n]);
+        }
     }
     pub fn width(&self) -> usize {
         self.rect.width() as usize
@@ -74,6 +111,24 @@ impl Region {
     /// Write this region into a surface.
     pub fn write(&self, s: &mut Surface) {
         s.write_region(self.rect, &self.data);
+    }
+    /// Write only the sub-rectangle `r` into a surface, through `buf` (reused, so a per-dab
+    /// write-back does not allocate).
+    pub fn write_sub_into(&self, s: &mut Surface, r: Rect, buf: &mut Vec<f32>) {
+        let r = r.intersect(&self.rect);
+        if r.is_empty() {
+            return;
+        }
+        let (w, n) = (r.width() as usize, self.ch);
+        let len = w * r.height() as usize * n;
+        buf.clear();
+        buf.resize(len, 0.0);
+        for (k, y) in (r.y0..r.y1).enumerate() {
+            let src = self.index(r.x0, y) * n;
+            let dst = k * w * n;
+            buf[dst..dst + w * n].copy_from_slice(&self.data[src..src + w * n]);
+        }
+        s.write_region(r, buf);
     }
 }
 

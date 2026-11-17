@@ -2359,6 +2359,8 @@ cameraRaw	Blending	混合
 	Diameter:	直径：
 	Hardness:	硬度：
 	No brush presets	没有画笔预设
+	Previous brush group	上一个画笔分组
+	Next brush group	下一个画笔分组
 	Toggle the Brush Settings panel  (F5)	切换画笔设置面板  （F5）
 	Create new brush preset from the current settings	根据当前设置创建画笔预设
 	Brush Settings…  (F5): every option of this brush	画笔设置…  （F5）：此画笔的全部选项

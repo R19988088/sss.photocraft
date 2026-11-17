@@ -1392,6 +1392,11 @@ pub struct Preferences {
     /// the footer slider's card scale, saved as the user changes them and restored at launch.
     /// JSON owned by the shell.
     pub brush_picker: Value,
+    /// The Brushes panel's remembered view: the group it was paging (`{"group": name}`), saved as
+    /// the user pages and restored at launch, so the panel opens where it was left. The selected
+    /// brush's name is `last_brush`'s `preset` (the panel opens on that preset's group when the
+    /// remembered group is gone). JSON owned by the shell.
+    pub brush_panel: Value,
     /// The brush the tool was last using (settings and tip references, never the full bitmaps;
     /// shaped by `brush_cmds::remembered_brush`), restored at launch so the tool starts where it
     /// was left. Written only when `ToolState::brush_rev` moves.

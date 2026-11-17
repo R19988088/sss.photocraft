@@ -299,12 +299,14 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
             }
             let unpainted = table.as_ref().map(|_| surf.clone());
             let damage = if let Some(axis) = &symmetry {
+                let pre = surf.clone();
                 let reflected = axis.reflected_passes(&pts);
                 let copies: Vec<_> = reflected
                     .iter()
                     .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
                     .map(|p| {
                         let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                        renderer.attach_pre(&pre);
                         renderer.push(p);
                         renderer.finish();
                         renderer
@@ -313,8 +315,8 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
                 if copies.is_empty() {
                     render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
                 } else {
-                    let pre = surf.clone();
                     let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                    original.attach_pre(&pre);
                     original.push(&pts);
                     original.finish();
                     original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
@@ -619,11 +621,18 @@ impl LiveStroke {
             let fg = table.as_ref().map_or(fg, |t| crate::mode_cmds::table_color(t, fg));
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
-        let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-        let symmetry = s.active().and_then(|st| st.symmetry.clone());
-        let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom)).collect();
-        let mirror_distinct = vec![false; mirrors.len()];
         let pre = surf.clone();
+        let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+        renderer.attach_pre(&pre);
+        let symmetry = s.active().and_then(|st| st.symmetry.clone());
+        let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count()))
+            .map(|_| {
+                let mut mirror = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                mirror.attach_pre(&pre);
+                mirror
+            })
+            .collect();
+        let mirror_distinct = vec![false; mirrors.len()];
         let mut live = Self {
             doc: std::sync::Arc::new(doc),
             seed,

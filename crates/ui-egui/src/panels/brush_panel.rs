@@ -57,7 +57,7 @@ const MIN_HEIGHT: f32 = 300.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BrushesView {
-    /// Rows: tip, size, stroke preview, name.
+    /// Rows: the stroke preview and the name.
     #[default]
     List,
     /// Tip thumbnails with their sizes.
@@ -97,6 +97,10 @@ pub struct BrushesPanelState {
     pub show_stroke: bool,
     /// The Brush Preset picker's cards: show the tip thumbnail.
     pub show_tip: bool,
+    /// The group the Brushes panel shows (`crate::brushes_tab::preset_list` pages one group at a
+    /// time): its panel label, empty while the panel hasn't paged yet (it then opens on the
+    /// selected preset's group). Saved in `Preferences::brush_panel` and restored at launch.
+    pub group: String,
     /// The Brush Preset picker's cards: their size scale, from the picker's footer slider
     /// (`crate::brush_picker::body`). 1 is the standard size; the cards' width, height and
     /// insides multiply by it (`crate::brushes_tab`) — the height down to a 0.50 floor, the
@@ -116,6 +120,7 @@ impl Default for BrushesPanelState {
             show_name: true,
             show_stroke: true,
             show_tip: true,
+            group: String::new(),
             scale: 1.0,
         }
     }
@@ -166,7 +171,26 @@ fn set_section_enabled(b: &mut BrushSettings, section: usize, enabled: bool) {
             b.color_attributes.enabled = enabled;
             b.color_dynamics.enabled = enabled;
         }
-        7 => b.pigment.get_or_insert_with(Default::default).enabled = enabled,
+        6 => {
+            // A stroke's mixing strength is `strength × the curve`, so switching Mixing on while
+            // `strength` is still zero would enable a section that cannot change a single pixel —
+            // every one of the three algorithms stays gated behind `mix_strength > 0.0001`.
+            if enabled && b.mix_settings.strength <= 0.0 {
+                b.mix_settings.strength = 0.5;
+            }
+            b.mix_settings.enabled = enabled;
+        }
+        7 => {
+            // Same trap as Mixing: the material field's every consumer is multiplied by the thickness
+            // (or the visual thickness / highlight strength), so enabling the section while all of them
+            // sit at the zero default paints a field of zeros and looks like the switch does nothing.
+            let p = b.pigment.get_or_insert_with(Default::default);
+            if enabled && p.thickness == 0.0 && p.visual_thickness == 0.0 && p.highlight_strength == 0.0 {
+                p.thickness = 60.0;
+                p.highlight_strength = 0.3;
+            }
+            p.enabled = enabled;
+        }
         _ => {
             if let Some(flag) = section_flag(b, section) {
                 *flag = enabled;

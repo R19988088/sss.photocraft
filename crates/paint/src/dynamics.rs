@@ -729,7 +729,7 @@ impl DabBuilder {
                 hardness: self.hardness_at(s, i),
                 mix_strength: crate::transport::pressure_value(
                     b.mix_settings.mix_pressure_curve.as_ref(),
-                    b.mix_settings.strength,
+                    crate::transport::effective_strength(b.mix_settings.enabled, b.mix_settings.strength),
                     s.point.pressure,
                     s.point.is_pen,
                 ) * scalar(&b.mix_settings.strength_dynamic, s, r(27)),

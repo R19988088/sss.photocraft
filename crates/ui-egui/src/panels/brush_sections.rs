@@ -1105,6 +1105,12 @@ fn effect_curve_graph(ui: &mut egui::Ui, id: &str, curve: &mut paint::pigment_ma
 pub(crate) fn pigment_settings(ui: &mut egui::Ui, settings: &mut Option<paint::pigment_material::PigmentSettings>, _primary: bool) {
     let mut p = settings.clone().unwrap_or_default();
     let before = p.clone();
+    // Brushes and presets saved before the section was wired up carry `enabled` with every material
+    // parameter still at the zero default, which paints a field of zeros: heal them once, on sight.
+    if p.enabled && p.thickness == 0.0 && p.visual_thickness == 0.0 && p.highlight_strength == 0.0 {
+        p.thickness = 60.0;
+        p.highlight_strength = 0.3;
+    }
     pct(ui, tl!("Highlight Strength"), &mut p.highlight_strength, 1.0);
     pct(ui, tl!("Highlight Brightness"), &mut p.highlight_brightness, 1.0);
     pct(ui, tl!("Highlight Ratio"), &mut p.highlight_ratio, 1.0);
@@ -1134,9 +1140,22 @@ pub(crate) fn pigment_settings(ui: &mut egui::Ui, settings: &mut Option<paint::p
 
 fn mix_settings(ui: &mut egui::Ui, m: &mut paint::transport::BrushMixSettings) {
     use paint::transport::MixAlgorithm as A;
+    // A brush saved with Mixing already on and `strength` still at zero (the old default) shows a
+    // ticked section that cannot move a pixel, because the transport stays gated behind
+    // `mix_strength > 0.0001`. Heal it to a usable strength the first time the section is drawn.
+    if m.enabled && m.strength <= 0.0 {
+        m.strength = 0.5;
+    }
     widgets::dropdown(ui, "mix-algorithm", "", &mut m.algorithm, &[(A::V1, "v1"), (A::V2, "v2"), (A::V3, "v3")], 130.0);
+    // The curves are the pressure response; without this percentage the response is scaled by
+    // zero and all three algorithms (and the blur) do nothing at all.
+    pct(ui, tl!("Strength"), &mut m.strength, 1.0);
+    pct(ui, tl!("Blur"), &mut m.blur_strength, 1.0);
     reference_effect_curve(ui, "mix-pressure-curve", tl!("Mixing Strength"), &mut m.mix_pressure_curve, m.strength);
     reference_effect_curve(ui, "blur-pressure-curve", tl!("Blur Strength"), &mut m.blur_pressure_curve, m.blur_strength);
+    // The colour-output pipeline is its own lane: unticking it leaves a pure smudge that moves the
+    // layer and paints no brush colour at all.
+    widgets::checkbox(ui, &mut m.color_output, tl!("Color Output"));
 }
 
 fn reference_effect_curve(ui: &mut egui::Ui, id: &str, label: &str, curve: &mut Option<paint::pigment_material::SignedCurve>, strength: f32) {

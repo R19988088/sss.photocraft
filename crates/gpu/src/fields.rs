@@ -77,11 +77,14 @@ impl super::Compositor {
     /// The field for `spec`: `true` alongside it when the CPU had to compute it (no pipeline that
     /// renders to a float target).
     fn build_field(&self, device: &wgpu::Device, queue: &wgpu::Queue, doc: &Document, spec: &FieldSpec) -> (CachedField, bool) {
+        let log = std::env::var_os("PHOTOCRAFT_STAGE_LOG").is_some();
+        let t_all = std::time::Instant::now();
         // The backdrop: every root layer below the adjustment, composited for the field's rect
         // (which already covers the ring's reach around the drawn region).
         let mut below = doc.clone();
         below.layers.truncate(spec.layer_index);
         let buf = photocraft_compose::render(&below, spec.rect);
+        let t_cpu = t_all.elapsed().as_secs_f64() * 1000.0;
         let (w, h) = (spec.rect.width(), spec.rect.height());
         // C3's `c2LineArtFieldKernel` on the GPU (`fs_line_field`): one pass over the region
         // instead of a ring of up to 440 taps per pixel on the CPU, which cost close to half a
@@ -108,6 +111,15 @@ impl super::Compositor {
         };
         let texel = if self.acc_format == wgpu::TextureFormat::Rgba16Float { 8 } else { 16 };
         let bytes = u64::from(w) * u64::from(h) * if gpu { texel } else { 4 };
+        if log {
+            eprintln!(
+                "[field] {}x{} layers {} gpu {gpu}: cpu backdrop {t_cpu:.1} ms, total {:.1} ms",
+                w,
+                h,
+                spec.layer_index,
+                t_all.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         (CachedField { layer_index: spec.layer_index, thickness: spec.thickness, rect: spec.rect, texture: tex, bytes }, !gpu)
     }
 

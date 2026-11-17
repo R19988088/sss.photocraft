@@ -1,5 +1,6 @@
 use egui::vec2;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use photocraft_engine::paint::{Control, GrayTile, Pattern, PatternStyle, TipShape};
 
 use super::*;
@@ -646,27 +647,35 @@ fn every_section_draws_without_issuing_commands() {
     }
 }
 
+/// The Brushes panel pages one group at a time, and its previews are cached across frames, pages
+/// and filters: paging to the next group draws only the presets that page brings, and the page's
+/// previews never render again while they stay.
 #[test]
-fn brushes_panel_groups_collapse_and_filter() {
+fn brushes_panel_reuses_its_previews_across_pages_and_filters() {
     let mut h = harness(1, 0);
     let groups = grouped_presets(&h.state().session.tools.presets);
     assert!(groups.len() >= 2, "{groups:?}");
     let ctx = h.ctx.clone();
-    let shown = |h: &mut Harness<'static, PhotocraftApp>| {
-        h.run_steps(2);
-        brush_preview::with_cache(&ctx, |c| c.len())
-    };
-    let all = shown(&mut h);
-    // Collapse every group: no more previews are needed, and the old ones are kept (cached).
-    h.state_mut().ui.brushes_panel.collapsed = groups.iter().map(|(g, _)| g.clone()).collect();
-    let n = brush_preview::render_count(&ctx);
-    assert_eq!(shown(&mut h), all);
-    assert_eq!(brush_preview::render_count(&ctx), n);
-    // A filter shows matching presets even in collapsed groups.
-    let first = h.state().session.tools.presets[0].name.clone();
-    h.state_mut().ui.brushes_panel.filter = first.to_uppercase();
-    h.run_steps(2);
-    assert!(brush_preview::render_count(&ctx) >= n);
+    h.run_steps(3);
+    let first = brush_preview::render_count(&ctx);
+    assert!(first >= 1, "the page rendered its previews");
+    h.run_steps(4);
+    assert_eq!(brush_preview::render_count(&ctx), first, "idle frames re-rendered the page's previews");
+    // Paging to the next group draws its presets' previews once, then holds them.
+    h.get_by_label(crate::i18n::t("Next brush group")).click();
+    h.run_steps(3);
+    let paged = brush_preview::render_count(&ctx);
+    assert!(paged > first, "the next page needed its own previews: {first} -> {paged}");
+    h.run_steps(3);
+    assert_eq!(brush_preview::render_count(&ctx), paged);
+    // A filter searches every group and stacks the matches; they stay cached too.
+    let name = h.state().session.tools.presets[0].name.clone();
+    h.state_mut().ui.brushes_panel.filter = name.to_uppercase();
+    h.run_steps(3);
+    assert!(brush_preview::render_count(&ctx) >= paged);
+    let filtered = brush_preview::render_count(&ctx);
+    h.run_steps(3);
+    assert_eq!(brush_preview::render_count(&ctx), filtered, "the filtered matches stay cached");
 }
 
 fn kit(name: &str, folder: &[&str]) -> paint::BrushPreset {

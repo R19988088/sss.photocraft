@@ -121,57 +121,54 @@ fn grid_columns_never_panic_or_return_no_columns() {
     assert_eq!(grid_columns(30.0, 44.0, 4.0, GRID_GAP), (4.0, 1));
 }
 
-/// Checks each of the first `groups` groups' rows against its header (which spans the list's
-/// width): the same left margin on every row, and on full rows the spare width split evenly.
-fn rows_are_centred(h: &Harness<'_, PhotocraftApp>, indent: f32, groups: usize) {
+/// The Brushes panel pages one group at a time. Checks each page's tiles against its fixed header
+/// (which spans the list's width): the same left margin on every row, and full rows splitting the
+/// spare width evenly. Walks `pages` groups with the header's next arrow, so the paging is
+/// exercised with every page too.
+fn rows_are_centred(h: &mut Harness<'_, PhotocraftApp>, indent: f32, pages: usize) {
     let presets = h.state().session.tools.presets.clone();
-    let grouped = grouped_presets(&presets);
-    let headers: Vec<Rect> = grouped
-        .iter()
-        .take(groups + 1)
-        .filter_map(|(label, _)| {
-            h.query_all_by_role(Role::Button)
-                .chain(h.query_all_by_label(label))
-                .find(|n| n.accesskit_node().label().as_deref() == Some(label.as_str()))
-                .map(|n| n.rect())
-        })
-        .collect();
-    assert!(headers.len() > groups, "{} group headers", headers.len());
-    let tiles: Vec<Rect> = h
-        .query_all_by_role(Role::Button)
-        .filter(|n| n.accesskit_node().label().is_some_and(|l| presets.iter().any(|p| p.name == l)))
-        .map(|n| n.rect())
-        .collect();
-    // Each group's rows of tiles, top to bottom.
-    let mut groups_rows: Vec<Vec<Vec<Rect>>> = Vec::new();
-    for (g, header) in headers.iter().take(groups).enumerate() {
-        let next = headers[g + 1].top();
+    let labels: Vec<String> = grouped_presets(&presets).into_iter().map(|(g, _)| g).collect();
+    let next = crate::i18n::t("Next brush group");
+    let mut seen: Vec<(String, Rect, Vec<Vec<Rect>>)> = Vec::new();
+    for _ in 0..pages {
+        h.run_steps(2);
+        let found = labels.iter().find_map(|l| h.query_by_label(l).map(|n| (l.clone(), n.rect())));
+        assert!(found.is_some(), "a page header");
+        let (label, header) = found.unwrap();
+        let tiles: Vec<Rect> = h
+            .query_all_by_role(Role::Button)
+            .filter(|n| n.accesskit_node().label().is_some_and(|l| presets.iter().any(|p| p.name == l)))
+            .map(|n| n.rect())
+            .filter(|r| r.top() > header.bottom())
+            .collect();
         let mut rows: Vec<Vec<Rect>> = Vec::new();
-        for r in tiles.iter().filter(|r| r.top() >= header.bottom() && r.bottom() <= next) {
+        for r in tiles {
             match rows.iter_mut().find(|row| (row[0].top() - r.top()).abs() < 0.5) {
-                Some(row) => row.push(*r),
-                None => rows.push(vec![*r]),
+                Some(row) => row.push(r),
+                None => rows.push(vec![r]),
             }
         }
-        assert!(!rows.is_empty(), "group {g}: no tiles");
-        groups_rows.push(rows);
+        assert!(!rows.is_empty(), "page {label}: no tiles");
+        seen.push((label, header, rows));
+        h.get_by_label(&next).click();
+        h.run_steps(1);
     }
-    let wrapped = groups_rows.iter().any(|rows| rows.len() > 1);
-    // A full row is as wide as the widest in any group (a short group can fill only part of one).
-    let cols = groups_rows.iter().flatten().map(Vec::len).max().unwrap_or(0);
-    let (list_left, list_right) = (headers[0].left(), headers[0].right());
+    assert!(seen.iter().map(|(l, ..)| l.as_str()).collect::<std::collections::HashSet<_>>().len() > 1, "the pages didn't change");
+    // A full row is as wide as the widest on any page (a short group fills only part of one).
+    let cols = seen.iter().flat_map(|(_, _, rows)| rows.iter().map(Vec::len)).max().unwrap_or(0);
+    let (list_left, list_right) = (seen[0].1.left(), seen[0].1.right());
     let left = |row: &Vec<Rect>| row.iter().map(|r| r.left()).fold(f32::MAX, f32::min) - list_left;
-    let first = left(&groups_rows[0][0]);
-    for (g, rows) in groups_rows.iter().enumerate() {
+    let first = left(&seen[0].2[0]);
+    for (label, _, rows) in &seen {
         for row in rows {
-            assert!((left(row) - first).abs() < 0.5, "group {g}: a row starts {} pt in, the first {first}", left(row));
+            assert!((left(row) - first).abs() < 0.5, "{label}: a row starts {} pt in, the first {first}", left(row));
             if row.len() == cols {
                 let right = list_right - row.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
-                assert!(((first - indent) - right).abs() <= 1.0, "group {g}: {} pt left of the grid, {right} pt right", first - indent);
+                assert!(((first - indent) - right).abs() <= 1.0, "{label}: {} pt left of the grid, {right} pt right", first - indent);
             }
         }
     }
-    assert!(wrapped, "no group wrapped onto a second row, so the rows weren't compared");
+    assert!(seen.iter().any(|(_, _, rows)| rows.len() > 1), "no page wrapped onto a second row, so the rows weren't compared");
 }
 
 /// The picker's cards: one full-width 2 × 2 card per preset (tip and stroke on top, the name
@@ -349,7 +346,7 @@ fn the_brushes_tab_grid_is_centred_past_its_indent() {
     );
     PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
     h.run_steps(6);
-    rows_are_centred(&h, PANEL_LIST.indent, 2);
+    rows_are_centred(&mut h, PANEL_LIST.indent, 2);
 }
 
 /// #4454: a card's size number sat under the tip thumbnail of any medium or large brush (the
@@ -440,4 +437,98 @@ fn preview_scale_is_clamped_to_its_range() {
     assert_eq!(list_row_height(f32::NAN), 44.0);
     assert_eq!(grid_cell_width(52.0, 0.0), 26.0);
     assert_eq!(grid_cell_width(52.0, f32::INFINITY), 52.0);
+}
+
+/// The list rows drop the tip thumbnail and its size number: the stroke preview starts at the
+/// row's left edge and takes the width the tip cell used to have, so the S-curve widens by the
+/// tip's cell and its gap (52 points at a 330 point row).
+#[test]
+fn list_rows_start_their_stroke_at_the_left_edge() {
+    assert_eq!(stroke_span(330.0), (6.0, 184.0));
+    let old_tip_cell_and_gap = 22.0 + 36.0 + 8.0;
+    assert_eq!(330.0 - old_tip_cell_and_gap - STROKE_NAME_ROOM, 132.0, "the tip layout's stroke was 52 points narrower");
+    assert_eq!(stroke_span(140.0), (6.0, 60.0), "a narrow row keeps a 60 point minimum");
+    assert_eq!(stroke_span(1000.0), (6.0, STROKE_MAX_W), "a wide panel stops growing the stroke");
+    assert_eq!(stroke_span(f32::NAN), (6.0, 60.0));
+    assert_eq!(stroke_span(f32::INFINITY), (6.0, 60.0));
+}
+
+/// A remembered group that no longer exists opens on the selected brush's group, so the brush
+/// `last_brush` restored is on the page that opens; with neither, the first group.
+#[test]
+fn a_missing_remembered_group_falls_back_to_the_brushes_group() {
+    let presets = photocraft_engine::Session::new().tools.presets;
+    let groups = visible_groups(&presets, "");
+    let name = presets.iter().find(|p| !p.group.is_empty()).map(|p| p.name.as_str()).expect("a grouped preset");
+    let want = groups.iter().position(|(_, items)| items.iter().any(|p| p.name == name)).expect("its group is listed");
+    assert_eq!(shown_group(&groups, "No Such Group", Some(name)), Some(want));
+    assert_eq!(shown_group(&groups, "", None), Some(0));
+    assert_eq!(shown_group(&groups, "No Such Group", None), Some(0));
+    let empty: Vec<(String, Vec<&BrushPreset>)> = Vec::new();
+    assert_eq!(shown_group(&empty, "", None), None);
+}
+
+/// The Brushes panel shows one group at a time under a fixed header; its chevrons step to the
+/// next and previous group (wrapping at either end), instead of every group stacking in one scroll
+/// with the others only reachable by scrolling down.
+#[test]
+fn brushes_panel_pages_its_groups_under_a_fixed_header() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+    app.ui.panels.brush_settings = true;
+    app.ui.brush_tab = 1;
+    app.ui.brushes_panel.view = BrushesView::List;
+    let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::ALL[0]);
+        app
+    });
+    h.run_steps(6);
+    let presets = h.state().session.tools.presets.clone();
+    let groups: Vec<(String, Vec<String>)> = grouped_presets(&presets)
+        .into_iter()
+        .map(|(g, ids)| (g, ids.into_iter().filter_map(|i| presets.get(i).map(|p| p.name.clone())).collect()))
+        .collect();
+    assert!(groups.len() > 2, "{groups:?}");
+    let header = |h: &Harness<'_, PhotocraftApp>, label: &str| h.query_by_label(label).expect("the page's header").rect();
+    let (first, second) = (&groups[0], &groups[1]);
+    let last = groups.last().expect("a last group");
+    let top = header(&h, &first.0).top();
+    assert!(h.query_by_label(&first.1[0]).is_some(), "the first group's rows are shown");
+    assert!(h.query_by_label(&second.1[0]).is_none(), "the second group waits behind the arrow");
+    // Next: the header stays where it was and the rows under it change.
+    h.get_by_label(crate::i18n::t("Next brush group")).click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brushes_panel.group, second.0);
+    assert_eq!(header(&h, &second.0).top(), top, "the group header is fixed");
+    assert!(h.query_by_label(&second.1[0]).is_some() && h.query_by_label(&first.1[0]).is_none());
+    // Previous: back to the first group.
+    h.get_by_label(crate::i18n::t("Previous brush group")).click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brushes_panel.group, first.0);
+    assert!(h.query_by_label(&first.1[0]).is_some());
+    // Previous again wraps round to the last group.
+    h.get_by_label(crate::i18n::t("Previous brush group")).click();
+    h.run_steps(3);
+    assert_eq!(h.state().ui.brushes_panel.group, last.0);
+    assert!(h.query_by_label(&last.1[0]).is_some());
+}
+
+/// The group the panel pages is remembered in the preferences (`brush_panel`) and restored at
+/// launch; the name of the selected brush itself is `last_brush`'s preset, and a saved group that
+/// is gone opens on that preset's group ([`shown_group`]).
+#[test]
+fn the_brushes_panel_remembers_its_group() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.ui.brushes_panel.group = "Dry Media".into();
+    persist(&mut app, &egui::Context::default());
+    assert_eq!(app.session.prefs().brush_panel, json!({"group": "Dry Media"}));
+    let mut launched = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    launched.session.edit_prefs(|p| p.brush_panel = json!({"group": "Ink"}));
+    restore(&mut launched);
+    assert_eq!(launched.ui.brushes_panel.group, "Ink");
+    // A value that isn't a group name keeps the default, which opens on the selected brush's group.
+    launched.session.edit_prefs(|p| p.brush_panel = json!({"group": 7}));
+    launched.ui.brushes_panel.group.clear();
+    restore(&mut launched);
+    assert!(launched.ui.brushes_panel.group.is_empty());
 }

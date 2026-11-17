@@ -134,6 +134,14 @@ fn point(p: &Value, k: &str) -> Option<(f64, f64)> {
 /// shape dynamics) with the shared params of `p` applied. UI previews of a stroke (the Spot Healing
 /// Brush's trail) render their coverage with it, so they match what the command changes.
 pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
+    stroke_brush_tip(base, p, false)
+}
+
+/// [`stroke_brush`] with an explicit choice of the tip maths. The Smudge (the Palette-knife slot)
+/// dabs exactly the way the Brush does — same `BrushContext`, same tip maths — while the other
+/// retouching tools keep the geometry's footprint: their strokes punch holes, and the C3 reach
+/// (a pixel past the nominal radius) widens every one of them and lets neighbours merge.
+pub fn stroke_brush_tip(base: &BrushSettings, p: &Value, c3_tip_math: bool) -> BrushSettings {
     let pct = |k: &str, d: f32, lo: f32, hi: f32| num(p, k, d).clamp(lo, hi) / 100.0;
     BrushSettings {
         size: num(p, "size", base.size).max(1.0),
@@ -148,10 +156,7 @@ pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
             None => base.smoothing.clone(),
         },
         erase: false,
-        // Retouching reads the brush as a footprint, not as paint: the C3 tip maths reaches a
-        // pixel past the nominal radius, which would widen every hole and let neighbouring
-        // strokes merge. Keep the geometry's footprint (upstream's) while painting keeps C3.
-        c3_tip_math: false,
+        c3_tip_math,
         ..base.clone()
     }
 }
@@ -173,7 +178,10 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
         return Err(bad(cmd, "`points` is empty"));
     }
     crate::brush_cmds::check_coords(&pts, cmd)?;
-    let brush = stroke_brush(&s.tools.brush, p);
+    // The Smudge is a brush that moves paint instead of depositing it, so its dabs use the Brush's
+    // own tip maths; the tools that punch through a layer keep the geometry's footprint.
+    let tip = cmd == "paint.smudge" && s.tools.brush.c3_tip_math;
+    let brush = stroke_brush_tip(&s.tools.brush, p, tip);
     crate::brush_cmds::validate_brush(&brush, cmd)?;
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));

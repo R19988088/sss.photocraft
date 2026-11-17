@@ -2120,6 +2120,232 @@ fn mixing_can_deposit_foreground_and_resized_sampled_color() {
 }
 
 #[test]
+fn low_mixing_keeps_the_stroke_colour_and_drags_less_at_the_tip_edge() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // Two contracts at once: the drag is scaled by the tip's own rasterised coverage (so it fades
+    // out where the nib's alpha does), and at a modest mixing strength the stroke still paints its
+    // own colour instead of being replaced by whatever it picked up.
+    let run = |mix: f32| {
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
+        let b = BrushSettings {
+            size: 40.0,
+            hardness: 0.4,
+            spacing: 0.25,
+            flow: 0.6,
+            color: [0.1, 0.3, 0.9, 1.0],
+            mix_settings: BrushMixSettings { enabled: true, strength: mix, algorithm: MixAlgorithm::V1, ..Default::default() },
+            ..brush()
+        };
+        let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s
+    };
+    // On a white canvas picking up white only lightens the blue, so the deepest blue is the body
+    // that dragged least and the lightest blue is where the nib's edge dragged least as well.
+    let light = run(0.15).rgba(60, 60);
+    assert!(light[2] > 0.9, "15% mixing must keep the stroke's own colour: {light:?}");
+    let strong = run(0.9).rgba(60, 60);
+    assert!(strong[2] > light[2], "more mixing must drag in more canvas colour: {light:?} vs {strong:?}");
+    // The tip's soft edge covers less, so the drag recorded there is weaker than in the body.
+    let b = BrushSettings {
+        size: 40.0,
+        hardness: 0.4,
+        spacing: 0.25,
+        flow: 0.6,
+        color: [0.1, 0.3, 0.9, 1.0],
+        mix_settings: BrushMixSettings { enabled: true, strength: 0.9, algorithm: MixAlgorithm::V1, ..Default::default() },
+        ..brush()
+    };
+    let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
+    let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
+    render_stroke(&mut s, &b, &points, None, false, 1.0);
+    let weights = |y: i32| s.rgba(60, y)[2];
+    // 60 is the stroke's centre; 41 sits in the nib's soft falloff.
+    assert!(
+        weights(41) < weights(60),
+        "the drag must be weaker at the nib's edge than in its body: {} vs {}",
+        weights(41),
+        weights(60)
+    );
+}
+
+#[test]
+fn mixing_must_not_take_over_pressure_flow_and_opacity() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // The reported brush: opacity *and* flow driven by pen pressure, mixing ticked. Turning mixing
+    // on must not flatten the pressure response, and switching it off must not change the stroke's
+    // coverage either — the transport only replaces the lane's colour.
+    let run = |mixing: bool| {
+        // An empty surface keeps the stroke's alpha readable, so this measures coverage, not hue.
+        let mut s = Surface::new(PixelFormat::RGBA32F);
+        let b = BrushSettings {
+            size: 40.0,
+            hardness: 1.0,
+            spacing: 0.25,
+            color: [0.9, 0.1, 0.1, 1.0],
+            transfer: Transfer {
+                enabled: true,
+                opacity: Dynamic::controlled(Control::PenPressure),
+                flow: Dynamic::controlled(Control::PenPressure),
+                ..Default::default()
+            },
+            mix_settings: BrushMixSettings { enabled: mixing, strength: 0.5, algorithm: MixAlgorithm::V1, ..Default::default() },
+            ..brush()
+        };
+        let points = [StrokePoint::new(10.0, 60.0, 0.35), StrokePoint::new(110.0, 60.0, 0.35)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s.rgba(60, 60)
+    };
+    let plain = run(false);
+    let mixed = run(true);
+    assert!(plain[3] < 0.98, "the pressure must lighten the stroke in this setup: {plain:?}");
+    assert!(
+        (plain[3] - mixed[3]).abs() < 0.03,
+        "mixing stole the pressure-driven opacity/flow: {plain:?} vs {mixed:?}"
+    );
+}
+
+#[test]
+fn a_descending_mixing_curve_smudges_on_light_pressure_only() {
+    use crate::pigment_material::SignedCurve;
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // The user's request: light pressure smudges, heavy pressure does not. The curve is the smudge
+    // lane's own strength, so a descending curve must do exactly that.
+    let curve = SignedCurve {
+        points: [[0.0, 0.8], [0.1, 0.8], [0.2, 0.8], [0.3, 0.6], [0.53, 0.25], [0.77, 0.02], [1.0, 0.0]],
+        enabled: true,
+    };
+    let drag = |pressure: f32| {
+        let b = BrushSettings {
+            size: 24.0,
+            spacing: 0.12,
+            color: [1.0, 0.0, 0.0, 1.0],
+            mix_settings: BrushMixSettings {
+                enabled: true,
+                strength: 1.0,
+                algorithm: MixAlgorithm::V1,
+                mix_pressure_curve: Some(curve.clone()),
+                ..Default::default()
+            },
+            ..brush()
+        };
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[0.0, 0.25, 1.0, 1.0]);
+        let points = [StrokePoint::new(12.0, 32.0, pressure), StrokePoint::new(52.0, 32.0, pressure)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s.rgba(32, 32)[2]
+    };
+    let light = drag(0.2);
+    let heavy = drag(0.95);
+    assert!(light > 0.15, "light pressure must smudge: {light:.3}");
+    assert!(
+        light > heavy + 0.1,
+        "heavy pressure must stop smudging: light {light:.3} vs heavy {heavy:.3}"
+    );
+}
+
+#[test]
+fn mixing_smears_the_layer_across_a_soft_low_flow_seam() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // The reported brush: big and soft, low flow, mixing 100% on the first algorithm. The stroke
+    // crosses a hard red/white seam; the trailing white half must end up carrying red.
+    let run = |mix: bool| {
+        let mut s = Surface::new(PixelFormat::RGBA32F);
+        for y in 0..120 {
+            for x in 0..200 {
+                let c = if x < 100 { [0.9, 0.15, 0.15, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+                s.write_pixel(x, y, &c);
+            }
+        }
+        let b = BrushSettings {
+            size: 60.0,
+            hardness: 0.3,
+            spacing: 0.1,
+            flow: 0.2,
+            opacity: 1.0,
+            color: [0.2, 0.5, 0.9, 1.0],
+            mix_settings: BrushMixSettings { enabled: mix, strength: 1.0, algorithm: MixAlgorithm::V1, ..Default::default() },
+            ..brush()
+        };
+        let points = [StrokePoint::new(40.0, 60.0, 1.0), StrokePoint::new(160.0, 60.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        [60, 130, 150].map(|x| s.rgba(x, 60))
+    };
+    let off = run(false);
+    let on = run(true);
+    assert!(off[2][2] > 0.6, "without mixing the stroke keeps the brush blue: {:?}", off[2]);
+    // The white half: mixing drags red forward, so it can be neither white nor brush-blue, and the
+    // smear has to be strongest right at the seam. The colour-output pipeline still paints its own
+    // colour over that layer, so the drag shows through the stroke's own translucency.
+    assert!(on[1][1] < 0.8, "the seam colour must be carried past the boundary: {:?}", on[1]);
+    assert!(on[2][1] < 0.95 && on[2][0] > on[2][2], "the drag must keep trailing further out: {:?}", on[2]);
+}
+
+#[test]
+fn mixing_drags_the_paint_under_the_stroke() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // Everything here runs through the same `render_stroke` entry the app uses: a red stroke over a
+    // blue canvas must end up carrying blue, for each of the three algorithms.
+    let canvas = [0.0, 0.25, 1.0, 1.0];
+    let stroke = |algorithm, enabled: bool, strength: f32, blur: f32| {
+        let b = BrushSettings {
+            color: [1.0, 0.0, 0.0, 1.0],
+            size: 24.0,
+            spacing: 0.12,
+            mix_settings: BrushMixSettings { enabled, strength, algorithm, blur_strength: blur, ..Default::default() },
+            ..brush()
+        };
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &canvas);
+        let points = [StrokePoint::new(12.0, 32.0, 1.0), StrokePoint::new(52.0, 32.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s
+    };
+    for algorithm in [MixAlgorithm::V1, MixAlgorithm::V2, MixAlgorithm::V3] {
+        let plain = stroke(algorithm, false, 0.0, 0.0).rgba(32, 32);
+        assert!(plain[2] < 0.05, "{algorithm:?}: without mixing the stroke is the brush colour: {plain:?}");
+        for strength in [0.3, 0.6] {
+            let mixed = stroke(algorithm, true, strength, 0.0).rgba(32, 32);
+            assert!(mixed[2] > 0.1, "{algorithm:?} at strength {strength}: mixing must pull the canvas colour into the stroke: {mixed:?}");
+        }
+        // Enabling the section with a still-zero strength is a legacy/preset state, not "off".
+        let healed = stroke(algorithm, true, 0.0, 0.0).rgba(32, 32);
+        assert!(healed[2] > 0.1, "{algorithm:?}: an enabled section must drag even with a zero strength: {healed:?}");
+    }
+}
+
+#[test]
+fn blur_and_mixing_are_independent_pipelines() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+    // A hard blue/white seam; the stroke crosses it. Blur-only, mix-only and both must all produce
+    // different pixels — neither pipeline may erase or absorb what the other did.
+    let stroke = |enabled: bool, strength: f32, blur: f32| {
+        let mut s = Surface::new(PixelFormat::RGBA32F);
+        for y in 0..64 {
+            for x in 0..64 {
+                let c = if x < 32 { [0.0, 0.2, 1.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] };
+                s.write_pixel(x, y, &c);
+            }
+        }
+        let b = BrushSettings {
+            color: [1.0, 0.0, 0.0, 1.0],
+            size: 20.0,
+            spacing: 0.1,
+            mix_settings: BrushMixSettings { enabled, strength, algorithm: MixAlgorithm::V2, blur_strength: blur, ..Default::default() },
+            ..brush()
+        };
+        let points = [StrokePoint::new(10.0, 32.0, 1.0), StrokePoint::new(54.0, 32.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        [24, 30, 34, 40].map(|x| s.rgba(x, 32))
+    };
+    let mix = stroke(true, 0.6, 0.0);
+    let blur = stroke(true, 0.0, 0.6);
+    let both = stroke(true, 0.6, 0.6);
+    let spread = |a: [[f32; 4]; 4], b: [[f32; 4]; 4]| a.iter().zip(b).map(|(x, y)| (0..4).map(|i| (x[i] - y[i]).abs()).fold(0.0, f32::max)).fold(0.0, f32::max);
+    assert!(spread(mix, blur) > 0.05, "blur must change the stroke on its own");
+    assert!(spread(both, mix) > 0.02, "blur must still act when mixing is on: {both:?} vs {mix:?}");
+    assert!(spread(both, blur) > 0.02, "mixing must still act when blur is on: {both:?} vs {blur:?}");
+}
+
+#[test]
 fn spacing_and_the_dabs_do_not_depend_on_flow() {
     // `step_len_for`: the diameter at the step times the spacing, at least half a pixel — no flow
     // term. Lower flow changes coverage, never where the dabs go.

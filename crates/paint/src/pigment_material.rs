@@ -174,6 +174,16 @@ pub struct ResolvedPigment {
     pub highlight_ratio: f32,
 }
 
+impl ResolvedPigment {
+    /// Every consumer of this field multiplies its effect by one of these four, so when they are all
+    /// zero the material (and the shading that reads it) cannot move a single pixel. Callers use this
+    /// to skip the whole pigment path instead of computing a field of zeros.
+    pub fn is_inert(&self) -> bool {
+        !self.enabled
+            || (self.thickness == 0.0 && self.visual_thickness == 0.0 && self.highlight_strength == 0.0 && self.liquidity == 0.0)
+    }
+}
+
 /// Absolute floor + controller + additive jitter, bounded by the absolute floor and ceiling.
 pub fn parameter(maximum: f32, minimum: f32, jitter: f32, weight: f32, sample: f32) -> f32 {
     let upper = bounded(maximum, 0., 100.) / 100.;
@@ -182,6 +192,19 @@ pub fn parameter(maximum: f32, minimum: f32, jitter: f32, weight: f32, sample: f
     (lower + (upper - lower) * unit(weight) + (sample * 2. - 1.) * bounded(jitter, 0., 100.) / 100.).clamp(lower, upper)
 }
 impl PigmentSettings {
+    /// Whether this lane can put *any* material on the canvas at some pressure. Every consumer of
+    /// the material field is scaled by one of `thickness` / `visual_thickness` /
+    /// `highlight_strength` / `liquidity`, so a section that is enabled while all of them are zero
+    /// (the struct's default) would only accumulate a field of zeros — worth skipping entirely, and
+    /// worth keeping off the expensive per-pixel paths while it maps to nothing.
+    pub fn may_be_visible(&self) -> bool {
+        self.enabled
+            && (self.thickness_curve.is_some()
+                || self.thickness > 0.0
+                || self.visual_thickness > 0.0
+                || self.highlight_strength > 0.0
+                || self.liquidity > 0.0)
+    }
     pub fn is_valid(&self) -> bool {
         [self.thickness, self.thickness_minimum, self.thickness_jitter, self.visual_thickness, self.visual_thickness_minimum, self.visual_thickness_jitter]
             .into_iter()
@@ -303,6 +326,26 @@ mod tests {
     }
 
     #[test]
+    fn the_zero_default_section_is_inert_and_a_live_one_is_not() {
+        let off = ResolvedPigment { enabled: true, ..Default::default() };
+        assert!(off.is_inert(), "an enabled section with every parameter at zero paints a field of zeros");
+        assert!(shade([0.4, 0.5, 0.6, 0.9], off, 0.5, [0.; 2], |_| [0.2, 0.1, 0., 0.5], |_| [0.2, 0., 0., 1.]) == [0.4, 0.5, 0.6, 0.9]);
+        for live in [
+            ResolvedPigment { thickness: 0.6, ..off },
+            ResolvedPigment { visual_thickness: 0.4, ..off },
+            ResolvedPigment { highlight_strength: 0.3, ..off },
+            ResolvedPigment { liquidity: 0.2, ..off },
+        ] {
+            assert!(!live.is_inert());
+        }
+        // The brush-level gate has to agree with what `resolve` can produce: a zero thickness with a
+        // curve still raises material, so the section must stay on the expensive path.
+        assert!(PigmentSettings { enabled: true, thickness_curve: Some(SignedCurve::default()), ..Default::default() }.may_be_visible());
+        assert!(!PigmentSettings { enabled: true, ..Default::default() }.may_be_visible());
+        assert!(!PigmentSettings { enabled: false, thickness: 60.0, ..Default::default() }.may_be_visible());
+    }
+
+    #[test]
     fn fluid_and_thickness_have_separate_consumers() {
         let p = PigmentSettings { fluid_strength: 1., ..Default::default() };
         assert!((p.adjusted_hardness(1., 0.5) - 0.65).abs() < 1e-6);
@@ -361,7 +404,7 @@ pub fn shade(
     material_at: impl Fn([f32; 2]) -> [f32; 4],
     color_at: impl Fn([f32; 2]) -> [f32; 4],
 ) -> [f32; 4] {
-    if !p.enabled {
+    if p.is_inert() {
         return old;
     }
     let liquidity = unit(p.liquidity);

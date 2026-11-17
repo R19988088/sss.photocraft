@@ -1,5 +1,10 @@
-//! Window › Brushes: the brush presets in collapsible groups, as a list (tip, size, stroke
-//! preview, name) or a grid of tips, with a size slider and a search field.
+//! Window › Brushes: the brush presets in groups, as a list (stroke preview and name) or a grid
+//! of tips, with a size slider and a search field.
+//!
+//! The Brushes panel shows one group at a time: its header is fixed above a scrolling page, with
+//! an arrow either side stepping to the group before or after (wrapping), and the group it was
+//! left on is remembered across launches. A filter searches every group and stacks their
+//! matches, whichever group the panel was paging.
 //!
 //! Presets and groups are organised like Photoshop's panel: drag a preset within its group or
 //! into another group or folder (onto a preset, or onto a header to append), drag a group's or
@@ -11,7 +16,8 @@
 //! and persisted by the preset store.
 //!
 //! The list itself ([`preset_list`]) is shared with the Brush Preset picker (`brush_picker`), so
-//! both show, pick and organise presets the same way; each keeps its own view state.
+//! both show, pick and organise presets the same way; each keeps its own view state and the
+//! picker keeps every group stacked in one scroll ([`ListLayout::paged`]).
 
 use egui::{Color32, RichText, Sense, Stroke, pos2, vec2};
 use photocraft_engine::paint::{BrushPreset, MAX_BRUSH_SIZE};
@@ -44,6 +50,8 @@ pub enum Action {
     /// View only: open or close a group or folder (by its [`folder_view_key`]; [`preset_list`]
     /// applies it to its view state).
     ToggleGroup(String),
+    /// View only: page a [`ListLayout::paged`] list to this group (by its panel label).
+    ShowGroup(String),
     Move {
         name: String,
         group: String,
@@ -93,10 +101,13 @@ pub struct ListLayout {
     /// the bottom (or, with only the tip and the name on, in the stroke's cell). Replaces the
     /// list/grid choice in the picker.
     pub cards: bool,
+    /// Show one group at a time under a fixed header whose arrows page through the groups (the
+    /// Brushes panel), rather than stacking every group in the one scroll (the picker).
+    pub paged: bool,
 }
 
 /// The Brushes tab's list.
-pub const PANEL_LIST: ListLayout = ListLayout { id: "brush-presets", max_height: 400.0, cell: 52.0, indent: 20.0, cards: false };
+pub const PANEL_LIST: ListLayout = ListLayout { id: "brush-presets", max_height: 400.0, cell: 52.0, indent: 20.0, cards: false, paged: true };
 
 fn responsive_list_layout(ui: &egui::Ui) -> ListLayout {
     let height = ui.available_height().clamp(180.0, 640.0);
@@ -217,6 +228,10 @@ fn view_actions(st: &mut BrushesPanelState, acts: Vec<Action>) -> Vec<Action> {
                 st.renaming = Some(r);
                 None
             }
+            Action::ShowGroup(g) => {
+                st.group = g;
+                None
+            }
             a => Some(a),
         })
         .collect()
@@ -233,7 +248,7 @@ pub fn apply(app: &mut PhotocraftApp, acts: Vec<Action>) {
                     run_or_status(app, "tools.setBrush", json!({ "preset": name }));
                 }
             }
-            Action::ToggleGroup(_) | Action::BeginRename(_) => {}
+            Action::ToggleGroup(_) | Action::BeginRename(_) | Action::ShowGroup(_) => {}
             Action::Move { name, group, folder, index } => {
                 let mut p = json!({ "name": name, "group": group });
                 if let Some(f) = folder {
@@ -330,8 +345,22 @@ fn preset_interactions(ui: &egui::Ui, resp: &egui::Response, r: egui::Rect, p: &
     });
 }
 
-/// Width a list row keeps for the gaps around its stroke preview and the preset name.
+/// Width a list row keeps for the gap around its stroke preview and the preset name.
 const STROKE_NAME_ROOM: f32 = 140.0;
+
+/// The gap between a list row's left edge and its stroke preview.
+const STROKE_PAD: f32 = 6.0;
+
+/// The widest a list row's stroke preview grows on a wide panel, so a slow stroke keeps a
+/// readable S instead of stretching into a line.
+const STROKE_MAX_W: f32 = 260.0;
+
+/// Where a list row's stroke preview starts (from the row's left edge) and how wide it is: the
+/// row's width less the name's room, 60 to [`STROKE_MAX_W`] points.
+pub(crate) fn stroke_span(row_width: f32) -> (f32, f32) {
+    let room = if row_width.is_finite() { row_width } else { 0.0 };
+    (STROKE_PAD, (room - STROKE_PAD - STROKE_NAME_ROOM).clamp(60.0, STROKE_MAX_W).round())
+}
 
 /// The Brushes tab's preview size slider range: what the grid cells and list rows scale between
 /// (1 = the standard size). Not the picker's cards' scale ([`crate::brush_picker::SCALE_RANGE`]).
@@ -363,22 +392,11 @@ fn list_row(ui: &mut egui::Ui, p: &BrushPreset, current: bool, presets: &[BrushP
         ui.painter().rect_filled(r, t.radius_sm, t.hover);
     }
     let pb = &p.brush;
-    let tip = brush_preview::tip_texture(ui.ctx(), &format!("brushes-tip:{}", p.name), pb, 36, t.text);
-    let cell = egui::Rect::from_min_size(r.left_top() + vec2(22.0, 2.0), vec2(36.0, 30.0) * k);
-    let tr = egui::Rect::from_center_size(cell.center(), vec2(30.0, 30.0) * k * crate::brush_sections::thumb_scale(pb.size));
-    ui.painter().image(tip.id(), tr, full_uv(), Color32::WHITE);
-    ui.painter().text(
-        pos2(cell.center().x, r.bottom() - 1.0),
-        egui::Align2::CENTER_BOTTOM,
-        format!("{}", pb.size.round() as i64),
-        egui::FontId::proportional(9.0),
-        t.text_faint,
-    );
-    // The stroke preview gives up width so a narrow list (the picker) still shows the name; its
-    // texture slot carries the width, so lists of different widths don't re-render each other's.
-    let w = (r.width() - (cell.right() - r.left()) - STROKE_NAME_ROOM).clamp(60.0, 170.0).round();
+    // The row shows the stroke it paints, not the tip: no thumbnail and no size number, so the
+    // preview starts at the row's left edge and takes the width the tip used to have.
+    let (x, w) = stroke_span(r.width());
     let stroke = brush_preview::stroke_texture(ui.ctx(), &format!("brushes-stroke-{w}:{}", p.name), pb, w as u32, 36, t.text);
-    let sr = egui::Rect::from_min_size(pos2(cell.right() + 8.0, r.top() + 4.0 * k), vec2(w, 36.0 * k));
+    let sr = egui::Rect::from_min_size(pos2(r.left() + x, r.top() + 4.0 * k), vec2(w, 36.0 * k));
     ui.painter().image(stroke.id(), sr, full_uv(), Color32::WHITE);
     crate::layer_row_ui::label(ui.painter(), sr.right() + 12.0, r.center().y, r.right() - 4.0, &p.name, egui::FontId::proportional(12.0), t.text_dim);
     preset_interactions(ui, &resp, r, p, presets, false, acts);
@@ -895,21 +913,66 @@ fn rename_bar(ui: &mut egui::Ui, st: &mut BrushesPanelState, acts: &mut Vec<Acti
     ui.add_space(4.0);
 }
 
-/// The presets in their groups, filtered by `st.filter`, as rows or tip cells (`st.view`) or as
-/// the picker's cards (`layout.cards`, drawn from the `st.show_*` parts), with the rename bar
-/// above them while a rename is open. `current` is the selected preset's name: selection is by
-/// identity, so it survives edits and tells look-alike duplicates apart. Group toggles and renames
-/// update `st`; the returned actions are commands for [`apply`].
-pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&str>, st: &mut BrushesPanelState, layout: ListLayout) -> Vec<Action> {
-    let mut acts = Vec::new();
-    rename_bar(ui, st, &mut acts);
-    let filter = st.filter.trim().to_lowercase();
-    let grid = st.view == BrushesView::Grid;
-    let show = (st.show_name, st.show_stroke, st.show_tip);
-    let collapsed = &st.collapsed;
-    egui::ScrollArea::vertical().id_salt(layout.id).max_height(layout.max_height).auto_shrink([false, true]).show(ui, |ui| {
-        // A preset, group or folder dragged to the list's top or bottom edge (or past it) scrolls
-        // the list, as the Layers panel's rows do, so it can be dropped on rows out of view (#5741).
+/// The height of a paged list's fixed group header; its page scrolls under it.
+const PAGER_H: f32 = 24.0;
+
+/// The groups `presets` shows, in panel order, each with the presets matching `filter` (a group
+/// with no match is left out).
+fn visible_groups<'a>(presets: &'a [BrushPreset], filter: &str) -> Vec<(String, Vec<&'a BrushPreset>)> {
+    grouped_presets(presets)
+        .into_iter()
+        .filter_map(|(label, items)| {
+            let items: Vec<&BrushPreset> = items
+                .into_iter()
+                .filter_map(|i| presets.get(i))
+                .filter(|p| filter.is_empty() || p.name.to_lowercase().contains(filter))
+                .collect();
+            (!items.is_empty()).then_some((label, items))
+        })
+        .collect()
+}
+
+/// Which page a paged list shows: the group the panel was left on while it still exists, else
+/// the group of the preset the tool has (so the brush `last_brush` restored opens on its page),
+/// else the first group.
+fn shown_group(groups: &[(String, Vec<&BrushPreset>)], remembered: &str, current: Option<&str>) -> Option<usize> {
+    if let Some(i) = groups.iter().position(|(g, _)| g == remembered) {
+        return Some(i);
+    }
+    if let Some(name) = current
+        && let Some(i) = groups.iter().position(|(_, items)| items.iter().any(|p| p.name.eq_ignore_ascii_case(name)))
+    {
+        return Some(i);
+    }
+    (!groups.is_empty()).then_some(0)
+}
+
+/// A [`ListLayout::paged`] list: the shown group's header fixed at the top, its rows (or grid
+/// cells) scrolling under it. The header's chevrons page through `groups`, wrapping at either
+/// end; presets dropped on the header move to the end of the group.
+fn paged_groups(
+    ui: &mut egui::Ui,
+    presets: &[BrushPreset],
+    current: Option<&str>,
+    st: &BrushesPanelState,
+    layout: ListLayout,
+    groups: &[(String, Vec<&BrushPreset>)],
+    grid: bool,
+    show: (bool, bool, bool),
+    acts: &mut Vec<Action>,
+) {
+    let Some(shown) = shown_group(groups, &st.group, current) else { return };
+    let Some((label, items)) = groups.get(shown) else { return };
+    let key = group_key(presets, label);
+    let before = if shown == 0 { groups.len().saturating_sub(1) } else { shown - 1 };
+    let next = (shown + 1) % groups.len();
+    let paged = groups.len() > 1;
+    pager_header(ui, label, &key, items.len(), if paged { groups.get(before).map(|(l, _)| l.as_str()) } else { None }, if paged { groups.get(next).map(|(l, _)| l.as_str()) } else { None }, acts);
+    ui.add_space(4.0);
+    let content_height = (layout.max_height - PAGER_H - 4.0).max(80.0);
+    // Each page keeps its scroll offset, so paging back to a group lands where it was left.
+    egui::ScrollArea::vertical().id_salt((layout.id, label.as_str())).max_height(content_height).auto_shrink([false, true]).show(ui, |ui| {
+        // A preset dragged to the page's edge scrolls it, as in the stacked list (#5741).
         let dragging = egui::DragAndDrop::has_payload_of_type::<BrushDrag>(ui.ctx()) && ui.input(|i| i.pointer.primary_down());
         let pointer = ui.ctx().pointer_interact_pos();
         let delta = crate::panels::layer_drag_edge_scroll(pointer, ui.clip_rect(), dragging, ui.input(|i| i.stable_dt));
@@ -918,26 +981,115 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
             ui.ctx().request_repaint();
         }
         ui.spacing_mut().item_spacing.y = 1.0;
-        for (label, items) in grouped_presets(presets) {
-            let items: Vec<&BrushPreset> =
-                items.into_iter().filter_map(|i| presets.get(i)).filter(|p| filter.is_empty() || p.name.to_lowercase().contains(&filter)).collect();
-            if items.is_empty() {
-                continue;
-            }
-            let key = group_key(presets, &label);
-            let open = !filter.is_empty() || !collapsed.contains(&label);
-            group_header(ui, &label, &key, &[], open, items.len(), &mut acts);
-            if !open {
-                continue;
-            }
-            let d = Draw { label: &label, key: &key, presets, current, collapsed, grid, layout, show, scale: st.scale };
-            draw_nodes(ui, &d, &folder_tree(&items), 0, &mut acts);
-            ui.add_space(2.0);
+        let d = Draw { label: label.as_str(), key: &key, presets, current, collapsed: &st.collapsed, grid, layout, show, scale: st.scale };
+        draw_nodes(ui, &d, &folder_tree(items), 0, acts);
+        ui.add_space(2.0);
+    });
+}
+
+/// The paged list's fixed group header: a chevron at either end pages to `before` or `after`
+/// (drawn faint and inert when `groups` has one group), with the folder, the group's name and its
+/// count between them. Right-click renames or deletes the group.
+fn pager_header(ui: &mut egui::Ui, label: &str, key: &str, count: usize, before: Option<&str>, after: Option<&str>, acts: &mut Vec<Action>) {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), PAGER_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::DisclosureTriangle, true, label));
+    let arrow = 20.0;
+    let prev_rect = egui::Rect::from_center_size(pos2(r.left() + 2.0 + arrow / 2.0, r.center().y), vec2(arrow, arrow));
+    let next_rect = egui::Rect::from_center_size(pos2(r.right() - 2.0 - arrow / 2.0, r.center().y), vec2(arrow, arrow));
+    if pager_arrow(ui, prev_rect, "chevron-left", tl!("Previous brush group"), before.is_some()) {
+        if let Some(b) = before {
+            acts.push(Action::ShowGroup(b.to_string()));
         }
-        if presets.is_empty() {
-            ui.label(RichText::new(tl!("No brush presets")).color(Tokens::get(ui.ctx()).text_faint));
+    }
+    if pager_arrow(ui, next_rect, "chevron-right", tl!("Next brush group"), after.is_some()) {
+        if let Some(a) = after {
+            acts.push(Action::ShowGroup(a.to_string()));
+        }
+    }
+    let x = prev_rect.right() + 6.0;
+    icons::paint(ui, egui::Rect::from_min_size(pos2(x, r.center().y - 8.0), vec2(16.0, 16.0)), "folder-open", 14.0, t.icon);
+    let count_at = next_rect.left() - 8.0;
+    crate::layer_row_ui::label(ui.painter(), x + 22.0, r.center().y, count_at - 22.0, label, theme::semibold(12.0), t.text);
+    ui.painter().text(pos2(count_at, r.center().y), egui::Align2::RIGHT_CENTER, count.to_string(), theme::medium(11.0), t.text_faint);
+    if resp.dnd_hover_payload::<BrushDrag>().is_some_and(|d| matches!(&*d, BrushDrag::Preset(_))) {
+        ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    }
+    if let Some(d) = resp.dnd_release_payload::<BrushDrag>() {
+        if let BrushDrag::Preset(n) = &*d {
+            acts.push(Action::Move { name: n.clone(), group: key.to_string(), folder: Some(Vec::new()), index: None });
+        }
+    }
+    resp.context_menu(|ui| {
+        if ui.button(tl!("Rename Group…")).clicked() {
+            acts.push(Action::BeginRename(Renaming { group: true, name: key.to_string(), folder: Vec::new(), text: String::new() }));
+            ui.close();
+        }
+        if ui.button(tl!("Delete Group")).clicked() {
+            acts.push(Action::DeleteGroup { group: key.to_string(), folder: Vec::new() });
+            ui.close();
         }
     });
+}
+
+/// A paged header's chevron: hover highlight and the arrow, `enabled` where a neighbouring group
+/// exists. Returns whether it was clicked.
+fn pager_arrow(ui: &egui::Ui, rect: egui::Rect, icon: &str, label: &str, enabled: bool) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let resp = ui.interact(rect, ui.id().with(("brush-page", icon)), if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    let hot = enabled && resp.hovered();
+    if hot {
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover);
+    }
+    icons::paint(ui, rect, icon, 12.0, if !enabled { t.text_faint } else if hot { t.text } else { t.text_dim });
+    enabled && resp.on_hover_text(label).clicked()
+}
+
+/// The presets in their groups, filtered by `st.filter`, as rows or tip cells (`st.view`) or as
+/// the picker's cards (`layout.cards`, drawn from the `st.show_*` parts), with the rename bar
+/// above them while a rename is open. `current` is the selected preset's name: selection is by
+/// identity, so it survives edits and tells look-alike duplicates apart. Group toggles, paging and
+/// renames update `st`; the returned actions are commands for [`apply`].
+pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&str>, st: &mut BrushesPanelState, layout: ListLayout) -> Vec<Action> {
+    let mut acts = Vec::new();
+    rename_bar(ui, st, &mut acts);
+    let filter = st.filter.trim().to_lowercase();
+    let grid = st.view == BrushesView::Grid;
+    let show = (st.show_name, st.show_stroke, st.show_tip);
+    let groups = visible_groups(presets, &filter);
+    if groups.is_empty() {
+        ui.label(RichText::new(tl!("No brush presets")).color(Tokens::get(ui.ctx()).text_faint));
+    } else if layout.paged && filter.is_empty() {
+        paged_groups(ui, presets, current, st, layout, &groups, grid, show, &mut acts);
+    } else {
+        // The picker stacks every group in one scroll, and a filter shows every group's matches
+        // (searching across the whole library, not only the group the panel was paging).
+        let collapsed = &st.collapsed;
+        egui::ScrollArea::vertical().id_salt(layout.id).max_height(layout.max_height).auto_shrink([false, true]).show(ui, |ui| {
+            // A preset, group or folder dragged to the list's top or bottom edge (or past it) scrolls
+            // the list, as the Layers panel's rows do, so it can be dropped on rows out of view (#5741).
+            let dragging = egui::DragAndDrop::has_payload_of_type::<BrushDrag>(ui.ctx()) && ui.input(|i| i.pointer.primary_down());
+            let pointer = ui.ctx().pointer_interact_pos();
+            let delta = crate::panels::layer_drag_edge_scroll(pointer, ui.clip_rect(), dragging, ui.input(|i| i.stable_dt));
+            if delta != 0.0 {
+                ui.scroll_with_delta(vec2(0.0, delta));
+                ui.ctx().request_repaint();
+            }
+            ui.spacing_mut().item_spacing.y = 1.0;
+            for (label, items) in groups {
+                let key = group_key(presets, &label);
+                let open = !filter.is_empty() || !collapsed.contains(&label);
+                group_header(ui, &label, &key, &[], open, items.len(), &mut acts);
+                if !open {
+                    continue;
+                }
+                let d = Draw { label: &label, key: &key, presets, current, collapsed, grid, layout, show, scale: st.scale };
+                draw_nodes(ui, &d, &folder_tree(&items), 0, &mut acts);
+                ui.add_space(2.0);
+            }
+        });
+    }
     // The dragged preset or group follows the pointer.
     if let Some(d) = egui::DragAndDrop::payload::<BrushDrag>(ui.ctx())
         && let Some(p) = ui.ctx().pointer_interact_pos()
@@ -1072,6 +1224,33 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     brush_preview::with_cache(ui.ctx(), |c| {
         c.retain(|slot| slot.split_once(':').is_none_or(|(_, n)| names.contains(n)));
     });
+}
+
+/// The Brushes panel's remembered view: the group it is paging (`Preferences::brush_panel`).
+fn remembered_group(app: &PhotocraftApp) -> serde_json::Value {
+    json!({ "group": app.ui.brushes_panel.group })
+}
+
+/// Remember the group the panel pages in the preferences once the user lets go of the pointer,
+/// so the next launch opens there. The selected brush's name is `last_brush`'s `preset`, and the
+/// panel opens on that preset's group when the saved one is gone.
+pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if ctx.input(|i| i.pointer.any_down()) {
+        return;
+    }
+    let now = remembered_group(app);
+    if app.session.prefs().brush_panel != now {
+        app.session.prefs.edit(|p| p.brush_panel = now);
+    }
+}
+
+/// Restore the group the panel was paging at launch. A missing or empty name leaves the default,
+/// which opens on the selected preset's group.
+pub fn restore(app: &mut PhotocraftApp) {
+    let saved = app.session.prefs().brush_panel.clone();
+    if let Some(g) = saved.get("group").and_then(serde_json::Value::as_str) {
+        app.ui.brushes_panel.group = g.to_string();
+    }
 }
 
 #[cfg(test)]

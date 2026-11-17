@@ -1193,12 +1193,63 @@ impl ColorPattern {
         if center[3] <= 0.0001 {
             return center;
         }
+        let (w, h) = (self.width as usize, self.height as usize);
+        let pixels = &self.pixels;
+        if pixels.len() < w * h {
+            return center;
+        }
+        let (hx, hy) = (self.width as f32 * 0.5, self.height as f32 * 0.5);
+        // Work in texture space. The center is in range (its alpha was positive), so the four
+        // cross taps are exactly one texel away: they share its fractional coordinates and only
+        // differ in index, which makes one clamped 4×4 neighbourhood enough for all five of them.
+        let px = x + hx - 0.5;
+        let py = y + hy - 0.5;
+        let base_x = (px.max(0.0)).floor();
+        let base_y = (py.max(0.0)).floor();
+        let (ix, iy) = (base_x as usize, base_y as usize);
+        if ix >= w || iy >= h {
+            return center;
+        }
+        let mut block = [[0.0f32; 4]; 16];
+        for by in 0..4usize {
+            let row = (iy + by).saturating_sub(1).min(h - 1);
+            for bx in 0..4usize {
+                let col = (ix + bx).saturating_sub(1).min(w - 1);
+                block[by * 4 + bx] = pixels[row * w + col];
+            }
+        }
+        // `sample` clamps each tap to `[0, dim - 1]` after ``-0.5 .. dim - 0.5`` bounds test and
+        // samples bilinearly between texels; index the neighbourhood the same way.
+        let tap = |tx: f32, ty: f32| -> Option<[f32; 4]> {
+            if tx >= w as f32 - 0.5 || ty >= h as f32 - 0.5 {
+                return None;
+            }
+            let (tx0, ty0) = (tx.floor(), ty.floor());
+            let (fx0, fy0) = (tx - tx0, ty - ty0);
+            let (ix0, iy0) = (tx0 as usize, ty0 as usize);
+            // Block index of texel (r, c) is `(r - iy + 1) * 4 + (c - ix + 1)`; the taps sit at
+            // most one texel away, so every neighbour below stays inside the block.
+            let (bx, by) = (ix0 + 1 - ix, iy0 + 1 - iy);
+            if bx > 2 || by > 2 {
+                return None;
+            }
+            let a = block[by * 4 + bx];
+            let b = block[by * 4 + bx + 1];
+            let c = block[(by + 1) * 4 + bx];
+            let d = block[(by + 1) * 4 + bx + 1];
+            let mut out = [0.0f32; 4];
+            for i in 0..4 {
+                out[i] = (a[i] + (b[i] - a[i]) * fx0) * (1.0 - fy0) + (c[i] + (d[i] - c[i]) * fx0) * fy0;
+            }
+            Some(out)
+        };
         let mut sum = [center[0] * center[3] * 4.0, center[1] * center[3] * 4.0, center[2] * center[3] * 4.0];
         let mut weight = center[3] * 4.0;
-        let hx = self.width as f32 * 0.5;
-        let hy = self.height as f32 * 0.5;
-        for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
-            let p = self.sample((x + dx).clamp(-hx + 0.5, hx - 0.5), (y + dy).clamp(-hy + 0.5, hy - 0.5));
+        for (dx, dy) in [(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            // Exactly the clamp-then-transform `sample` does, so the taps land on the same texels.
+            let tx = (x + dx).clamp(-hx + 0.5, hx - 0.5) + hx - 0.5;
+            let ty = (y + dy).clamp(-hy + 0.5, hy - 0.5) + hy - 0.5;
+            let Some(p) = tap(tx, ty) else { continue };
             weight += p[3];
             for i in 0..3 {
                 sum[i] += p[i] * p[3];

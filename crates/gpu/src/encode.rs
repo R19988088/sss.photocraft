@@ -184,7 +184,10 @@ impl Compositor {
         // Line art's fields (C3's `ensureLineArtField`): built once for the drawn region and
         // reused while the layers below the adjustment layer stay as they were.
         let changed = if flush { self.prefix.changed() } else { Some(0) };
+        let stage_log = std::env::var_os("PHOTOCRAFT_STAGE_LOG").is_some();
+        let t0 = std::time::Instant::now();
         let (fields, fields_cpu, fields_px) = self.sync_fields(device, queue, doc, &plan, changed);
+        let t_fields = t0.elapsed().as_secs_f64() * 1000.0;
         stats.fields_built += fields;
         stats.fields_cpu += fields_cpu;
         stats.fields_px += fields_px;
@@ -195,6 +198,7 @@ impl Compositor {
                 self.sync_fx(device, queue, encoder, doc, f, (f.layer.id, None), f.region, &mut stats)?;
             }
         }
+        let t_fx = t0.elapsed().as_secs_f64() * 1000.0 - t_fields;
         let fr = self.frame_res(device, queue, canvas, &plan);
 
         // Page cells; every other frame in reverse, so a repeated full refresh of a document
@@ -299,6 +303,17 @@ impl Compositor {
         stats.evicted += self.evict().0;
         self.temps.retain(|(_, used)| frame.saturating_sub(*used) < 240);
         self.evict_patterns();
+        if stage_log {
+            eprintln!(
+                "[encode] region {}x{} cells {} passes {} fx {}: fields {t_fields:.1} ms, fx {t_fx:.1} ms, cells {:.1} ms",
+                region.width(),
+                region.height(),
+                stats.cells,
+                plan.passes.len(),
+                plan.fx.len(),
+                t0.elapsed().as_secs_f64() * 1000.0 - t_fields - t_fx
+            );
+        }
         Ok(stats)
     }
 
