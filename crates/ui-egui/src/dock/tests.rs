@@ -281,29 +281,29 @@ fn the_rail_and_window_menu_never_lose_a_panel() {
 /// Window › Tool Presets is a dock panel beside Brushes (it used to be a floating window), so it
 /// drags, floats and closes like the Brushes panel; template D shows it under Brushes.
 #[test]
-fn tool_presets_docks_below_brushes() {
+fn tool_presets_is_the_second_tab_of_the_brushes_strip() {
     let (mut app, _, _) = app_with_layers();
     app.ui.workspace = crate::workspace_ui::DEFAULT.into();
     crate::menus::apply_workspace(&mut app);
     let mut h = harness(app, vec2(1200.0, 1000.0), ThemeKind::ProMedium);
     h.run_steps(3);
-    let brushes = rect_of(&h, Group::Brushes);
-    let presets = rect_of(&h, Group::ToolPresets);
-    assert!(presets.top() >= brushes.bottom() - 1.0, "Tool Presets below Brushes: {presets:?} vs {brushes:?}");
+    // One strip, two tabs: the reference's Brushes panel with Tool Presets beside it.
+    assert_eq!(Group::Brushes.tabs(true), &["Brushes", "Tool Presets"]);
+    assert!(Group::ToolPresets.tabs(true).is_empty(), "Tool Presets has no strip of its own");
+    let _ = rect_of(&h, Group::Brushes);
+    // The canvas keeps its place in the middle: the strip merge must not drop it (#layout).
+    let canvas = probe::panel_rect(&h.ctx, "canvas").expect("canvas drawn beside the dock");
+    assert!(canvas.width() > 400.0 && canvas.height() > 400.0, "canvas keeps its size: {canvas:?}");
+    assert!(probe::native_group_rect(h.state(), &h.ctx, Group::ToolPresets).is_none(), "no second strip");
+    assert!(probe::panel_rect(&h.ctx, "brushes").is_some(), "the brush options draw first");
+    // Selecting the second tab swaps the body in the same strip.
+    h.state_mut().ui.dock_tabs.brushes = 1;
+    h.run_steps(3);
     assert!(
         crate::panel_docking::last_bodies(&h.ctx).iter().any(|(id, _)| id == "toolPresets"),
-        "the tool preset list draws as a dock body"
+        "the tool preset list draws as the second tab"
     );
-    // The Window item toggles the group, not a floating window.
-    let ctx = h.ctx.clone();
-    crate::menus::invoke(h.state_mut(), &ctx, "window.panel.toolPresets", json!({})).unwrap();
-    h.run_steps(3);
-    assert!(!h.state().ui.panels.tool_presets);
-    assert!(probe::native_group_rect(h.state(), &h.ctx, Group::ToolPresets).is_none());
-    crate::menus::invoke(h.state_mut(), &ctx, "window.toggle.toolPresets", json!({})).unwrap();
-    h.run_steps(3);
-    assert!(h.state().ui.panels.tool_presets);
-    assert!(probe::native_group_rect(h.state(), &h.ctx, Group::ToolPresets).is_some());
+    assert!(probe::panel_rect(&h.ctx, "brushes").is_none(), "the brush options gave way to the presets");
 }
 
 /// #129: clicking around the whole UI (layers, canvas, tools, options bar) never switches,

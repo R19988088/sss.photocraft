@@ -120,7 +120,8 @@ impl Group {
             Group::History => &["History", "Actions", "Layer Comps"],
             Group::Layers => &["Layers", "Channels", "Paths"],
             Group::Brushes => &["Brushes", "Tool Presets"],
-            Group::ToolPresets => &["Tool Presets"],
+            // Merged into the Brushes strip above: this group has no strip of its own any more.
+            Group::ToolPresets => &[],
         }
     }
 

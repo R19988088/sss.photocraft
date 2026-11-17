@@ -41,10 +41,10 @@ const PANELS: &[(&str, &str, Group)] = &[
     ("channels", "Channels", Group::Layers),
     ("paths", "Paths", Group::Layers),
     ("brushes", "Brushes", Group::Brushes),
-    // Tool Presets shares the Brushes tab strip (one small panel, two tabs), so it keeps its own
-    // panel id with the same label.
-    ("toolPresetsInBrushes", "Tool Presets", Group::Brushes),
-    ("toolPresets", "Tool Presets", Group::ToolPresets),
+    // Tool Presets is the second tab of the Brushes strip (one small panel, two tabs). It keeps
+    // its own panel id but belongs to the Brushes group, so the layout never holds the same
+    // panel twice and the "Tool Presets" label still resolves to this one panel.
+    ("toolPresets", "Tool Presets", Group::Brushes),
 ];
 
 /// PhotoCraft's wording of craft-ui's docking labels, translated through `tl!`. The others keep
