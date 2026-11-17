@@ -308,13 +308,9 @@ fn restore_group_tools(app: &mut PhotocraftApp) {
 /// Restore the selected tool before the first frame and its options field by field.
 pub fn restore(app: &mut PhotocraftApp) {
     restore_group_tools(app);
-    let saved = app.session.prefs().selected_tool.clone();
-    if !saved.is_null() {
-        match serde_json::from_value::<Tool>(saved) {
-            Ok(tool) => app.ui.tool = tool,
-            Err(err) => log::warn!("Preferences: ignoring the remembered selected tool: {err}"),
-        }
-    }
+    // A launch always starts on the Brush: the remembered tool keeps its brush and options, but
+    // it does not decide where the session begins.
+    app.ui.tool = Tool::Brush;
     // Here rather than on the first frame, so a launch alone has nothing to save.
     app.ui.remember_group_tool(app.ui.tool);
     app.prefs_rt.selected_tool = Some(app.ui.tool);
