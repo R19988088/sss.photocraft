@@ -86,7 +86,10 @@ pub fn remember_main_window() {
 /// not take (it can be gone between the lookup and the call).
 ///
 /// The windows keep `NSNormalWindowLevel`, so another application in front still covers them.
-pub fn keep_document_windows_above_main() {
+///
+/// `_ids` are the open document windows' ids (`Services::window_order`), unused here: AppKit's
+/// window list already says which of its windows are document windows.
+pub fn keep_document_windows_above_main(_ids: &[u64]) {
     let main = MAIN_WINDOW.load(Ordering::Relaxed);
     if main == 0 {
         return;

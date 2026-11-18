@@ -286,9 +286,18 @@ scroll.interact_background_opacity = 0.0;
 
 用户要求：拖动文档标签撕成浮窗后，浮窗要激活到前台，但**只在应用内部**，不能挡住其他软件。
 
-- 实现：`crates/ui-egui/src/canvas/tabs.rs::extra_windows`，窗口获得焦点或正在被拖动时
+- 激活（`crates/ui-egui/src/canvas/tabs.rs::extra_windows`）：窗口获得焦点或正在被拖动时
   发送 `ViewportCommand::Focus`，并 `session.set_active(w.document)`。
-- **明确不使用** `WindowLevel::AlwaysOnTop`：那会让窗口压在其他应用之上。
+- 保持在主窗之上（`Services::window_order`，每帧带一份打开文档的 id 列表）：
+  - macOS：`apps/photocraft/src/mac_window.rs`，浮窗作为主窗的 AppKit **child window**
+    （`addChildWindow:ordered:`，`crates/winorder` 包装），窗口级别仍是 `NSNormalWindowLevel`。
+  - Windows：`apps/photocraft/src/win_window.rs`，浮窗作为主窗的**属主窗口（owner window）**
+    （`SetWindowLongPtrW(GWLP_HWNDPARENT, 主窗)`）。属主窗口恒在其 owner 之上、同属一个窗口
+    组，别的应用一激活整组一起沉下去；只在文档窗口集合变化时跑一次，不做逐帧 z-order 补偿。
+    附带效果：浮窗不再单独占任务栏 / Alt+Tab 项，主窗最小化时随主窗隐藏（与 mac 子窗一致）。
+  - 找浮窗用 `EnumWindows` + 标题匹配 `"{name} — window {id}"`；**标题必须在枚举结束后读**：
+    `GetWindowText` 会同步发 `WM_GETTEXT`，在 `EnumWindows` 回调里重入窗口过程会把进程卡死。
+- **明确不使用** `WindowLevel::AlwaysOnTop` / `WS_EX_TOPMOST`：那会让窗口压在其他应用之上。
 
 ### 8.5 透明小标题与文档拖拽
 

@@ -73,6 +73,8 @@ mod startup_report;
 mod tablet;
 mod ui_state;
 mod updates;
+#[cfg(target_os = "windows")]
+mod win_window;
 mod window_frame;
 
 use photocraft_engine::Session;
@@ -534,6 +536,10 @@ fn main() -> eframe::Result {
             // above it (mac_window.rs).
             #[cfg(target_os = "macos")]
             mac_window::remember_main_window();
+            // Taken while the main window is the app's only window: the floating document windows
+            // become its owned windows for as long as they live (win_window.rs).
+            #[cfg(target_os = "windows")]
+            win_window::remember_main_window(&cc);
             // Long commands and file opens run as background jobs with progress and Cancel (#210).
             app.background_jobs = std::env::var_os("PHOTOCRAFT_INLINE_JOBS").is_none();
             // Displays and their profiles (#569): wait briefly so the first frames already use
@@ -651,6 +657,13 @@ fn main() -> eframe::Result {
             }
             #[cfg(not(target_os = "macos"))]
             let _ = in_window_menus;
+            #[cfg(target_os = "windows")]
+            {
+                // The floating document windows are owned by the main window, which Windows then
+                // keeps them above — within the app only: another application still covers them
+                // (win_window.rs).
+                app.services.window_order = Some(win_window::keep_document_windows_above_main);
+            }
             // Files from later launches (Explorer, file managers) open here as new tabs.
             #[cfg(not(target_os = "macos"))]
             if let Some(primary) = single_instance {

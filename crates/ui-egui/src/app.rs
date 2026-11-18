@@ -251,11 +251,13 @@ impl eframe::App for PhotocraftApp {
         // A floating document window is the app's own OS window, not a panel: clicking the main
         // window orders it in front of the document, which then slides behind the app it belongs
         // to. Put it back above the main window, on this platform only (macOS `window_order`;
-        // the window stays a normal one, so other applications still cover it).
-        if !self.ui.windows.is_empty()
-            && let Some(window_order) = self.services.window_order
+        // the window stays a normal one, so other applications still cover it). The ids are the
+        // windows `canvas::tabs` `extra_windows` draws this frame.
+        if let Some(window_order) = self.services.window_order
+            && !self.ui.windows.is_empty()
         {
-            window_order();
+            let ids: Vec<u64> = self.ui.windows.iter().filter(|w| w.open).map(|w| w.id).collect();
+            window_order(&ids);
         }
         self.logic_frame(ctx, frame);
         self.finish_type_reset_logic(ctx);

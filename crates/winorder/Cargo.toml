@@ -1,15 +1,19 @@
 [package]
 name = "photocraft-winorder"
-description = "AppKit child windows, behind a safe API"
+description = "Child (macOS) and owned (Windows) windows, behind a safe API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# Objective-C interop needs `unsafe`, which the workspace forbids: the calls live here, behind a
-# safe API taking window numbers. Deliberately no `[lints] workspace = true`, like
-# `photocraft-tablet`, the other crate that reaches into AppKit.
+# Objective-C / Win32 interop needs `unsafe`, which the workspace forbids: the calls live here, behind
+# a safe API taking window numbers. Deliberately no `[lints] workspace = true`, like
+# `photocraft-tablet`, the other crate that reaches into AppKit / Win32.
 [target.'cfg(target_os = "macos")'.dependencies]
 # Already in Cargo.lock (winit, photocraft-tablet); pinned exactly to the same versions.
 objc2 = "=0.6.5"
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSGraphics", "NSWindow"] }
+
+# Already in Cargo.lock (apps/photocraft); pinned exactly to the same version.
+[target.'cfg(target_os = "windows")'.dependencies]
+winsafe = { version = "=0.0.29", default-features = false, features = ["user"] }
