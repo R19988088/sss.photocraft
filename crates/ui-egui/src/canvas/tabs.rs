@@ -870,6 +870,7 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut view = extra_window_view(&w, live);
         let mut close = false;
         let mut focused = false;
+        let mut keys: Option<(Vec<egui::Event>, egui::Modifiers)> = None;
         ctx.show_viewport_immediate(vid, builder, |ui, class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 close = true;
@@ -877,6 +878,17 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             focused = ui.ctx().input(|i| i.viewport().focused == Some(true));
             if focused && !w.focused && app.session.active_index() != Some(w.document) {
                 app.session.set_active(w.document);
+            }
+            // The View › zoom keys (Ctrl+=, Ctrl+-, Ctrl+0, Ctrl+1) and the rest of the keyboard
+            // typed into this window's viewport are handed to the main window's shortcut pass after
+            // the window has drawn (see below): its viewport gets the key events and the main
+            // window's own pass never sees them. `command_view_mut` then keeps a zoom on this
+            // window's own camera, so mark it focused here — the same frame it gains focus.
+            if focused {
+                if let Some(win) = app.ui.windows.iter_mut().find(|x| x.id == w.id) {
+                    win.focused = true;
+                }
+                keys = Some(ui.ctx().input(|i| (i.events.clone(), i.modifiers)));
             }
             // No z-order work here. Clicking a document window's title bar or canvases activates it,
             // and the window manager raises an active window over the others on its own (the
@@ -899,6 +911,22 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             win.focused = focused;
             if close {
                 win.open = false;
+            }
+        }
+        // Keys typed into this window (Ctrl+= to zoom, Ctrl+Z, tool keys…) run through the main
+        // window's shortcut pass, the way a floating panel's keys do: a document window's viewport
+        // owns its key events, so the main window's pass never saw them and the View › zoom
+        // shortcuts did nothing in a floating window. The window is marked focused above, so
+        // `command_view_mut` sends the view commands to it rather than to the main canvas.
+        if let Some((events, modifiers)) = keys {
+            // Keys and clipboard events only: the window's pointer events are its canvas's, and are
+            // already handled where they happened.
+            let events: Vec<egui::Event> = events
+                .into_iter()
+                .filter(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)))
+                .collect();
+            if !events.is_empty() {
+                crate::shortcuts::handle_forwarded(app, ctx, events, modifiers);
             }
         }
     }
