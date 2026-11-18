@@ -111,6 +111,8 @@ pub(crate) use tabs::tab_title_at;
 #[cfg(test)]
 use tabs::{TEAR_OFF, pro_tab_title, tab_context_items, tab_drop_index, tab_move_target, tabs, torn_off};
 pub use tabs::{TabStrip, document_area, extra_windows};
+#[cfg(test)]
+pub(crate) use tabs::extra_window_view;
 use tabs::{dots, paint_dots};
 #[cfg(test)]
 use tabs::{main_canvas_document, move_target_after_filter};
@@ -1874,6 +1876,8 @@ struct CanvasTailInput<'a> {
     bars_id: egui::Id,
     layer_edges: egui::layers::ShapeIdx,
     camera: Option<([f32; 2], f32)>,
+    /// This canvas owns `app.ui.views[idx]`; a document window's canvas keeps its own `DocWindow::view`.
+    owns_doc_view: bool,
 }
 
 fn finish_canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut View, input: &CanvasTailInput<'_>) {
@@ -1893,6 +1897,7 @@ fn finish_canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut Vie
     let bars_id = input.bars_id;
     let layer_edges = input.layer_edges;
     let camera = input.camera;
+    let owns_doc_view = input.owns_doc_view;
     app.tool_override = None;
     if let Some(b) = layer_edges_rect(app, idx) {
         painter.set(layer_edges, egui::Shape::rect_stroke(xf.doc_rect(b), 0, Stroke::new(1.0, LAYER_EDGES), egui::StrokeKind::Outside));
@@ -1944,7 +1949,7 @@ fn finish_canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut Vie
         crate::rulers::draw_guide_drag_readout(app, ctx);
     }
     crate::rotate_view::overlay(app, ctx, painter, &xf, view, response);
-    if primary {
+    if owns_doc_view {
         // Tool input can change the stored camera while navigation edits the local view.
         // Merge changed camera values so write-back preserves tool-driven pan and rotation.
         if let (Some((center, rotation)), Some(now)) = (camera, app.ui.views.get(idx)) {
@@ -2031,11 +2036,17 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     if primary {
         app.frame_tool_ctx = Some(ctx.clone());
     }
+    // Which canvas keeps the document's camera (`app.ui.views[idx]`) is the main window's, the one
+    // with no document window drawing (`drawing_window`). Every document window has its own camera
+    // of its own (`DocWindow::view`): zooming, turning or fitting one window never moves another,
+    // and a window opened beside the main canvas keeps the zoom it was opened with instead of
+    // writing its own back over the document (#multi-window).
+    let owns_doc_view = app.drawing_window.is_none();
     // The camera as the app holds it before this frame's input. The canvas works on its own copy
     // (`view`) and writes it back at the end; a tool that moves the camera itself meanwhile (the
     // Crop tool's default mode pans and turns the view with the image, `crop_mode`) must not be
     // undone by that write-back.
-    let camera = if primary { app.ui.views.get(idx).map(|v| (v.center, v.rotation)) } else { None };
+    let camera = if owns_doc_view { app.ui.views.get(idx).map(|v| (v.center, v.rotation)) } else { None };
     // `View::zoom` is device pixels per document pixel; this canvas's geometry is in its own
     // viewport's egui points. A document window can sit on another display with a different
     // scale, so only the primary canvas records `app.ppp` for the frame's shared helpers
@@ -2093,7 +2104,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let target_xf = ViewXform { rect, zoom: view.zoom / ppp, center: view.center, flip, rotation: view.rotation, aspect };
     let render_zoom = view.zoom;
     let mut display_view = animated_view(&mut view, target_xf, ppp, app.session.prefs().general.animated_zoom, ctx.input(|i| i.time));
-    if primary && let Some(stored) = app.ui.views.get_mut(idx) {
+    if owns_doc_view && let Some(stored) = app.ui.views.get_mut(idx) {
         stored.zoom_animating = view.zoom_animating;
         stored.display_camera = view.display_camera;
     }
@@ -2389,6 +2400,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         bars_id,
         layer_edges,
         camera,
+        owns_doc_view,
     };
     finish_canvas_view(app, ui, &mut view, &tail);
     view

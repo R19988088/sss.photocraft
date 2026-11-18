@@ -424,10 +424,13 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
             let size = app.session.active().map_or([0, 0], |d| [d.doc.size.width, d.doc.size.height]);
             let screen = app.session.prefs().units_and_rulers.screen_resolution.max(1.0) as f32;
             let z = if id == "view.twoHundredPercent" { 2.0 } else { screen / dpi };
-            app.ui.views[i].zoom = crate::zoom_levels::clamp(z, size);
-            app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-            app.ui.views[i].zoom_anchor = None;
-            Ok(json!({"zoom": app.ui.views[i].zoom}))
+            let animated_zoom = app.session.prefs().general.animated_zoom;
+            // The focused document window's own camera, as with the other view commands.
+            let v = app.command_view_mut(i).ok_or("no document view")?;
+            v.zoom = crate::zoom_levels::clamp(z, size);
+            v.request_zoom_animation(animated_zoom);
+            v.zoom_anchor = None;
+            Ok(json!({"zoom": v.zoom}))
         }
         "view.fitLayersOnScreen" => fit_layers(app),
         "view.fitArtboardOnScreen" => crate::artboard_ui::fit_artboard(app),

@@ -792,27 +792,29 @@ impl ViewSet {
 
     fn apply(&self, app: &mut PhotocraftApp) {
         let Some(i) = app.session.active_index() else { return };
+        let size = app.session.documents().get(i).map_or([0, 0], |st| [st.doc.size.width, st.doc.size.height]);
+        // Automation drives the window the user is in, like a View menu command.
+        let Some(v) = app.command_view_mut(i) else { return };
         if self.zoom.is_some() || self.center.is_some() || self.rotation.is_some() || self.fit {
-            app.ui.views[i].zoom_animating = false;
-            app.ui.views[i].zoom_anchor = None;
+            v.zoom_animating = false;
+            v.zoom_anchor = None;
         }
         if let Some(z) = self.zoom {
-            let size = app.session.documents().get(i).map_or([0, 0], |st| [st.doc.size.width, st.doc.size.height]);
-            app.ui.views[i].zoom = crate::zoom_levels::clamp(z as f32, size);
-            app.ui.views[i].fit_pending = false;
-            app.ui.views[i].fill_pending = false;
+            v.zoom = crate::zoom_levels::clamp(z as f32, size);
+            v.fit_pending = false;
+            v.fill_pending = false;
         }
         if let Some(c) = self.center {
-            app.ui.views[i].center = c;
-            app.ui.views[i].fit_pending = false;
-            app.ui.views[i].fill_pending = false;
+            v.center = c;
+            v.fit_pending = false;
+            v.fill_pending = false;
         }
         if self.fit {
-            app.ui.views[i].fit_pending = true;
-            app.ui.views[i].fill_pending = false;
+            v.fit_pending = true;
+            v.fill_pending = false;
         }
         if let Some(r) = self.rotation {
-            app.ui.views[i].rotation = crate::rotate_view::wrap_deg(r as f32);
+            v.rotation = crate::rotate_view::wrap_deg(r as f32);
         }
     }
 }

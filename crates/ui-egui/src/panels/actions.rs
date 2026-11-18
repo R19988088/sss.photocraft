@@ -595,27 +595,29 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
 pub(crate) fn run_view(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, String> {
     app.sync_views();
     let i = app.session.active_index().ok_or("no document")?;
-    let v = app.ui.views.get_mut(i).ok_or("no document view")?;
+    let animated_zoom = app.session.prefs().general.animated_zoom;
+    // The camera of the window the user is in: a document window zooms and fits its own view.
+    let v = app.command_view_mut(i).ok_or("no document view")?;
     v.fill_pending = false;
     match id {
         "view.fitOnScreen" => {
             v.fit_pending = true;
-            v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+            v.request_zoom_animation(animated_zoom);
         }
         "view.zoomIn" => {
             v.fit_pending = false;
             v.zoom = crate::zoom_levels::step(v.zoom, 1, v.doc_size);
-            v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+            v.request_zoom_animation(animated_zoom);
         }
         "view.zoomOut" => {
             v.fit_pending = false;
             v.zoom = crate::zoom_levels::step(v.zoom, -1, v.doc_size);
-            v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+            v.request_zoom_animation(animated_zoom);
         }
         "view.actualPixels" => {
             v.fit_pending = false;
             v.zoom = 1.0;
-            v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+            v.request_zoom_animation(animated_zoom);
         }
         _ => return Err(format!("unsupported view command: {id}")),
     }

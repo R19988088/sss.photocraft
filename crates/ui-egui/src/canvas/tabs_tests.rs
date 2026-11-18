@@ -10,7 +10,41 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::theme::ThemeKind;
 
-use super::{TabStrip, pro_tab_title};
+use super::{TabStrip, extra_window_view, pro_tab_title};
+
+/// Every document window keeps its own camera (Window › Arrange › New Window and Float in Window
+/// alike): zooming the main canvas neither changes a window that was opened at another zoom nor is
+/// the window's own zoom written back over the document's view when it is clicked. View commands act
+/// on the focused window's camera.
+#[test]
+fn a_document_window_keeps_its_own_camera() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+    app.sync_views();
+    app.ui.views[0].zoom = 6.0;
+    let window = |floating: bool, zoom: f32| crate::state::DocWindow {
+        id: 1,
+        document: 0,
+        view: crate::state::View { zoom, ..app.ui.views[0].clone() },
+        open: true,
+        floating,
+        focused: false,
+        position: None,
+    };
+    let beside = window(false, 3.0);
+    assert_eq!(extra_window_view(&beside, None).zoom, 3.0, "the window's own camera, not the 600% on the main canvas");
+    let floating = window(true, 3.0);
+    assert_eq!(extra_window_view(&floating, None).zoom, 3.0, "a floating window owns its view");
+    // The live copy in `ui.windows` (Scroll All Windows may have moved it since `wins` was taken) is
+    // where a window's own view comes from.
+    let moved = window(true, 7.0);
+    assert_eq!(extra_window_view(&floating, Some(&moved)).zoom, 7.0);
+    // View commands go to the focused window's camera, never to the document's view on the main canvas.
+    app.ui.windows.push(crate::state::DocWindow { focused: true, ..window(false, 3.0) });
+    app.run("view.zoomIn", json!({})).unwrap();
+    assert_eq!(app.ui.views[0].zoom, 6.0, "the main canvas keeps its zoom");
+    assert!(app.ui.windows[0].view.zoom > 3.0, "the focused window zooms: {}", app.ui.windows[0].view.zoom);
+}
 
 /// A real app window with `docs` documents named "ch1-pNN.png".
 fn harness(docs: usize, theme: ThemeKind) -> Harness<'static, PhotocraftApp> {

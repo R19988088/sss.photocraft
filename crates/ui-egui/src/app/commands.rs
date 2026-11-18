@@ -316,6 +316,27 @@ impl PhotocraftApp {
         }
     }
 
+    /// The camera a view command acts on: the camera of the document window that has focus when
+    /// one shows `doc`, else the document's camera on the main canvas. View commands (Zoom In /
+    /// Zoom Out, Fit on Screen, 100 %, 200 %, Print Size) go through here, so they zoom and fit the
+    /// window the user is working in — each document window has its own camera and never moves
+    /// another's.
+    pub fn command_view_mut(&mut self, doc: usize) -> Option<&mut crate::state::View> {
+        let focused = self.ui.windows.iter().find(|w| w.open && w.focused && w.document == doc).map(|w| w.id);
+        match focused {
+            Some(id) => self.ui.windows.iter_mut().find(|w| w.id == id).map(|w| &mut w.view),
+            None => self.ui.views.get_mut(doc),
+        }
+    }
+
+    /// [`Self::command_view_mut`], read-only.
+    pub fn command_view(&self, doc: usize) -> Option<&crate::state::View> {
+        match self.ui.windows.iter().find(|w| w.open && w.focused && w.document == doc) {
+            Some(w) => Some(&w.view),
+            None => self.ui.views.get(doc),
+        }
+    }
+
     pub fn sync_views(&mut self) {
         // The Paths panel selection belongs to the active document. Ordinary edits replace the
         // snapshot and advance its revision; a replaced snapshot without a newer revision is a

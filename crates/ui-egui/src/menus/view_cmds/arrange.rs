@@ -19,11 +19,13 @@ pub(super) fn fit_layers(app: &mut PhotocraftApp) -> Result<Value, String> {
     // The area is in egui points; the stored zoom is device pixels per document pixel.
     let ppp = app.canvas_ppp();
     let points = ((area.x - 40.0) / b.width().max(1) as f32).min((area.y - 40.0) / b.height().max(1) as f32);
-    let v = &mut app.ui.views[i];
+    // The focused document window's own camera, as with the other view commands.
+    let animated_zoom = app.session.prefs().general.animated_zoom;
+    let v = app.command_view_mut(i).ok_or("no document")?;
     v.zoom = crate::zoom_levels::clamp(points * ppp, size);
     v.center = [(b.x0 + b.x1) as f32 / 2.0, (b.y0 + b.y1) as f32 / 2.0];
     v.fit_pending = false;
-    v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+    v.request_zoom_animation(animated_zoom);
     v.zoom_anchor = None;
     Ok(json!({"zoom": v.zoom, "bounds": [b.x0, b.y0, b.x1, b.y1]}))
 }
@@ -38,7 +40,9 @@ fn screen_position(v: &Value) -> Option<[f32; 2]> {
 
 pub(crate) fn float_window(app: &mut PhotocraftApp, doc: usize, offset: usize, floating: bool) -> u64 {
     let wid = app.ui.alloc_id();
-    let mut view = app.ui.views.get(doc).cloned().unwrap_or_default();
+    // The new window starts from the camera the user is looking at: the focused window's own when
+    // one shows this document, else the main canvas's.
+    let mut view = app.command_view(doc).cloned().unwrap_or_default();
     view.zoom_animating = false;
     view.zoom_anchor = None;
     view.zoom_transition = None;
@@ -105,7 +109,8 @@ pub(super) fn arrange(app: &mut PhotocraftApp, k: &str, p: &Value) -> Result<Val
         }
         "matchZoom" | "matchLocation" | "matchRotation" | "matchAll" => {
             let i = app.session.active_index().ok_or("no document")?;
-            let src = app.ui.views.get(i).cloned().ok_or("no document")?;
+            // Match commands copy the camera of the window the user is in.
+            let src = app.command_view(i).cloned().ok_or("no document")?;
             let (zoom, loc, rot) =
                 (matches!(k, "matchZoom" | "matchAll"), matches!(k, "matchLocation" | "matchAll"), matches!(k, "matchRotation" | "matchAll"));
             let animated_zoom = app.session.prefs().general.animated_zoom;

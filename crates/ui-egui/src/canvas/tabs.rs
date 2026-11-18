@@ -840,6 +840,19 @@ pub(super) fn open_on_double_click(app: &mut PhotocraftApp, ui: &egui::Ui, area:
     }
 }
 
+/// The camera an extra window draws its document with: its own.
+///
+/// Every document window has its own camera (`DocWindow::view`), the way Photoshop's document
+/// windows each have their own zoom and rotation: zooming, turning or fitting one window leaves
+/// every other one alone, whether the document is also shown on the main canvas (Window › Arrange
+/// › New Window) or floats on its own. The window's copy is never written back over the
+/// document's camera on the main canvas, so opening a window cannot put a stale zoom there.
+/// View commands (View › Zoom In, Fit on Screen, 100 %) act on the focused window's camera
+/// ([`crate::PhotocraftApp::command_view_mut`]).
+pub(crate) fn extra_window_view(w: &crate::state::DocWindow, live: Option<&crate::state::DocWindow>) -> crate::state::View {
+    live.unwrap_or(w).view.clone()
+}
+
 /// Extra OS windows showing documents (multi-window / multi-monitor).
 pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let wins = app.ui.windows.clone();
@@ -853,13 +866,10 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         // Read the window's view from `app.ui.windows`, not from `wins`: a Scroll All Windows drag in a
         // window drawn earlier in this loop may have moved it since `wins` was taken.
-        let mut view = app.ui.windows.iter().find(|x| x.id == w.id).map_or_else(|| w.view.clone(), |x| x.view.clone());
+        let live = app.ui.windows.iter().find(|x| x.id == w.id);
+        let mut view = extra_window_view(&w, live);
         let mut close = false;
         let mut focused = false;
-        // A floating window that just became the active document is raised within the app: the
-        // re-stepping of every other window's z-order brings the dragged one forward. It is not
-        // `AlwaysOnTop` — that would cover other applications too.
-        let mut raise = false;
         ctx.show_viewport_immediate(vid, builder, |ui, class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 close = true;
@@ -867,22 +877,20 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             focused = ui.ctx().input(|i| i.viewport().focused == Some(true));
             if focused && !w.focused && app.session.active_index() != Some(w.document) {
                 app.session.set_active(w.document);
-                raise = true;
             }
-            // Dragging this floating window brings it to the front of the app's windows.
-            if focused && w.floating && ui.ctx().input(|i| i.pointer.any_down()) {
-                raise = true;
-            }
-            if raise {
-                ui.ctx().send_viewport_cmd_to(vid, egui::ViewportCommand::Focus);
-                raise = false;
-            }
+            // No z-order work here. Clicking a document window's title bar or canvases activates it,
+            // and the window manager raises an active window over the others on its own (the
+            // floating windows are owner windows of the main one on Windows, `win_window.rs`, and
+            // child windows of it on macOS). Asking for `ViewportCommand::Focus` again on every
+            // frame of a drag — the window is already focused — re-ran the activation each frame
+            // and the window behind kept redrawing its frame: the edge that flickered.
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(crate::theme::Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 app.drawing_window = Some(w.id);
                 view = canvas_view(app, ui, w.document, rect, view.clone(), focused);
                 app.drawing_window = None;
-                // Preferences › Zoom Resizes Windows: a zoom wraps the window around the image.
+                // Preferences › Zoom Resizes Windows: a zoom wraps the window around the image. Each
+                // document window owns its own camera now, so this applies to every one of them.
                 crate::zoom_window_fit::follow(app, ui.ctx(), class, vid, &w, &mut view, rect);
             });
         });
