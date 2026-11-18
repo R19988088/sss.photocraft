@@ -38,15 +38,81 @@ fn compass_id() -> egui::Id {
 }
 
 /// A held-key navigation session (C3 `CanvasMacInputView.beginShift`/`updateShift`, driven by a
-/// held key plus the primary pointer instead of Shift).
+/// held key plus the primary pointer instead of Shift). It is incremental: every frame applies
+/// the pen's travel of that frame, so the gesture can reverse and switch direction as often as
+/// the hand does, without lifting.
 #[derive(Clone, Copy)]
 struct HeldKeyNav {
-    start: Pos2,
+    /// The screen point the pen went down on: the one point the zoom and the turn act about.
+    anchor: Pos2,
+    /// The document point under `anchor` at the press; it stays under it for the whole gesture.
+    doc: [f64; 2],
     xf: ViewXform,
-    zoom: f32,
-    /// `Some(true)` vertical (zoom), `Some(false)` horizontal (rotate), `None` until the
-    /// pointer has moved far enough to tell which.
-    mode: Option<bool>,
+    /// Where the last applied travel ended; travel below the jitter floor accumulates here
+    /// instead of being dropped, so a slow drag still moves the view.
+    last: Pos2,
+    /// `Some(true)` vertical (zoom), `Some(false)` horizontal (turn), `None` before any travel.
+    /// The axis changes only when the other one clearly dominates, so a drag at a slant keeps
+    /// one reading instead of flickering between the two.
+    axis: Option<bool>,
+}
+
+/// Degrees the view turns per screen point dragged sideways.
+pub const DRAG_DEG_PER_PX: f32 = 0.5;
+/// Screen points of upward travel that double the zoom, as the Zoom tool's scrubby zoom does.
+pub const ZOOM_DOUBLING_PX: f32 = 100.0;
+/// Screen points the travel must reach before it counts: a pen's own jitter never zooms.
+pub const JITTER_PX: f32 = 2.0;
+/// How much the other axis must beat the current one before the gesture switches direction.
+pub const AXIS_FLIP_RATIO: f32 = 1.4;
+
+fn active_id(id: egui::Id) -> egui::Id {
+    id.with("nav-active")
+}
+
+/// The canvas's navigation mode, which a held Escape turns on: `on` for the whole hold,
+/// `since` when this hold began, `used` once a press drove a gesture (so its release is not
+/// mistaken for a plain tap).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NavState {
+    pub on: bool,
+    pub since: f64,
+    pub used: bool,
+}
+
+/// How long an Escape hold may last and still count as the plain tap that uprights the view.
+pub const TAP_SECONDS: f64 = 0.5;
+
+pub(crate) fn nav_state(ctx: &egui::Context, id: egui::Id) -> NavState {
+    ctx.data(|d| d.get_temp::<NavState>(active_id(id))).unwrap_or_default()
+}
+
+/// Turn the mode on or off. Turning it off forgets the `used` mark, so the next hold starts
+/// fresh; turning it on stamps the hold's start.
+pub(crate) fn set_nav_on(ctx: &egui::Context, id: egui::Id, on: bool) {
+    let mut s = nav_state(ctx, id);
+    let now = ctx.input(|i| i.time);
+    if on && !s.on {
+        s.since = now;
+    }
+    if !on {
+        s.used = false;
+    }
+    s.on = on;
+    ctx.data_mut(|d| d.insert_temp::<NavState>(active_id(id), s));
+}
+
+fn mark_used(ctx: &egui::Context, id: egui::Id) {
+    let s = nav_state(ctx, id);
+    if s.on && !s.used {
+        ctx.data_mut(|d| d.insert_temp::<NavState>(active_id(id), NavState { on: true, used: true, since: s.since }));
+    }
+}
+
+/// Is the canvas in its held-key navigation mode? The canvas keeps every tool's buttons off
+/// presses made in that mode, so holding the key and touching the tablet never paints.
+pub(crate) fn navigating(ctx: &egui::Context, id: egui::Id) -> bool {
+    nav_state(ctx, id).on
 }
 
 /// Forget a held-key navigation session (pointer released, or the key was let go).
@@ -54,44 +120,86 @@ pub(crate) fn reset_held_nav(ctx: &egui::Context, id: egui::Id) {
     ctx.data_mut(|d| d.remove::<HeldKeyNav>(id));
 }
 
-/// Drag with a held key: mostly vertical drags zoom, mostly horizontal drags rotate the view.
-/// The first 10 px of travel decide the mode, so a hand that wobbles a little still reads one
-/// gesture. `active` is false on release or when the key is up, which ends the session.
-pub(crate) fn held_key_navigation(ctx: &egui::Context, id: egui::Id, view: &mut View, xf: &ViewXform, active: bool, ppp: f32) {
-    let pointer = ctx.input(|i| i.pointer.hover_pos());
-    let Some(p) = pointer.filter(|_| active) else {
+/// Drag in the held-key mode. Vertical travel zooms (up is in), horizontal travel turns the view,
+/// and the two never act at once: each move is one axis or the other. The axis is read again as
+/// the hand moves (the other one takes over once it clearly dominates), and every move applies
+/// immediately, so one press can zoom in, zoom back out, turn one way and back, as often as
+/// needed, without lifting — and the next press starts a fresh gesture about its own point.
+/// `press_here` is false for a press that began off the canvas or that an open tool drag owns.
+pub(crate) fn held_key_navigation(
+    ctx: &egui::Context,
+    id: egui::Id,
+    view: &mut View,
+    xf: &ViewXform,
+    active: bool,
+    press_here: bool,
+    ppp: f32,
+) {
+    if !active {
         reset_held_nav(ctx, id);
         return;
+    }
+    // `latest_pos`, not `hover_pos`: a drag that leaves the canvas (or the window) keeps going.
+    let Some(p) = ctx.input(|i| i.pointer.latest_pos()) else {
+        return;
     };
-    let start = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
-    let mut session =
-        ctx.data(|d| d.get_temp::<HeldKeyNav>(id)).unwrap_or(HeldKeyNav { start, xf: *xf, zoom: view.zoom, mode: None });
-    let delta = p - session.start;
-    if session.mode.is_none() && delta.length() >= 10.0 {
-        let angle = delta.y.atan2(delta.x).to_degrees();
-        let vertical_distance = wrap_deg(angle - 90.0).abs().min(wrap_deg(angle + 90.0).abs());
-        session.mode = Some(vertical_distance < 35.0);
-    }
-    match session.mode {
-        Some(true) => {
-            // egui's Y points down: dragging up (negative delta.y) zooms in.
-            let zoom = crate::zoom_levels::clamp(session.zoom * (-delta.y * 0.01).clamp(-40.0, 40.0).exp(), view.doc_size);
-            view.rotation = session.xf.rotation;
-            crate::zoom_tool::anchor_view(view, &session.xf, session.start, session.xf.to_doc(session.start), zoom, ppp);
+    let stored = ctx.data(|d| d.get_temp::<HeldKeyNav>(id));
+    let mut session = match stored {
+        Some(s) => s,
+        None => {
+            if !press_here {
+                return;
+            }
+            let anchor = ctx.input(|i| i.pointer.press_origin()).unwrap_or(p);
+            mark_used(ctx, id);
+            let s = HeldKeyNav { anchor, doc: xf.to_doc(anchor), xf: *xf, last: anchor, axis: None };
+            ctx.data_mut(|d| d.insert_temp(id, s));
+            s
         }
-        Some(false) => {
-            let center = session.xf.rect.center();
-            let delta_deg = pointer_deg(p, center) - pointer_deg(session.start, center);
-            view.zoom = session.zoom;
-            view.center = session.xf.center;
-            view.rotation = wrap_deg(session.xf.rotation + screen_delta(delta_deg, session.xf.flip));
+    };
+    // The travel since the last applied move: a pen that lands and holds still moves nothing.
+    let moved = p - session.last;
+    if !(moved.x.is_finite() && moved.y.is_finite()) || moved.length() < JITTER_PX {
+        // Leave `last` where it is, so the next frames' travel adds up instead of being lost.
+        ctx.data_mut(|d| d.insert_temp(id, session));
+        return;
+    }
+    session.last = p;
+    let (up_down, left_right) = (moved.y.abs(), moved.x.abs());
+    // `axis` is "vertical" (zoom). It only gives way to the horizontal one when that one clearly
+    // dominates, so a slightly slanted drag keeps its reading instead of flickering.
+    let vertical = match session.axis {
+        Some(prev) => {
+            let (kept, other) = if prev { (up_down, left_right) } else { (left_right, up_down) };
+            if other > kept * AXIS_FLIP_RATIO {
+                !prev
+            } else {
+                prev
+            }
         }
-        None => {}
-    }
-    if session.mode.is_some() && ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
-        ctx.request_repaint();
-    }
+        None => up_down >= left_right,
+    };
+    session.axis = Some(vertical);
     ctx.data_mut(|d| d.insert_temp(id, session));
+    let turn = !vertical;
+    let (zoom, mut rotation) = if turn {
+        // Dragging right turns the view clockwise on screen (a flipped view mirrors it, so the
+        // image stays under the pen).
+        (view.zoom, wrap_deg(view.rotation + screen_delta(moved.x * DRAG_DEG_PER_PX, session.xf.flip)))
+    } else {
+        // egui's Y points down: dragging up zooms in, dragging back down zooms out.
+        (crate::zoom_levels::clamp(view.zoom * (-moved.y / ZOOM_DOUBLING_PX).exp2(), view.doc_size), view.rotation)
+    };
+    if ctx.input(|i| i.modifiers.shift) {
+        rotation = snap_deg(rotation, SNAP_DEG);
+    }
+    // `anchor_view` puts `doc` back under `anchor` with the new rotation and zoom, so the pen
+    // tip's point is the one that never moves, whichever the gesture changes.
+    let mut turned = session.xf;
+    turned.rotation = rotation;
+    view.rotation = rotation;
+    crate::zoom_tool::anchor_view(view, &turned, session.anchor, session.doc, zoom, ppp);
+    ctx.request_repaint();
 }
 
 /// Wrap `a` degrees into (−180, 180]. Non-finite values become 0 so a hostile angle never

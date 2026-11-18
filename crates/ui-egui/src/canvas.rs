@@ -629,6 +629,41 @@ struct CanvasNavigationInput<'a> {
 }
 
 fn update_canvas_navigation(app: &mut PhotocraftApp, view: &mut View, input: CanvasNavigationInput<'_>) {
+    // Holding Escape puts the canvas in navigation, and that is a mode rather than a press:
+    // while it holds, every press the pen makes on the canvas — however often it leaves the
+    // tablet and comes back, and whichever tool is picked — only zooms (up/down) or turns
+    // (left/right), about the point that press landed on. No tool sees any of it.
+    // It runs on every frame, hovered or not: between two presses the pen is often off the
+    // tablet, and a mode that only refreshed while hovering would keep a stale gesture alive.
+    // Editing text or an open transform dialog still owns the key.
+    {
+        let nav_id = input.response.id.with("escape-navigation");
+        let escape_down = input.ctx.input(|i| i.key_down(egui::Key::Escape));
+        let primary_down = input.ctx.input(|i| i.pointer.primary_down());
+        let modal_ok = !input.ctx.text_edit_focused() && app.ui.transform.is_none();
+        let was = crate::rotate_view::nav_state(input.ctx, nav_id);
+        let nav_on = modal_ok && escape_down;
+        crate::rotate_view::set_nav_on(input.ctx, nav_id, nav_on);
+        let press_here = input.ctx.input(|i| i.pointer.press_origin()).is_some_and(|p| input.xf.rect.contains(p));
+        if nav_on && primary_down {
+            // A press that started on a panel is not the canvas's; one that started before the
+            // key went down belongs to whatever stroke it began.
+            crate::rotate_view::held_key_navigation(input.ctx, nav_id, view, &input.xf, true, press_here && app.drag.is_none(), input.ppp);
+        } else {
+            // The pen is up (or the mode ended): the gesture is over, the mode may still hold.
+            crate::rotate_view::reset_held_nav(input.ctx, nav_id);
+        }
+        // Escape released without ever driving a gesture is still the plain tap that puts the
+        // turned view back upright; a hold that drove a gesture only ends the mode.
+        let now = input.ctx.input(|i| i.time);
+        if input.ctx.input(|i| i.key_released(egui::Key::Escape)) {
+            let tap = !was.used && now - was.since < crate::rotate_view::TAP_SECONDS;
+            if tap && modal_ok && view.rotation != 0.0 && !input.ctx.input(|i| i.modifiers.any()) {
+                view.rotation = 0.0;
+                input.ctx.request_repaint();
+            }
+        }
+    }
     // Navigation (wheel_nav.rs): scroll pans (⇧ or ⌘/Ctrl sideways); pinch and ⌥-scroll zoom around the pointer.
     // The wheel also scrolls over the scrollbars drawn on top of the canvas (last frame's hover).
     let bars_id = egui::Id::unique(("pc-canvas-bars-hover", input.idx));
@@ -690,34 +725,6 @@ fn update_canvas_navigation(app: &mut PhotocraftApp, view: &mut View, input: Can
             let next = view.rotation + crate::rotate_view::screen_delta(delta, input.xf.flip);
             if next.is_finite() {
                 view.rotation = crate::rotate_view::wrap_deg(next);
-            }
-        }
-        // Held Escape over the canvas is the quick navigation gesture: drag up/down to zoom,
-        // left/right to turn the view. A tap of Escape (no drag) still reaches the tool's own
-        // cancel, because this only claims the key while the primary button is down.
-        let nav_id = input.response.id.with("escape-navigation");
-        let escape_down = input.ctx.input(|i| i.key_down(egui::Key::Escape));
-        let dragging = input.response.is_pointer_button_down_on() && input.ctx.input(|i| i.pointer.primary_down());
-        let modal_ok = !input.ctx.text_edit_focused()
-            && !crate::vector_ui::is_shape_tool(app.ui.tool)
-            && !crate::tool_feedback::is_selection_tool(app.ui.tool);
-        if modal_ok && escape_down && dragging {
-            crate::rotate_view::held_key_navigation(input.ctx, nav_id, view, &input.xf, true, input.ppp);
-            // The press that turns the view must not also reach the tool as a cancel.
-            input.ctx.data_mut(|d| d.insert_temp(nav_id.with("nav-dragged"), true));
-        } else {
-            crate::rotate_view::reset_held_nav(input.ctx, nav_id);
-        }
-        // A tap of Escape (released without dragging) puts the turned view back upright. When
-        // the key was used to navigate, the release only ends the gesture; any other Escape is
-        // left alone so tools keep their own cancel.
-        let navigated = input.ctx.data(|d| d.get_temp::<bool>(nav_id.with("nav-dragged")).unwrap_or(false));
-        if input.ctx.input(|i| i.key_released(egui::Key::Escape)) {
-            if navigated {
-                input.ctx.data_mut(|d| d.remove::<bool>(nav_id.with("nav-dragged")));
-            } else if modal_ok && view.rotation != 0.0 && !input.ctx.input(|i| i.modifiers.any()) {
-                view.rotation = 0.0;
-                input.ctx.request_repaint();
             }
         }
     }
@@ -944,6 +951,11 @@ fn handle_primary_canvas_input(app: &mut PhotocraftApp, ui: &mut egui::Ui, view:
     // (Preferences › Tools, `paint_mouse`).
     crate::paint_mouse::sync_tool_brush(app);
     let mut buttons = crate::paint_mouse::canvas_buttons(app, response, tool);
+    // A held-key navigation press (Escape held when the pen went down) is the view's, not the
+    // tool's: no stroke and no click, neither on the press nor on its release.
+    if crate::rotate_view::navigating(ctx, response.id.with("escape-navigation")) {
+        buttons = crate::paint_mouse::Buttons::default();
+    }
     if input.menu_dismiss_press {
         // Navigation and drags read `buttons` directly (zoom holds and drags, Rotate View):
         // starve them. The release click stays armed, so the click handling below consumes
@@ -1164,6 +1176,7 @@ fn handle_canvas_tool_stroke(
     if strokes_live(tool)
         && !right_down
         && !input.menu_dismiss_press
+        && !crate::rotate_view::navigating(ctx, response.id.with("escape-navigation"))
         && app.drag.is_none()
         && response.is_pointer_button_down_on()
         && ui.input(|i| i.pointer.primary_pressed())

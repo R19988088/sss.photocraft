@@ -360,6 +360,328 @@ fn rotated_view_keeps_engine_selection_in_document_space() {
     assert_eq!(st.history.past_len(), 1, "only the selection is a history step");
 }
 
+fn brush_harness() -> Harness<'static, PhotocraftApp> {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
+    app.sync_views();
+    app.ui.extras.rulers = false;
+    app.ui.tool = crate::state::Tool::Brush;
+    let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    h
+}
+
+fn hold_escape(h: &mut Harness<'static, PhotocraftApp>) {
+    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+    h.step();
+}
+
+/// The view as the tests see it (the harness runs at one physical pixel per point).
+fn testing_xf(h: &Harness<'static, PhotocraftApp>) -> ViewXform {
+    let st = h.state();
+    let v = &st.ui.views[0];
+    ViewXform { rect: st.last_canvas_rect, zoom: v.zoom, center: v.center, flip: st.ui.view.flip_horizontal, rotation: v.rotation, aspect: 1.0 }
+}
+
+/// Hold the key, then press at `p0`: the press's document point is what the gesture must keep
+/// under the pen.
+fn begin_at(h: &mut Harness<'static, PhotocraftApp>, p0: Pos2) -> [f64; 2] {
+    h.event(Event::PointerMoved(p0));
+    h.step();
+    hold_escape(h);
+    let doc = testing_xf(h).to_doc(p0);
+    h.event(Event::PointerButton { pos: p0, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    doc
+}
+
+fn drag_by(h: &mut Harness<'static, PhotocraftApp>, p: &mut Pos2, d: egui::Vec2) {
+    *p += d;
+    h.event(Event::PointerMoved(*p));
+    h.step();
+}
+
+/// Let the pen up, then the key: the gesture ends with the view where the drag left it, and
+/// nothing was painted.
+fn lift(mut h: Harness<'static, PhotocraftApp>, p: Pos2) -> Harness<'static, PhotocraftApp> {
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.step();
+    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn esc_drag_up_zooms_about_the_press_point() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(80.0, 60.0);
+    let doc = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..8 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let st = h.state();
+    let v = &st.ui.views[0];
+    assert!(v.rotation.abs() < 0.01, "a vertical drag must not turn the view: {}", v.rotation);
+    assert!(v.zoom > 1.5, "120 points up nearly doubles the zoom, got {}", v.zoom);
+    // The pen tip's document point never moves: it is the centre of the zoom.
+    let s = testing_xf(&h).to_screen(doc[0] as f32, doc[1] as f32);
+    assert!((s - p0).length() < 0.5, "the press point moved to {s:?} from {p0:?}");
+    let h = lift(h, p);
+    assert_eq!(h.state().session.documents()[0].history.past_len(), 0, "the gesture must not paint");
+    assert!(h.state().drag.is_none(), "the press left no tool drag behind");
+    assert!(h.state().ui.views[0].zoom > 1.5, "the release keeps the zoom");
+}
+
+#[test]
+fn esc_drag_sideways_turns_about_the_press_point() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(80.0, 60.0);
+    let doc = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(20.0, 0.0));
+    }
+    let st = h.state();
+    let v = &st.ui.views[0];
+    assert!((v.zoom - 1.0).abs() < 1e-3, "a sideways drag must not zoom: {}", v.zoom);
+    assert!(v.rotation > 30.0, "120 points right turn the view clockwise, got {}", v.rotation);
+    let s = testing_xf(&h).to_screen(doc[0] as f32, doc[1] as f32);
+    assert!((s - p0).length() < 0.5, "the view turned about something else: {s:?} vs {p0:?}");
+    let h = lift(h, p);
+    assert_eq!(h.state().session.documents()[0].history.past_len(), 0, "the gesture must not paint");
+    assert!(h.state().drag.is_none(), "the press left no tool drag behind");
+    assert!(h.state().ui.views[0].rotation > 30.0, "the release keeps the angle");
+}
+
+/// Dragging back the other way reverses the same gesture: no lift, no second press needed.
+#[test]
+fn esc_drag_reverses_the_zoom_without_lifting() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(80.0, 60.0);
+    let doc = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..8 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let peak = h.state().ui.views[0].zoom;
+    assert!(peak > 1.5, "the first half zooms in: {peak}");
+    for _ in 0..16 {
+        drag_by(&mut h, &mut p, vec2(0.0, 15.0));
+    }
+    let back = h.state().ui.views[0].zoom;
+    assert!(back < 1.0, "dragging back down zooms out past where it started: {back}");
+    assert!(h.state().ui.views[0].rotation.abs() < 0.01, "still no turning");
+    let s = testing_xf(&h).to_screen(doc[0] as f32, doc[1] as f32);
+    assert!((s - p0).length() < 0.5, "the press point stays put through both directions: {s:?}");
+}
+
+/// The axis is judged every frame, not locked by the first pixels: a vertical drag followed by a
+/// horizontal one in the same press turns the view, and the zoom stops where it was.
+#[test]
+fn esc_drag_switches_from_zoom_to_turn_in_one_press() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(80.0, 60.0);
+    let _doc = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let zoom_at_turn = h.state().ui.views[0].zoom;
+    assert!(zoom_at_turn > 1.4, "the vertical part zooms: {zoom_at_turn}");
+    assert!(h.state().ui.views[0].rotation.abs() < 0.01, "and does not turn");
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(20.0, 0.0));
+    }
+    let st = h.state();
+    assert!((st.ui.views[0].zoom - zoom_at_turn).abs() < 1e-3, "the turn keeps the zoom it had: {}", st.ui.views[0].zoom);
+    assert!(st.ui.views[0].rotation > 30.0, "the horizontal part turns: {}", st.ui.views[0].rotation);
+}
+
+/// The pen leaves the canvas altogether between presses (a pen taken off the tablet), the key
+/// still held: the mode must survive, and the next press must be a fresh gesture.
+#[test]
+fn esc_mode_survives_the_pen_leaving_the_canvas() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(60.0, 40.0);
+    let _ = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let zoom1 = h.state().ui.views[0].zoom;
+    assert!(zoom1 > 1.4, "the first press zooms: {zoom1}");
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.step();
+    // Off the canvas: the pen lifted and carried away, nothing hovering at all.
+    let out = h.state().last_canvas_rect.left_top() - vec2(40.0, 40.0);
+    h.event(Event::PointerMoved(out));
+    h.run_steps(2);
+    // Back on, the key never released: a new gesture about the new point.
+    let p1 = h.state().last_canvas_rect.center() + vec2(-70.0, 90.0);
+    h.event(Event::PointerMoved(p1));
+    h.step();
+    let doc1 = testing_xf(&h).to_doc(p1);
+    h.event(Event::PointerButton { pos: p1, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    assert!(h.state().drag.is_none(), "the press after the pen came back is still the mode's");
+    let mut q = p1;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut q, vec2(20.0, 0.0));
+    }
+    let st = h.state();
+    assert!((st.ui.views[0].zoom - zoom1).abs() < 1e-3, "the turn keeps the zoom: {}", st.ui.views[0].zoom);
+    assert!(st.ui.views[0].rotation > 30.0, "the second press turns: {}", st.ui.views[0].rotation);
+    let s = testing_xf(&h).to_screen(doc1[0] as f32, doc1[1] as f32);
+    assert!((s - p1).length() < 0.5, "the second press turns about its own point, not the first's: {s:?} vs {p1:?}");
+}
+
+/// The key stays down between presses: each press is its own gesture, each about its own point.
+/// The pen leaves the tablet and hovers on the way to the second press, as a real pen does.
+#[test]
+fn esc_hold_lets_a_second_press_gesture() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(60.0, 40.0);
+    let _doc0 = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let zoom1 = h.state().ui.views[0].zoom;
+    assert!(zoom1 > 1.4, "the first press zooms: {zoom1}");
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.step();
+    let p1 = p0 + vec2(-40.0, 180.0);
+    // The pen comes off the tablet and hovers to the new spot before it lands again.
+    for i in 1..=4 {
+        h.event(Event::PointerMoved(p + (p1 - p) * (i as f32 / 4.0)));
+        h.step();
+    }
+    assert!(h.state().drag.is_none(), "hovering over the canvas starts nothing");
+    let doc1 = testing_xf(&h).to_doc(p1);
+    h.event(Event::PointerButton { pos: p1, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    assert!(h.state().drag.is_none(), "the second press is still the mode's, not the brush's");
+    let mut q = p1;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut q, vec2(20.0, 0.0));
+    }
+    let st = h.state();
+    assert!((st.ui.views[0].zoom - zoom1).abs() < 1e-3, "the second press keeps the first press's zoom: {}", st.ui.views[0].zoom);
+    assert!(st.ui.views[0].rotation > 30.0, "the second press turns: {}", st.ui.views[0].rotation);
+    let s = testing_xf(&h).to_screen(doc1[0] as f32, doc1[1] as f32);
+    assert!((s - p1).length() < 0.5, "the second press turns about its own point: {s:?} vs {p1:?}");
+    let h = lift(h, q);
+    assert_eq!(h.state().session.documents()[0].history.past_len(), 0, "neither press painted");
+    assert!(h.state().drag.is_none(), "no tool drag left behind");
+    assert!(h.state().ui.views[0].zoom > 1.4, "the zoom outlives the mode");
+    assert!(h.state().ui.views[0].rotation > 30.0, "and so does the turn");
+}
+
+/// Three presses in one hold: zoom, turn, zoom again. Nothing is locked after the first.
+#[test]
+fn esc_mode_takes_every_press_while_it_lasts() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(60.0, 40.0);
+    let _ = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..6 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let zoom1 = h.state().ui.views[0].zoom;
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.step();
+    let p1 = p0 + vec2(-30.0, 120.0);
+    h.event(Event::PointerMoved(p1));
+    h.step();
+    h.event(Event::PointerButton { pos: p1, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    let mut q = p1;
+    for _ in 0..4 {
+        drag_by(&mut h, &mut q, vec2(25.0, 0.0));
+    }
+    h.event(Event::PointerButton { pos: q, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+    h.step();
+    let p2 = p1 + vec2(50.0, -60.0);
+    h.event(Event::PointerMoved(p2));
+    h.step();
+    h.event(Event::PointerButton { pos: p2, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    let mut r = p2;
+    for _ in 0..8 {
+        drag_by(&mut h, &mut r, vec2(0.0, -15.0));
+    }
+    let st = h.state();
+    assert!(st.ui.views[0].zoom > zoom1, "the third press zooms in again: {} against {zoom1}", st.ui.views[0].zoom);
+    assert!(st.ui.views[0].rotation > 30.0, "the turn from the second press survives: {}", st.ui.views[0].rotation);
+    let h = lift(h, r);
+    assert_eq!(h.state().session.documents()[0].history.past_len(), 0, "none of the three presses painted");
+    assert!(h.state().drag.is_none(), "no tool drag left behind");
+}
+
+/// With the key up the canvas is the tool's again: a press paints.
+#[test]
+fn the_key_going_up_hands_the_canvas_back_to_the_tool() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(60.0, 40.0);
+    let _ = begin_at(&mut h, p0);
+    let mut p = p0;
+    for _ in 0..4 {
+        drag_by(&mut h, &mut p, vec2(0.0, -15.0));
+    }
+    let h = lift(h, p);
+    let mut h = h;
+    let c = h.state().last_canvas_rect.center();
+    h.event(Event::PointerMoved(c));
+    h.step();
+    h.event(Event::PointerButton { pos: c, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    assert!(h.state().drag.is_some(), "without the key the brush owns the press");
+}
+
+/// Without the key the same drag is an ordinary brush stroke: the gesture claims nothing.
+#[test]
+fn a_plain_drag_still_reaches_the_brush() {
+    let mut h = brush_harness();
+    let p0 = h.state().last_canvas_rect.center() + vec2(80.0, 60.0);
+    h.event(Event::PointerMoved(p0));
+    h.step();
+    h.event(Event::PointerButton { pos: p0, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+    h.step();
+    assert!(h.state().drag.is_some(), "the brush owns the press");
+    for i in 1..=6 {
+        h.event(Event::PointerMoved(p0 + vec2(10.0 * i as f32, 6.0 * i as f32)));
+        h.step();
+    }
+    assert!(h.state().drag.is_some(), "the stroke is still the brush's");
+    assert!((h.state().ui.views[0].zoom - 1.0).abs() < 1e-3, "the view must not move");
+    assert!(h.state().ui.views[0].rotation.abs() < 0.01, "nor turn");
+}
+
+/// Escape pressed and let go with no press on the canvas is still the plain tap that puts the
+/// turned view back upright.
+#[test]
+fn an_escape_tap_still_uprights_the_view() {
+    let mut h = brush_harness();
+    let c = h.state().last_canvas_rect.center();
+    h.event(Event::PointerMoved(c));
+    h.step();
+    h.state_mut().ui.views[0].rotation = 40.0;
+    hold_escape(&mut h);
+    h.event(Event::Key { key: egui::Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Default::default() });
+    h.run_steps(2);
+    assert!(h.state().ui.views[0].rotation.abs() < 0.05, "{}", h.state().ui.views[0].rotation);
+}
+
 #[test]
 fn gpu_path_stays_on_with_rotation() {
     // Flip is the only CPU-blit fallback; rotation is a shader uniform.
