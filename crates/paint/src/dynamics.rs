@@ -19,6 +19,22 @@ const MAX_GRID_STEPS: f64 = 1e7;
 /// Maximum airbrush catch-up dabs for one input segment.
 const MAX_AIRBRUSH_DABS_PER_SEGMENT: usize = 512;
 
+// The speed a Speed dial reads, as ProCraft measures it (`stroke.rs`): how far the input moved in
+// a frame of a 60 Hz display, none up to `SPEED_SLOW` and rising (as the square root) to full
+// `SPEED_SPAN` further on. Both are scaled by the input's speed distance (a setting this app does
+// not have, so 1.0).
+const SPEED_SLOW: f32 = 25.0;
+const SPEED_SPAN: f32 = 100.0;
+/// How many frames the speed is smoothed over (the first move is taken as it is).
+const SPEED_FRAMES: f32 = 3.0;
+/// The frames between two samples that carry the same time: a pen's at 240 points a second, a
+/// finger's at 120 (ProCraft's `sample_frames`).
+const PEN_SAMPLE_FRAMES: f32 = 0.25;
+const FINGER_SAMPLE_FRAMES: f32 = 0.5;
+/// How many frames the pressure each dynamic follows is evened out over (ProCraft's `soften`,
+/// `2.0 / frames`): eased in over the stroke's first points, a low pass after.
+const SOFTEN_FRAMES: f32 = 2.0;
+
 /// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
 /// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
 /// noise of a cell boundary counts as on it, so a line lands on the same pixels both ways.
@@ -187,7 +203,19 @@ pub struct PathWalker {
     /// [`PathWalker::pixel_grid`]).
     grid: Option<f64>,
     sensor_point: Option<StrokePoint>,
+    /// The pen's speed as ProCraft measures it: how far a 60 Hz frame's input moved, 0 up to
+    /// `SPEED_SLOW` and rising to 1 at `SPEED_SLOW + SPEED_SPAN` (ProCraft's "0..1 of FAST"), so a
+    /// dynamics' Speed dial reads the same on any hardware instead of taking pixels per millisecond.
     sensor_speed: f32,
+    /// Whether a speed has been measured (the stroke's first point is taken as it is).
+    speed_known: bool,
+    /// The speed the last input point went at, for the dabs between the last two points.
+    last_speed: f32,
+    /// The pressure each dynamic follows at the last input point (ProCraft's `soften`). None at a
+    /// stroke's first point, which is taken as it is.
+    soft_pressure: Option<f32>,
+    /// How many input points the stroke has had, for the soften's ease-in over its first ones.
+    soft_points: u32,
     sensor_distance: f32,
     release_reference: f32,
     pressure_released: bool,
@@ -211,6 +239,10 @@ impl PathWalker {
             grid: None,
             sensor_point: None,
             sensor_speed: 0.0,
+            speed_known: false,
+            last_speed: 0.0,
+            soft_pressure: None,
+            soft_points: 0,
             sensor_distance: 0.0,
             release_reference: 1.0,
             pressure_released: false,
@@ -234,7 +266,7 @@ impl PathWalker {
 
     /// Emits the pixel steps from `a` to `p` (see [`PathWalker::pixel_grid`]). False, emitting
     /// nothing, when the span is not finite or implausibly long: distance spacing takes over.
-    fn grid_steps(&mut self, a: &StrokePoint, p: &StrokePoint, offset: f64, out: &mut impl FnMut(StepInput)) -> bool {
+    fn grid_steps(&mut self, a: &StrokePoint, p: &StrokePoint, offset: f64, speed: f32, out: &mut impl FnMut(StepInput)) -> bool {
         // The pieces of a 45° line differ in rounding noise: keep them all on one major axis.
         let steep = (p.y - a.y).abs() > (p.x - a.x).abs() * (1.0 + 1e-9);
         let (am, an, pm, pn) = if steep { (a.y, a.x, p.y, p.x) } else { (a.x, a.y, p.x, p.y) };
@@ -253,33 +285,75 @@ impl PathWalker {
             let mut q = lerp_pt(a, p, t.clamp(0.0, 1.0));
             let cn = grid_cell(an + dn * t, offset);
             (q.x, q.y) = if steep { (cn, c) } else { (c, cn) };
-            self.emit(q, out);
+            self.emit(q, speed, out);
         }
         true
     }
 
-    fn input(&self, point: StrokePoint) -> StepInput {
+    fn input(&self, point: StrokePoint, speed: f32) -> StepInput {
         StepInput {
             point,
             direction: self.dir,
             initial_direction: self.initial_dir.unwrap_or(self.dir),
             step: self.step,
-            speed: self.sensor_speed,
+            speed,
             pressure_released: self.pressure_released,
             distance: self.sensor_distance,
             tilt_angle: 0.0,
         }
     }
 
-    fn emit(&mut self, point: StrokePoint, out: &mut impl FnMut(StepInput)) {
-        if let Some(previous) = self.sensor_point {
-            let distance = (point.x - previous.x).hypot(point.y - previous.y);
-            self.sensor_distance += distance as f32;
-            let elapsed = (point.time - previous.time).max(0.1);
-            let speed = (distance / elapsed) as f32;
-            if speed.is_finite() {
-                self.sensor_speed += (speed - self.sensor_speed) * 0.35;
+    /// The frames of a 60 Hz display between `p` and the last input point (ProCraft's `gone`);
+    /// a sample's own share of one when the point carries no time, as a pen reports at 240 Hz and
+    /// a finger at 120.
+    fn frames_since(&self, p: &StrokePoint) -> f32 {
+        match self.last {
+            Some(a) if p.time - a.time > 0.0 => ((p.time - a.time) * 0.06) as f32,
+            _ => {
+                if p.is_pen {
+                    PEN_SAMPLE_FRAMES
+                } else {
+                    FINGER_SAMPLE_FRAMES
+                }
             }
+        }
+        .max(1e-3)
+    }
+
+    /// The speed of a move `distance` pixels along in `frames` (ProCraft's `pressed_on`): none up
+    /// to `SPEED_SLOW` pixels a frame, rising as the square root to full `SPEED_SPAN` further on,
+    /// smoothed over `SPEED_FRAMES` frames (the stroke's first move is taken as it is).
+    fn note_speed(&mut self, distance: f64, frames: f32) -> f32 {
+        let moved = distance as f32 / frames;
+        let over = (moved - SPEED_SLOW) / SPEED_SPAN;
+        let now = if over > 0.0 { over.sqrt().min(1.0) } else { 0.0 };
+        let held = if self.speed_known { SPEED_FRAMES / frames } else { 0.0 };
+        self.sensor_speed = ((now + held * self.sensor_speed) / (held + 1.0)).clamp(0.0, 1.0);
+        self.speed_known = true;
+        self.sensor_speed
+    }
+
+    /// The pressure each dynamic follows (ProCraft's `soften`): the point's pace eases in over the
+    /// stroke's first points — both are evened out with the last one, more so the more they are
+    /// apart — and a low pass after, whose weight follows how many samples a frame carries (a pen
+    /// reports several, so each point moves the value less and pressure changes over two frames).
+    fn soften(&mut self, mut p: StrokePoint, frames: f32) -> StrokePoint {
+        let held = SOFTEN_FRAMES / frames;
+        let Some(before) = self.soft_pressure else {
+            self.soft_pressure = Some(p.pressure);
+            self.soft_points = 1;
+            return p;
+        };
+        let ramp = (self.soft_points as f32 / held).clamp(0.0, 1.0) * held;
+        p.pressure = ((p.pressure + ramp * before) / (ramp + 1.0)).clamp(0.0, 1.0);
+        self.soft_pressure = Some(p.pressure);
+        self.soft_points = self.soft_points.saturating_add(1);
+        p
+    }
+
+    fn emit(&mut self, point: StrokePoint, speed: f32, out: &mut impl FnMut(StepInput)) {
+        if let Some(previous) = self.sensor_point {
+            self.sensor_distance += (point.x - previous.x).hypot(point.y - previous.y) as f32;
         }
         self.sensor_point = Some(point);
         if point.pressure < self.release_reference - 0.002 {
@@ -289,16 +363,33 @@ impl PathWalker {
             self.pressure_released = false;
             self.release_reference = point.pressure;
         }
-        let s = self.input(point);
+        let s = self.input(point, speed);
         self.step += 1;
         out(s);
     }
 
-    pub fn push(&mut self, p: StrokePoint, step_len: &impl Fn(&StepInput) -> f64, out: &mut impl FnMut(StepInput)) {
+    pub fn push(&mut self, mut p: StrokePoint, step_len: &impl Fn(&StepInput) -> f64, out: &mut impl FnMut(StepInput)) {
+        // ProCraft's `pressed_on` settles each input point before its dabs: its speed (so a dab's
+        // Speed dial reads in 0..1 of a fast stroke, not pixels a millisecond), and the pressure
+        // the dynamics follow (eased in at the start, a low pass after). A point that did not
+        // move is a lift or a press in place: it keeps the pressure it reports.
+        let mut speed = self.sensor_speed;
+        if let Some(a) = self.last {
+            let distance = (p.x - a.x).hypot(p.y - a.y);
+            let frames = self.frames_since(&p);
+            speed = self.note_speed(distance, frames);
+            if distance > 1e-9 {
+                p = self.soften(p, frames);
+            }
+        }
         let Some(a) = self.last else {
+            // The stroke's first point is taken as it is; the ones after it are evened out with it.
+            self.soft_pressure = Some(p.pressure);
+            self.soft_points = 1;
             self.last = Some(p);
+            self.last_speed = speed;
             self.pending_first = Some(p);
-            self.next_at = step_len(&self.input(p));
+            self.next_at = step_len(&self.input(p, speed));
             self.gap = self.next_at;
             return;
         };
@@ -311,14 +402,18 @@ impl PathWalker {
             }
         }
         if let Some(f) = self.pending_first.take() {
-            self.emit(f, out);
+            self.emit(f, self.last_speed, out);
         }
         if len > 1e-9 {
-            if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, out)) {
+            if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, speed, out)) {
                 while self.next_at <= len + 1e-9 {
-                    let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
-                    self.emit(q, out);
-                    let gap = step_len(&self.input(q)).max(0.25);
+                    let t = (self.next_at / len).min(1.0);
+                    let q = lerp_pt(&a, &p, t);
+                    // The speed runs with the line: a dab half way along goes half way between the
+                    // two points' speeds (ProCraft's `PathPoint::lerp`).
+                    let sp = (self.last_speed as f64 + (f64::from(speed) - f64::from(self.last_speed)) * t) as f32;
+                    self.emit(q, sp, out);
+                    let gap = step_len(&self.input(q, sp)).max(0.25);
                     self.next_at += 0.5 * (self.gap + gap);
                     self.gap = gap;
                 }
@@ -331,8 +426,9 @@ impl PathWalker {
                 if dt > iv * MAX_AIRBRUSH_DABS_PER_SEGMENT as f64 {
                     // A stalled or hostile timestamp must not replay an arbitrarily long backlog.
                     self.time_acc = 0.0;
-                    self.emit(p, out);
+                    self.emit(p, speed, out);
                     self.last = Some(p);
+                    self.last_speed = speed;
                     return;
                 }
                 self.time_acc += dt;
@@ -340,17 +436,20 @@ impl PathWalker {
                 while self.time_acc >= iv && n < MAX_AIRBRUSH_DABS_PER_SEGMENT {
                     self.time_acc -= iv;
                     let f = ((dt - self.time_acc) / dt).clamp(0.0, 1.0);
-                    self.emit(lerp_pt(&a, &p, f), out);
+                    let sp = (self.last_speed as f64 + (f64::from(speed) - f64::from(self.last_speed)) * f) as f32;
+                    self.emit(lerp_pt(&a, &p, f), sp, out);
                     n += 1;
                 }
             }
         }
         self.last = Some(p);
+        self.last_speed = speed;
     }
 
     pub fn finish(&mut self, out: &mut impl FnMut(StepInput)) {
         if let Some(f) = self.pending_first.take() {
-            self.emit(f, out);
+            let speed = self.last_speed;
+            self.emit(f, speed, out);
         }
     }
 }
@@ -978,7 +1077,7 @@ impl DabGenerator {
             for s in &steps {
                 self.builder.build(s, dabs);
             }
-            let input = self.walker.input(p);
+            let input = self.walker.input(p, self.walker.sensor_speed);
             let controlled = self.builder.controlled_input(&input);
             let diameter = base_diameter(&self.builder.brush, &controlled);
             let brush = &self.builder.brush;
@@ -1004,7 +1103,7 @@ impl DabGenerator {
                     db.build(s, dual);
                 }
                 if let Some(full) = &db.full {
-                    let input = w.input(p);
+                    let input = w.input(p, w.sensor_speed);
                     let controlled = full.controlled_input(&input);
                     let diameter = base_diameter(&full.brush, &controlled);
                     let control = control_value(full.brush.inertia.control, 25, &controlled);

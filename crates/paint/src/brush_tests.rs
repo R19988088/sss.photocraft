@@ -291,7 +291,10 @@ fn pressure_controls_size_with_minimum() {
         },
         ..brush()
     };
-    let pts = vec![StrokePoint::new(0.0, 0.0, 0.0), StrokePoint::new(200.0, 0.0, 1.0)];
+    // Full pressure on all the points after the first: the pressure the dynamics follow eases in
+    // (ProCraft's `soften`), so it takes a stroke's worth of points to reach the top of the range.
+    let mut pts = vec![StrokePoint::new(0.0, 0.0, 0.0)];
+    pts.extend((1..=40).map(|i| StrokePoint { time: i as f64 * 4.0, ..StrokePoint::new(f64::from(i) * 50.0, 0.0, 1.0) }));
     let d = dabs_of(&b, &pts);
     assert!((d[0].radius - 5.0).abs() < 1e-3, "min diameter 25 % of 40 → r 5, got {}", d[0].radius);
     assert!((d.last().unwrap().radius - 20.0).abs() < 0.5);
@@ -1357,15 +1360,17 @@ fn dab_pitch_is_the_diameter_times_the_spacing_whatever_the_sampling() {
 
 #[test]
 fn pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins() {
-    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on, as a light, hurried
-    // stroke really does. The dabs shrink, and the pitch shrinks with them (ProCraft's `step`,
-    // Photoshop's spacing measure the gap on the stamp's own size): the stroke keeps the density
-    // the panel says instead of spreading apart wherever it thins — what "间距随速度变化" was.
+    // Pressure falls off 1.0 → 0.2 across the first 300 px with Pressure→Size on, as a light,
+    // hurried stroke really does, then holds there. The dabs shrink, and the pitch shrinks with
+    // them (ProCraft's `step`, Photoshop's spacing measure the gap on the stamp's own size): the
+    // stroke keeps the density the panel says instead of spreading apart wherever it thins — what
+    // "间距随速度变化" was. Points come at a pen's 240 Hz, as the soften (`SOFTEN_FRAMES`) reads
+    // them: the pressure the dynamics follow lags the pen by a few points.
     let b = BrushSettings { size: 100.0, spacing: 0.1, pressure_size: true, ..brush() };
-    let pts: Vec<StrokePoint> = (0..=40)
+    let pts: Vec<StrokePoint> = (0..=60)
         .map(|i| {
-            let t = i as f64 / 40.0;
-            StrokePoint { time: i as f64, ..StrokePoint::new(i as f64 * 10.0, 10.0, (1.0 - 0.8 * t) as f32) }
+            let t = (i.min(30) as f64) / 30.0;
+            StrokePoint { time: i as f64 * 4.0, ..StrokePoint::new(i as f64 * 10.0, 10.0, (1.0 - 0.8 * t) as f32) }
         })
         .collect();
     let d = dabs_of(&b, &pts);
@@ -1385,6 +1390,25 @@ fn pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins() {
     let last = ctx.dab_rect(d.last().unwrap(), false);
     let (fw, lw) = (f64::from(first.x1 - first.x0), f64::from(last.x1 - last.x0));
     assert!(fw > lw * 3.0, "dabs did not shrink with pressure: {fw} vs {lw}");
+}
+
+#[test]
+fn the_pressure_the_dynamics_follow_eases_in_and_settles_behind_the_pen() {
+    // ProCraft's `soften`: a stroke's first point is taken as it comes, then each moves the value
+    // less, a low pass over two frames (a pen's samples are a quarter of one), so a step in the
+    // pen's own pressure reaches the dabs over a few tens of centimetres of path rather than at
+    // once. The panel's Pressure→Size shows it as the stamp's size.
+    let b = BrushSettings { size: 100.0, spacing: 1.0, pressure_size: true, ..brush() };
+    let pts: Vec<StrokePoint> = (0..=24)
+        .map(|i| StrokePoint { time: i as f64 * 4.0, ..StrokePoint::new(i as f64 * 100.0, 10.0, if i == 0 { 1.0 } else { 0.2 }) })
+        .collect();
+    let d = dabs_of(&b, &pts);
+    let radius_at = |x: f64| {
+        d.iter().min_by(|a, b| (a.center.x - x).abs().total_cmp(&(b.center.x - x).abs())).unwrap().radius
+    };
+    assert!(radius_at(0.0) > 45.0, "the first dab carries the pen's own pressure");
+    assert!(radius_at(100.0) > 24.0, "the second dab jumped to the step at once: {}", radius_at(100.0));
+    assert!(radius_at(2400.0) < 12.0, "the pressure did not settle: {}", radius_at(2400.0));
 }
 
 #[test]
@@ -1982,9 +2006,14 @@ fn c3_sensor_controls_and_hardness_reach_dabs() {
     let z = StrokePoint { x: 100.0, time: 100.0, ..a };
     let inverse = dabs_of(&make(Control::PenPressureInverse), &[a, z]);
     assert!((inverse[0].hardness - 0.8).abs() < 1e-6);
-    let speed = dabs_of(&make(Control::Speed), &[a, z]);
+    // The speed is ProCraft's: pixels a 60 Hz frame moves, nothing under 25 and full from 125, so a
+    // stroke that only crosses 100 px in 100 ms (16.7 px a frame) reads as still, and a fast one
+    // reads as full.
+    let speed = dabs_of(&make(Control::Speed), &[a, StrokePoint { x: 200.0, time: 16.0, ..a }]);
     assert!((speed[0].hardness - 0.2).abs() < 1e-6);
     assert!(speed.last().unwrap().hardness > 0.99);
+    let still = dabs_of(&make(Control::Speed), &[a, z]);
+    assert!(still.iter().all(|d| (d.hardness - 0.2).abs() < 1e-6), "16.7 px a frame is below the speed's start");
     let direction = dabs_of(&make(Control::Direction), &[a, StrokePoint { x: 0.0, y: 100.0, ..z }]);
     assert!(direction.iter().all(|d| (d.hardness - 0.8).abs() < 1e-6));
     let released = dabs_of(

@@ -190,6 +190,22 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    ProCraft 的 `gap()` 里还有 `p.speed * speed_spacing` 加宽项，默认 `speed_spacing = 0`
    （所以参考项目默认也不随速度变稀），本仓库没有这一项，别加回来。
 
+11. **速度、起笔软化与参考项目同式**（2026-11-19，用户要求「要对齐」）：
+   `dynamics.rs` 的 `PathWalker` 按 ProCraft 的 `pressed_on` 在**每个输入点**（不是每个 dab）
+   结算两点，dab 用段内插值（`PathWalker::note_speed` / `soften` / `frames_since`）：
+   - 速度 = 60 Hz 一帧的位移，`SPEED_SLOW=25`（px/帧）以下为 0，到 `SPEED_SLOW+SPEED_SPAN`
+     （125 px/帧）满 1，`over.sqrt()`；`SPEED_FRAMES=3` 帧加权平滑，首点直取。`StepInput.speed`
+     的语义因此是 0..1，不再是 px/ms —— 别再按 `distance/elapsed` 算，那会让 dab 间距
+     （5px 级）永远测不到速度。
+   - 压力 = `SOFTEN_FRAMES=2`：`held = 2/frames`、`ramp = min(points/held,1)*held`、
+     `soft = (p + ramp*before)/(ramp+1)`，首点直通。作用在 `StrokePoint.pressure` 上（各 dynamics
+     都从压力派生），头几个点渐入、之后是按帧计的低通（240Hz 笔约 9 点、约 40 ms）。`frames`
+     取相邻输入点的时间差 `dt*0.06`，没有时间时按笔 0.25 / 手指 0.5 帧。
+   - 没位移的点（抬笔、原地加压）不软化、不改速度：ProCraft 的 lift 事件不进 `pressed_on`，
+     我们的抬笔点也不该被拖高。
+   - `pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins` 的时间戳按 240Hz（4ms）
+     且压力末段保持 0.2：软化让压力滞后几帧，这是行为不是 bug，别把断言改回去。
+
 ## 6. 交付物
 
 - `dist/release/PhotoCraft.app`、`dist/release/PhotoCraft-0.24.0-arm64.zip`（`custom-merged` 的构建产物）。
