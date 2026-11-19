@@ -695,6 +695,36 @@ impl Default for Smoothing {
     }
 }
 
+/// The stroke's end taper (ProCraft's `Taper`, its default pen taper `{ end: 0.2, size: 0.8 }`):
+/// the input of the last `end` share of the 83 ms before the lift narrows the stamp to
+/// `1 - size` of its size, so the pen's lift thins into the stroke instead of stopping it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Taper {
+    /// Off for a brush that ends full-size.
+    pub enabled: bool,
+    /// Share of the pen's own 83 ms before the lift that tapers (0..1).
+    pub end: f32,
+    /// How much of the stamp the end takes away: 0.8 leaves 20 %.
+    pub size: f32,
+}
+
+impl Default for Taper {
+    fn default() -> Self {
+        Self { enabled: true, end: 0.2, size: 0.8 }
+    }
+}
+
+impl Taper {
+    /// No taper at all (a brush that ends at full size).
+    pub const NONE: Self = Self { enabled: false, end: 0.0, size: 0.0 };
+
+    /// The taper's window in milliseconds.
+    pub fn window_ms(&self) -> f64 {
+        if self.enabled { f64::from(self.end.max(0.0)) * crate::dynamics::TAPER_TIME_MS } else { 0.0 }
+    }
+}
+
 /// A complete brush: tip shape, dynamics, and stroke-level options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -798,6 +828,8 @@ pub struct BrushSettings {
     pub mixer: MixerSettings,
     /// Random seed for jitters (commands derive it from the stroke when not given), so strokes replay.
     pub seed: u64,
+    /// The stroke's end taper: the lift thins instead of stopping dead (ProCraft's pen taper).
+    pub taper: Taper,
 }
 
 impl Default for BrushSettings {
@@ -865,6 +897,7 @@ impl Default for BrushSettings {
             locks: SectionLocks::default(),
             mixer: MixerSettings::default(),
             seed: 0,
+            taper: Taper::default(),
         }
     }
 }

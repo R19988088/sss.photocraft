@@ -42,6 +42,39 @@ const SOFTEN_FRAMES: f32 = 2.0;
 const CURVE_STEP: f64 = 4.0;
 const MOST_CURVE_PIECES: usize = 64;
 
+// ProCraft's end taper (its default pen taper `{ end: 0.2, size: 0.8 }`), carried by the brush as
+// `BrushSettings::taper`: the stroke thins over the input that came in the last
+// `taper.end × TAPER_TIME_MS` before the lift, down to `1 - taper.size` of its size. The dabs of
+// that window are held back while the stroke is drawn and laid tapered when it ends — the live
+// preview draws them from `DabGenerator::finish`, as it draws the smoothing tail, so the pen's
+// lift thins into the stroke instead of stopping it (ProCraft's `Taper::applied`, sharp tip).
+pub const TAPER_TIME_MS: f64 = 83.34;
+/// The most dabs the end taper's window may hold (a guard for a brush whose dabs come a pixel
+/// apart): past it the oldest are laid as they are.
+const MOST_HELD_DABS: usize = 1024;
+
+/// Lay one push's dabs: hold the ones the end taper's window covers (each with how far along the
+/// path it sits) or append them as they come, keeping the path length up to date.
+fn lay(painted: &mut f64, last: &mut Option<crate::Point>, holding: bool, held: &mut Option<Vec<(f64, Dab)>>, made: Vec<Dab>, out: &mut Vec<Dab>) {
+    for d in made {
+        if let Some(c) = *last {
+            let (dx, dy) = (d.center.x - c.x, d.center.y - c.y);
+            *painted += (dx * dx + dy * dy).sqrt();
+        }
+        *last = Some(d.center);
+        if holding {
+            let held = held.get_or_insert_with(Vec::new);
+            held.push((*painted, d));
+            while held.len() > MOST_HELD_DABS {
+                let (_, d) = held.remove(0);
+                out.push(d);
+            }
+        } else {
+            out.push(d);
+        }
+    }
+}
+
 /// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
 /// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
 /// noise of a cell boundary counts as on it, so a line lands on the same pixels both ways.
@@ -1099,6 +1132,21 @@ pub struct DabGenerator {
     walker: PathWalker,
     dual_walker: Option<PathWalker>,
     dual_smoother: Option<Smoother>,
+    /// The dabs of the end taper's window, held back while the stroke is drawn and laid tapered
+    /// when it ends, each with how far along the path it sits; `None` while the stroke's points
+    /// carry no times (a script or a test without timestamps).
+    held: Option<Vec<(f64, Dab)>>,
+    held_dual: Option<Vec<(f64, Dab)>>,
+    /// The time of the last input point: the lift's taper is counted back from it.
+    newest_time: Option<f64>,
+    /// How far the path laid as dabs has come, and the last dab's centre: a held dab's share of
+    /// its size follows where it sits in the window, not which push carried it.
+    painted: f64,
+    last_dab: Option<crate::Point>,
+    painted_dual: f64,
+    last_dab_dual: Option<crate::Point>,
+    /// When each input point came and how far the path had got: the window's start on the path.
+    history: Vec<(f64, f64)>,
     motion: crate::motion::Motion,
     dual_motion: crate::motion::Motion,
     inertia: crate::motion::Inertia,
@@ -1138,6 +1186,14 @@ impl DabGenerator {
                 let secondary = brush.dual_brush.resolved_brush(&brush);
                 Smoother::new(secondary.as_ref().map_or(&brush.smoothing, |b| &b.smoothing), zoom)
             }),
+            held: None,
+            held_dual: None,
+            newest_time: None,
+            painted: 0.0,
+            last_dab: None,
+            painted_dual: 0.0,
+            last_dab_dual: None,
+            history: Vec::new(),
             motion: crate::motion::Motion::default(),
             dual_motion: crate::motion::Motion::default(),
             inertia: crate::motion::Inertia::default(),
@@ -1148,6 +1204,16 @@ impl DabGenerator {
         }
     }
 
+    /// The dabs of one push, laid straight or held back for the end taper: the ones whose input
+    /// came within the taper's window of the newest point are held (with how far along the path
+    /// each sits), the rest go out as they come.
+    fn route(&mut self, time: f64, made: Vec<Dab>, out: &mut Vec<Dab>) {
+        let window = self.builder.brush.taper.window_ms();
+        let holding = window > 0.0 && self.newest_time.is_some_and(|end| end - time <= window);
+        let (painted, last) = (&mut self.painted, &mut self.last_dab);
+        lay(painted, last, holding, &mut self.held, made, out);
+    }
+
     fn walk(&mut self, pts: &[StrokePoint], dabs: &mut Vec<Dab>) {
         for p in pts {
             let p = apply_pose(&self.builder.brush, *p);
@@ -1155,8 +1221,9 @@ impl DabGenerator {
             let len = |q: &StepInput| b.step_len(q);
             let mut steps = Vec::new();
             self.walker.push(p, &len, &mut |s| steps.push(s));
+            let mut made = Vec::new();
             for s in &steps {
-                self.builder.build(s, dabs);
+                self.builder.build(s, &mut made);
             }
             let input = self.walker.input(p, self.walker.sensor_speed);
             let controlled = self.builder.controlled_input(&input);
@@ -1168,8 +1235,10 @@ impl DabGenerator {
             fork.seed ^= input.step.wrapping_mul(0x9E3779B97F4A7C15);
             fork.next_index = 0;
             for (point, direction, distance) in branches {
-                fork.build(&StepInput { point, direction, distance, ..input }, dabs);
+                fork.build(&StepInput { point, direction, distance, ..input }, &mut made);
             }
+            self.route(p.time, made, dabs);
+            self.history.push((p.time, self.painted));
         }
     }
 
@@ -1180,8 +1249,9 @@ impl DabGenerator {
                 let mut steps = Vec::new();
                 let len = |q: &StepInput| db.step_len(q);
                 w.push(p, &len, &mut |s| steps.push(s));
+                let mut made = Vec::new();
                 for s in &steps {
-                    db.build(s, dual);
+                    db.build(s, &mut made);
                 }
                 if let Some(full) = &db.full {
                     let input = w.input(p, w.sensor_speed);
@@ -1193,15 +1263,26 @@ impl DabGenerator {
                     fork.seed ^= input.step.wrapping_mul(0xD1B54A32D192ED03);
                     fork.next_index = 0;
                     for (point, direction, distance) in branches {
-                        fork.build(&StepInput { point, direction, distance, ..input }, dual);
+                        fork.build(&StepInput { point, direction, distance, ..input }, &mut made);
                     }
                 }
+                self.route_dual(p.time, made, dual);
             }
         }
     }
 
     /// Feed input points; appends the new primary and dual dabs.
     pub fn push(&mut self, pts: &[StrokePoint], dabs: &mut Vec<Dab>, dual: &mut Vec<Dab>) {
+        // The end taper counts back from the newest point's time: a stroke whose points carry no
+        // times at all (a script's `paint.stroke` without them) keeps laying its dabs as they come.
+        let newest = pts.iter().map(|p| p.time).filter(|t| *t > 0.0).fold(None::<f64>, |end, t| Some(end.map_or(t, |e| e.max(t))));
+        if newest.is_some() {
+            self.newest_time = newest;
+            self.held.get_or_insert_with(Vec::new);
+            if self.dual_smoother.is_some() {
+                self.held_dual.get_or_insert_with(Vec::new);
+            }
+        }
         let mut sm = std::mem::take(&mut self.scratch);
         sm.clear();
         for p in pts {
@@ -1222,7 +1303,47 @@ impl DabGenerator {
         }
     }
 
-    /// End of stroke.
+    fn route_dual(&mut self, time: f64, made: Vec<Dab>, out: &mut Vec<Dab>) {
+        let window = self.dual.as_ref().map_or(0.0, |d| d.full.as_ref().map_or(&d.brush, |b| &b.brush).taper.window_ms());
+        let holding = window > 0.0 && self.newest_time.is_some_and(|end| end - time <= window);
+        let (painted, last) = (&mut self.painted_dual, &mut self.last_dab_dual);
+        lay(painted, last, holding, &mut self.held_dual, made, out);
+    }
+
+    /// The path length where the end taper's window starts: the path had got this far when the
+    /// input passed `newest - window`.
+    fn taper_start(&self) -> f64 {
+        let Some(end) = self.newest_time else { return 0.0 };
+        let window = self.builder.brush.taper.window_ms();
+        if !(window > 0.0) {
+            return 0.0;
+        }
+        let cut = end - window;
+        self.history.iter().filter(|(t, _)| *t <= cut).last().map_or(0.0, |(_, l)| *l)
+    }
+
+    /// Lay the dabs the end taper's window held back, narrowed by where each sits in the window:
+    /// the stroke's last `taper.end × 83.34 ms` of input thins to `1 - taper.size` of its size, as
+    /// ProCraft's pen taper does, instead of stopping dead.
+    fn release_tail(&mut self, dabs: &mut Vec<Dab>, dual: &mut Vec<Dab>) {
+        let start = self.taper_start();
+        let primary = (self.builder.brush.taper, self.painted);
+        let secondary = (
+            self.dual.as_ref().map_or(crate::brush::Taper::NONE, |d| d.full.as_ref().map_or(&d.brush, |b| &b.brush).taper),
+            self.painted_dual,
+        );
+        for ((held, (taper, painted)), out) in [self.held.take(), self.held_dual.take()].into_iter().zip([primary, secondary]).zip([&mut *dabs, &mut *dual]) {
+            let Some(held) = held else { continue };
+            let span = (painted - start).max(1e-6);
+            for (at, mut d) in held {
+                let grown = ((at - start) / span).clamp(0.0, 1.0) as f32;
+                d.radius *= (1.0 - taper.size * grown).clamp(0.0, 1.0);
+                out.push(d);
+            }
+        }
+    }
+
+    /// End of stroke (smoothing catch-up, a lone first point, and the taper's held dabs).
     pub fn finish(&mut self, dabs: &mut Vec<Dab>, dual: &mut Vec<Dab>) {
         let mut sm = Vec::new();
         self.smoother.finish(&mut sm);
@@ -1234,16 +1355,22 @@ impl DabGenerator {
         }
         let mut steps = Vec::new();
         self.walker.finish(&mut |s| steps.push(s));
+        let mut made = Vec::new();
         for s in &steps {
-            self.builder.build(s, dabs);
+            self.builder.build(s, &mut made);
         }
+        let time = self.newest_time.unwrap_or(0.0);
+        self.route(time, made, dabs);
         if let (Some(w), Some(db)) = (self.dual_walker.as_mut(), self.dual.as_mut()) {
             let mut steps = Vec::new();
             w.finish(&mut |s| steps.push(s));
+            let mut made = Vec::new();
             for s in &steps {
-                db.build(s, dual);
+                db.build(s, &mut made);
             }
+            self.route_dual(self.newest_time.unwrap_or(0.0), made, dual);
         }
+        self.release_tail(dabs, dual);
     }
 }
 
@@ -1261,6 +1388,34 @@ mod dual_brush_tests {
         generator.finish(&mut primary, &mut dual);
         assert!(!dual.is_empty());
         assert!(dual.iter().all(|dab| (dab.alpha - 0.35).abs() < 1e-6));
+    }
+
+    #[test]
+    fn the_stroke_thins_over_its_last_83_ms_instead_of_stopping_full_size() {
+        // ProCraft's pen taper (end 0.2 of 83.34 ms, size 0.8): the dabs of the last 16.67 ms before
+        // the lift are laid at the end, narrowed towards 20 % of the brush's size.
+        let brush = BrushSettings { size: 40.0, spacing: 0.1, taper: crate::brush::Taper::default(), ..Default::default() };
+        let pts: Vec<StrokePoint> = (0..=40)
+            .map(|i| StrokePoint { time: i as f64 * 4.0, ..StrokePoint::new(f64::from(i) * 20.0, 10.0, 1.0) })
+            .collect();
+        let mut generator = DabGenerator::new(&brush, 1.0);
+        let mut primary = Vec::new();
+        let mut dual = Vec::new();
+        generator.push(&pts, &mut primary, &mut dual);
+        generator.finish(&mut primary, &mut dual);
+        let radii: Vec<f32> = primary.iter().map(|d| d.radius).collect();
+        let firsts: Vec<f32> = radii.iter().take(3).copied().collect();
+        assert!(firsts.iter().all(|r| (r - 20.0).abs() < 1e-3), "the start stays full size: {firsts:?}");
+        let last = *radii.last().unwrap();
+        assert!((last - 4.0).abs() < 0.2, "the lift narrows to the taper's 20 %: {last}");
+        assert!(radii.iter().rev().take(4).all(|r| *r < 20.0), "the last dabs narrow one by one: {radii:?}");
+        // A brush with the taper off ends at full size.
+        let off = BrushSettings { taper: crate::brush::Taper::NONE, ..brush };
+        let mut generator = DabGenerator::new(&off, 1.0);
+        let (mut primary, mut dual) = (Vec::new(), Vec::new());
+        generator.push(&pts, &mut primary, &mut dual);
+        generator.finish(&mut primary, &mut dual);
+        assert!(primary.iter().all(|d| (d.radius - 20.0).abs() < 1e-3), "Taper::NONE leaves the lift alone");
     }
 }
 

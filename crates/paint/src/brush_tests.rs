@@ -13,7 +13,9 @@ use crate::{AttributeMode, Dab, Stroke, StrokePoint, dabs};
 fn brush() -> BrushSettings {
     // The legacy tip maths on purpose: these tests pin the fork's own behaviour, while
     // `Default` now gives the reference application's one tip maths (see `c3_tip_math`).
-    BrushSettings { pressure_size: false, spacing: 0.25, c3_tip_math: false, ..Default::default() }
+    // No end taper either: these tests read the engine's own rules — the pitch, the pressure
+    // curves — end to end, and the lift's taper has its own tests (`dynamics`).
+    BrushSettings { pressure_size: false, spacing: 0.25, c3_tip_math: false, taper: crate::brush::Taper::NONE, ..Default::default() }
 }
 
 fn line(x0: f64, x1: f64, y: f64) -> Vec<StrokePoint> {
