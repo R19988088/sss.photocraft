@@ -34,7 +34,7 @@ pub fn owns(fields: &Map<String, Value>) -> bool {
 /// (built-in brushes are never replaced, so they don't count).
 fn clashing(app: &PhotocraftApp, cmd: &str, group: &str) -> usize {
     match cmd {
-        "brush.presets.importAbr" => app.session.tools.presets.iter().filter(|x| !x.builtin && x.group == group).count(),
+        "brush.presets.importAbr" | "brush.presets.importBrushFile" => app.session.tools.presets.iter().filter(|x| !x.builtin && x.group == group).count(),
         "gradient.presets.importGrd" => app.session.presets.gradients.iter().filter(|g| g.name == group).map(|g| g.items.len()).sum(),
         _ => 0,
     }

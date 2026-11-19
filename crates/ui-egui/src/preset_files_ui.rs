@@ -16,7 +16,9 @@ use crate::PhotocraftApp;
 /// the Swatches panel through [`crate::swatches_ui::import_bytes`]).
 /// `.psp` is Photoshop's live `Keyboard Shortcuts.psp` (the same XML as a `.kys`); other `.psp`
 /// settings files are refused with a clear message.
-pub const PRESET_EXTS: &[&str] = &["abr", "grd", "asl", "pat", "aco", "act", "ase", "kys", "psp"];
+pub const PRESET_EXTS: &[&str] = &[
+    "abr", "grd", "asl", "pat", "aco", "act", "ase", "kys", "psp", "brush", "brushset", "kpp", "bundle", "gbr", "gih", "myb", "tpl", "sai2", "gobrush", "gobrushes", "mdp", "ini", "sut", "brushlibrary", "brushcategory",
+];
 
 fn ext(name: &str) -> String {
     std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
@@ -30,10 +32,19 @@ pub fn is_preset_file(name: &str) -> bool {
 /// Image files Import Brushes… offers besides `.abr`: each becomes a sampled brush tip.
 pub const BRUSH_IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "tif", "tiff", "psd", "psb", "bmp", "gif", "webp", "tga"];
 
-/// Brushes panel / brush preset picker › Import Brushes…: an `.abr` joins the brush library as a
-/// group (as File › Open does), an image file becomes a new brush preset with that image as its tip.
+/// Brush files of other applications, read through `brush.presets.importBrushFile`: Procreate
+/// (`.brush`, `.brushset`), Krita (`.kpp`, `.bundle`), GIMP (`.gbr`, `.gih`), MyPaint (`.myb`),
+/// Photoshop tool presets (`.tpl`), SAI2 (`.sai2`, `.ini`), 天生会画 (`.gobrush`, `.gobrushes`),
+/// MediBang (`.mdp`, `.ini`), CLIP STUDIO PAINT (`.sut`) and Corel Painter libraries.
+pub const BRUSH_FILE_EXTS: &[&str] = &[
+    "brush", "brushset", "kpp", "bundle", "gbr", "gih", "myb", "tpl", "sai2", "gobrush", "gobrushes", "mdp", "ini", "sut",
+    "brushlibrary", "brushcategory",
+];
+
+/// Brushes panel / brush preset picker › Import Brushes…: a brush file joins the brush library as
+/// a group (as File › Open does), an image file becomes a new brush preset with that image as its tip.
 pub fn import_brushes(app: &mut PhotocraftApp) -> Result<Value, String> {
-    let exts: Vec<&str> = std::iter::once("abr").chain(BRUSH_IMAGE_EXTS.iter().copied()).collect();
+    let exts: Vec<&str> = std::iter::once("abr").chain(BRUSH_FILE_EXTS.iter().copied()).chain(BRUSH_IMAGE_EXTS.iter().copied()).collect();
     app.pick_file_bytes_filtered(&exts, |app, name, bytes| match open(app, &name, &bytes) {
         Some(r) => r.map(|()| Value::Null),
         None => import_brush_image(app, &name, &bytes),
@@ -88,6 +99,8 @@ fn source(name: &str, bytes: &[u8]) -> Value {
 pub fn open(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Option<Result<(), String>> {
     let (cmd, what) = match ext(name).as_str() {
         "abr" => ("brush.presets.importAbr", "brushes"),
+        "brush" | "brushset" | "kpp" | "bundle" | "gbr" | "gih" | "myb" | "tpl" | "sai2" | "gobrush" | "gobrushes" | "mdp" | "ini" | "sut"
+        | "brushlibrary" | "brushcategory" => ("brush.presets.importBrushFile", "brushes"),
         "grd" => ("gradient.presets.importGrd", "gradients"),
         "asl" => ("style.presets.importAsl", "styles"),
         "pat" => ("pattern.import", "patterns"),
@@ -102,6 +115,10 @@ pub fn open(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Option<Result<
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| tl!("Imported").into());
     let mut p = source(name, bytes);
+    if p.get("data").is_some() {
+        // Bytes have no path: the engine needs the file's name for its format and group.
+        p["fileName"] = json!(std::path::Path::new(name).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string()));
+    }
     p["group"] = json!(stem);
     if what == "brushes" {
         p["select"] = json!(true);

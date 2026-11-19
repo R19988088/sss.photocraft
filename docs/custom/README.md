@@ -7,6 +7,7 @@
 - `AGENTS.md`：接手备注——分支模型、跟随上游步骤、出包命令、笔刷与间距的硬约定、已知失败的测试。
 - `MERGE-DIFF.md`：完整的三方差分清单、功能域边界、已处理项、已知预期差异。
 - `BRUSH-C3-AUDIT.md`：笔刷/笔迹与 C3 参考实现的逐项比对记录。
+- `BRUSH-IMPORT.md`：各家笔刷文件（Procreate/Krita/GIMP/MyPaint/SAI2/天生会画/MediBang/CSP/Corel Painter/`.tpl`）的读入方式与已知近似。
 - `../UPSTREAM.lock`：跟随上游用的锁文件（当前基于哪个上游快照、哪些区域冻结）。
 
 ## 合并结果一览

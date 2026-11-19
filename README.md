@@ -190,7 +190,7 @@ Every screenshot here is the real app at work on public-domain art, rendered off
     </td>
     <td width="33%" valign="top">
       <h4>🖌️ A real brush engine</h4>
-      Shape Dynamics, Scattering, Texture, Dual Brush, Color Dynamics, Transfer, Brush Pose, Wet Edges, Build-up and Smoothing (including Pulled String), driven by pen pressure, tilt, rotation and direction. Brush presets, Define Brush from Selection, and deterministic, replayable strokes.
+      Shape Dynamics, Scattering, Texture, Dual Brush, Color Dynamics, Transfer, Brush Pose, Wet Edges, Build-up and Smoothing (including Pulled String), driven by pen pressure, tilt, rotation and direction. Brush presets, Define Brush from Selection, and deterministic, replayable strokes. Brushes import from Photoshop (`.abr`, `.tpl`), Procreate, Krita, GIMP, MyPaint, SAI2, MediBang, 天生会画, CLIP STUDIO PAINT and Corel Painter — see [docs/custom/BRUSH-IMPORT.md](docs/custom/BRUSH-IMPORT.md).
     </td>
     <td width="33%" valign="top">
       <h4>🗃️ Layers, done properly</h4>

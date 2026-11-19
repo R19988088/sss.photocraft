@@ -654,7 +654,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
         return;
     }
     match e.outcome {
-        JobOutcome::Done(v) if e.command == "brush.presets.importAbr" => {
+        JobOutcome::Done(v) if e.command == "brush.presets.importAbr" || e.command == "brush.presets.importBrushFile" => {
             let n = v.get("count").and_then(Value::as_u64).unwrap_or(0);
             let group = v.get("group").and_then(Value::as_str).unwrap_or_default();
             app.ui.status = crate::i18n::fmt(

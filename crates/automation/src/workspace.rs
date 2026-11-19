@@ -539,6 +539,7 @@ fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
         "actions.load"
         | "brush.presets.importAbr"
+        | "brush.presets.importBrushFile"
         | "brush.presets.importImage"
         | "gradient.presets.importGrd"
         | "shape.presets.importCsh"

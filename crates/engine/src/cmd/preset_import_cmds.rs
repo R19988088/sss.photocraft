@@ -150,6 +150,69 @@ fn free_group(name: &str, taken: impl Fn(&str) -> bool) -> String {
     (2..=u32::MAX).map(|i| format!("{name} ({i})")).find(|g| !taken(g)).unwrap_or_else(|| name.to_string())
 }
 
+/// Every brush format PhotoCraft reads besides `.abr`: Procreate, Krita, GIMP, MyPaint, SAI2,
+/// 天生会画, MediBang, Corel Painter, CLIP STUDIO PAINT and Photoshop tool presets.
+fn import_brush_file(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "brush.presets.importBrushFile";
+    let label = "Import Brushes";
+    let params = p.clone();
+    let params_apply = json!({ "replace": p.get("replace"), "select": p.get("select") });
+    crate::jobs::run(
+        s,
+        label,
+        false,
+        move |ctx| {
+            ctx.progress(0.0, "Importing brushes");
+            let p = &params;
+            let (bytes, stem) = file_bytes_limited(p, cmd, "brush file", MAX_ABR_FILE_BYTES)?;
+            let file_name = p.get("fileName").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or(stem.clone());
+            let group = match p.get("group") {
+                Some(v) => v.as_str().map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(cmd, "`group` must be a non-empty string"))?.to_string(),
+                None if !stem.is_empty() => stem,
+                None => "Imported Brushes".to_string(),
+            };
+            ctx.check()?;
+            let imp = ctx
+                .stage(0.05, 1.0, "Importing brushes", |ctl| photocraft_io::brush_import::read_any_with(&bytes, &file_name, &group, ctl))
+                .map_err(|e| if ctx.cancelled() { EngineError::Cancelled } else { bad(cmd, e) })?;
+            Ok((group, imp))
+        },
+        move |s, (group, imp)| add_brush_import(s, &params_apply, group, imp),
+    )
+}
+
+fn add_brush_import(s: &mut Session, p: &Value, group: String, imp: photocraft_io::brush_import::BrushImport) -> Result<Value> {
+    let group = if p.get("replace").and_then(Value::as_bool).unwrap_or(false) {
+        s.tools.presets.retain(|x| x.builtin || x.group != group);
+        group
+    } else {
+        let groups: std::collections::HashSet<&str> = s.tools.presets.iter().map(|x| x.group.as_str()).collect();
+        free_group(&group, |g| groups.contains(g))
+    };
+    let mut taken = UniqueNames::new(s.tools.presets.iter().map(|x| x.name.as_str()));
+    let mut names = Vec::with_capacity(imp.presets.len());
+    for mut preset in imp.presets {
+        preset.group.clone_from(&group);
+        preset.name = taken.unique(&preset.name);
+        names.push(preset.name.clone());
+        s.tools.presets.push(preset);
+    }
+    s.brush_presets_changed();
+    if p.get("select").and_then(Value::as_bool).unwrap_or(false)
+        && let Some(first) = names.first()
+        && let Some(pr) = photocraft_paint::presets::find(&s.tools.presets, first)
+    {
+        let mut b = pr.brush.clone().picked_over(&s.tools.brush);
+        b.opacity = b.opacity.max(0.01);
+        s.load_brush_tips(&mut b).map_err(|e| bad("brush.presets.importBrushFile", e))?;
+        s.tools.brush = b;
+        s.tools.brush_changed();
+    }
+    let folders: std::collections::BTreeSet<&[String]> =
+        s.tools.presets.iter().filter(|x| !x.builtin && x.group == group).flat_map(|x| (1..=x.folder.len()).filter_map(|d| x.folder.get(..d))).collect();
+    Ok(json!({ "group": group, "imported": names, "count": names.len(), "folders": folders.len(), "format": imp.format, "warnings": imp.warnings }))
+}
+
 fn add_abr_presets(s: &mut Session, p: &Value, group: String, imp: photocraft_io::abr_map::AbrImport) -> Result<Value> {
     // A file whose name matches a group already in the library becomes a new group beside it, as
     // in Photoshop, unless `replace` asks to drop that group's own presets first: the group name
@@ -300,6 +363,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"path":"image file (PNG, JPEG, TIFF, PSD…)"?,"data":base64 bytes?,"fileName":string? (with data: the file's name, for its format and the default preset name),"name":string?=file name,"select":bool=true (make it the current brush)} → {name, width, height}"##,
             enabled: always,
             run: import_image,
+            journal: true,
+        },
+        CommandSpec {
+            id: "brush.presets.importBrushFile",
+            label: "Import Brushes…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"path":"brush file (.brush/.brushset/.kpp/.bundle/.gbr/.gih/.myb/.tpl/.sai2/.gobrush/.gobrushes/.mdp/.ini/.sut, Corel Painter library)"?,"data":base64 bytes?,"fileName":string? (with data: the file's name, for its format),"group":string?=file name,"replace":bool=false (first delete the non-built-in presets of a group of the same name; false imports beside it as <group> (2)),"select":bool=false (make the first imported preset current)} → {group, imported, count, folders, format, warnings}"##,
+            enabled: always,
+            run: import_brush_file,
             journal: true,
         },
         CommandSpec {
@@ -562,6 +635,24 @@ mod tests {
         let taken = ["Kit", "Kit (2)"];
         assert_eq!(free_group("Set", |g| taken.contains(&g)), "Set");
         assert_eq!(free_group("Kit", |g| taken.contains(&g)), "Kit (3)");
+    }
+
+    #[test]
+    fn brush_file_import_reads_a_mypaint_preset_into_a_group() {
+        let mut s = Session::new();
+        let before = s.tools.presets.len();
+        let myb = br#"{"name":"Ink","settings":{"radius_logarithmic":{"base_value":2.0},"dabs_per_actual_radius":{"base_value":0.4},"opaque":{"base_value":0.8}}}"#;
+        let r = s
+            .execute(
+                "brush.presets.importBrushFile",
+                json!({"data": photocraft_paint::tile::b64_encode(myb), "fileName": "Ink.myb", "group": "MyPaint", "select": true}),
+            )
+            .unwrap();
+        assert_eq!(r["count"], 1);
+        assert_eq!(r["format"], "MyPaint");
+        assert_eq!(r["imported"], json!(["Ink"]));
+        assert_eq!(s.tools.presets.len(), before + 1);
+        assert!(s.tools.presets.iter().any(|p| p.group == "MyPaint" && !p.builtin));
     }
 
     #[test]
