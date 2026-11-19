@@ -47,7 +47,9 @@ fn stroke_backwards_compatible() {
     assert_eq!(rgba(&s, 30, 30)[3], 0.0);
     // [x, y, pressure] with Pressure for Size on: light pressure → a thinner line. The default
     // brush has it off since #11809, so this stroke asks for it.
-    s.execute("paint.stroke", json!({"points": [[4, 5, 0.2], [60, 5, 0.2]], "size": 10, "brush": {"pressureSize": true}})).unwrap();
+    // The end taper off: a short stroke's whole length would fall inside the taper's span and thin
+    // the pressure the pen reported, which this checks as it is.
+    s.execute("paint.stroke", json!({"points": [[4, 5, 0.2], [60, 5, 0.2]], "size": 10, "brush": {"pressureSize": true, "taper": {"enabled": false}}})).unwrap();
     assert!(rgba(&s, 30, 5)[3] > 0.9 && rgba(&s, 30, 8)[3] < 0.01);
 }
 
@@ -877,7 +879,9 @@ fn live_stroke_equals_the_commit_at_every_zoom_with_smoothing() {
                 s.execute("edit.fill", json!({"color": "#1a2550"})).unwrap();
                 s.execute("paint.stroke", json!({"points": [[20, 20], [180, 100]], "size": 8, "hardness": 1.0, "color": "#ffffff"})).unwrap();
                 s.tools.foreground = [0.0, 0.0, 0.0, 1.0];
-                let brush = json!({"size": 40, "hardness": 0.0, "pressureSize": true, "smoothing": {"amount": amount, "pulledString": pulled}});
+                // The end taper is decided at the lift, so this compares the preview with the
+                // stroke's own shape: the taper off (ProCraft's classic taper is its own test).
+                let brush = json!({"size": 40, "hardness": 0.0, "pressureSize": true, "taper": {"enabled": false}, "smoothing": {"amount": amount, "pulledString": pulled}});
                 let p = json!({"points": [pts[0]], "brush": brush, "zoom": zoom, "target": "pixels"});
                 let mut live = LiveStroke::begin(&s, &p).unwrap();
                 for q in &pts[1..] {
@@ -1251,11 +1255,14 @@ fn live_and_commit(s: &Session, cmd: &str, base: Value, pts: &[[f64; 3]]) -> (Li
 #[test]
 fn a_commit_takes_the_live_strokes_pixels_and_they_equal_a_fresh_render() {
     let pts = [[10.0, 50.0, 1.0], [60.0, 30.0, 0.7], [120.0, 60.0, 0.9], [180.0, 40.0, 0.4], [150.0, 80.0, 1.0]];
+    // With the end taper off: a tapered stroke is decided at the lift, so it renders again there
+    // (`the_end_taper_fades_the_pressure_over_the_last_stretch_and_nothing_else` covers the taper).
+    let no_taper = json!({"taper": {"enabled": false}});
     for (cmd, base) in [
-        ("paint.stroke", json!({"brush": {"size": 18, "hardness": 0.0, "flow": 0.5}, "smoothing": 0.5, "target": "pixels"})),
-        ("paint.stroke", json!({"preset": "Spatter", "smoothing": 0.0, "target": "pixels"})),
-        ("paint.stroke", json!({"brush": {"size": 12}, "erase": true, "target": "pixels"})),
-        ("paint.pencil", json!({"smoothing": 0.0})),
+        ("paint.stroke", json!({"brush": {"size": 18, "hardness": 0.0, "flow": 0.5, "taper": {"enabled": false}}, "smoothing": 0.5, "target": "pixels"})),
+        ("paint.stroke", json!({"preset": "Spatter", "brush": no_taper.clone(), "smoothing": 0.0, "target": "pixels"})),
+        ("paint.stroke", json!({"brush": {"size": 12, "taper": {"enabled": false}}, "erase": true, "target": "pixels"})),
+        ("paint.pencil", json!({"smoothing": 0.0, "brush": no_taper.clone()})),
     ] {
         let mut s = session(200, 100);
         let (live, p) = live_and_commit(&s, cmd, base.clone(), &pts);

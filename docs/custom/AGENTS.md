@@ -232,28 +232,24 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    - 驱动把数位板映射成非全屏区域时，相对换算的尺度会不对（笔迹比手快/慢），实测到再改成
      绝对换算（要拿窗口原点）。
 
-13. **抬笔收细（end taper）按参考项目的笔刷锥度来**（2026-11-19，用户问「procraft 怎样解决
-   抬笔的时候压力能顺滑的减到 0 的」后落地）：
-   - 锥度是**笔刷属性**，不是输入链路的开关：`photocraft_paint::brush::Taper`（`enabled` /
-     `end` / `size`）挂在 `BrushSettings.taper`，默认 = ProCraft 的笔尖锥度
-     `{ end: 0.2, size: 0.8 }`（`TAPER_TIME_MS = 83.34`，窗口 = `end × 83.34 ≈ 16.7 ms`），
-     旧预设没有该字段时由 `#[serde(default)]` 补成默认值，`settings_only` 整结构克隆所以存盘带上它。
-     `Taper::NONE` 关掉锥度（`brush_tests::brush()` 用它，那些用例测的是间距/压力规则本身；锥度
-     有自己的一条 `dynamics::dual_brush_tests::the_stroke_thins_over_its_last_83_ms_...`）。
-   - 不能靠「抬笔时伪造 0 压力样本」收细：ProCraft 也不这么做。它的做法是**把窗口内的 dab 存着**，
-     收笔时按 dab 在路径上的**位置**收细。我们的实现（`DabGenerator`）：
-     `route` / `route_dual` 把落在 `newest_time - 窗口` 内的 dab 存进 `held` / `held_dual`
-     （附该 dab 在路径上的累积长度 `painted`，`MOST_HELD_DABS=1024` 上限），`finish()`
-     先走软化 catch-up、walker 收尾，再 `release_tail()` 按
-     `share = 1 - size × clamp((dab 长度 - 窗口起点长度) / 窗口长度)` 收细后输出。
-   - **按路径长度而不是按 push 时刻**算 share：一个段的首个 dab 是处理下一个点时一起吐出来的，
-     用它的「到达时间」会把笔画起点也当成末尾（2 点短笔画整条被缩到 20%，
-     `brush_cmds::tests::stroke_accepts_full_points_brush_and_preset` 会红）。窗口起点取
-     `history`（每个输入点 `(time, painted)`）里最后一个 `t <= newest - 窗口` 的长度。
-   - 实时预览靠已有的 `StrokeRenderer::tail_preview()`（每帧 clone 生成器跑一次 `finish`）把
-     held 的 dab 画出来，`LiveStroke::push` 先 `surf.write_region(old, pre)` + `mark_dirty(old)`
-     再重合成，所以 held 的 dab 一直在画面上，commit 直接吃这份像素（与预览同源）；没有这一层
-     预览会「笔尖后面的 16ms 不见了」。
+13. **抬笔收细（end taper）只收压力，按参考项目的 classic 锥度来**（2026-11-19 重做，用户否掉第一版
+   后给了两条硬约束：「非常卡」和「应该只收压力而不是其他任何参数，尤其是这个锥形是严重错误的」）：
+   - 锥度是**笔刷属性**：`photocraft_paint::brush::Taper`（`enabled` / `end` / `size`）挂在
+     `BrushSettings.taper`，默认 = ProCraft 的笔尖锥度 `{ end: 0.2, size: 0.8 }`。`Taper::NONE`
+     关掉（`brush_tests::brush()` 与测预览一致性的用例用它，那些用例测的是别的机制）。
+   - 长度按**路径距离**算，不按时间：`Taper::span_px()` = `end × CLASSIC_TAPER_SPAN(512)` = 默认
+     102.4 canvas px，与笔刷尺寸无关——这就是参考截图里那条长而优雅的锥形，而不是 16.7 ms 的短锥。
+     （第一版按 83.34 ms 时间窗做，短得看不出锥度，所以「锥形严重错误」。）
+   - 实现在 `photocraft_paint::dynamics::taper_end(brush, &mut pts)`：沿点折线累计长度，
+     `grown = 1 - (total - at) / span`（0 = 锥度起点，1 = 抬笔），只乘
+     `p.pressure *= 1 - size × grown`，**别的参数一律不动**：尺寸/不透明度怎么跟压力走交给笔刷
+     自己的 dynamics。taps（总长 0）和 `Taper::NONE` 原样返回。
+   - `DabGenerator` 里**没有** hold / tail 机制：`walk` / `walk_dual` / `push` / `finish` 都是直接
+     append，实时路径零额外开销（第一版每帧跑 `tail_preview` 生成器 + 区域回读，用户判定「非常卡」）。
+   - 锥度在**抬笔时**落（`cmd/brush_cmds.rs::stroke_with` 在 filter 之后调 `taper_end`）：预览按笔
+     自己的压力画到末尾，所以锥度开启的笔画不再吃 `live_commit` 的预览像素（`!tapered`），而是整笔
+     重渲染一次——代价是收笔那一下（与参考 classic 锥度「收笔才落锥」一致）。`end_shows()` 那套
+     非 classic 的实时锥度没照搬。
    - 还没照搬的参考项（用户没要求，别顺手加）：`taper.start`（起笔 0.15 渐显）、`opacity` 锥度、
      `tip_animation`、classic taper 的 `run_on`（`RUN_ON_PEN=1` / `RUN_ON_SHRINK=0.66`）。
 

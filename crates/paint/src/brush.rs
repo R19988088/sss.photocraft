@@ -695,19 +695,23 @@ impl Default for Smoothing {
     }
 }
 
-/// The stroke's end taper (ProCraft's `Taper`, its default pen taper `{ end: 0.2, size: 0.8 }`):
-/// the input of the last `end` share of the 83 ms before the lift narrows the stamp to
-/// `1 - size` of its size, so the pen's lift thins into the stroke instead of stopping it.
+/// The stroke's end taper (ProCraft's `Taper`, its default pen taper `{ end: 0.2, size: 0.8 }`,
+/// classic): the last `end` share of `CLASSIC_TAPER_SPAN` canvas pixels before the lift fades the
+/// pen's pressure to `1 - size` of it, so the lift thins into the stroke instead of stopping it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Taper {
-    /// Off for a brush that ends full-size.
+    /// Off for a brush that ends at the pen's own lift.
     pub enabled: bool,
-    /// Share of the pen's own 83 ms before the lift that tapers (0..1).
+    /// Share of [`CLASSIC_TAPER_SPAN`] the end taper spans (0..1).
     pub end: f32,
-    /// How much of the stamp the end takes away: 0.8 leaves 20 %.
+    /// How much of the pen's pressure the end takes away: 0.8 leaves 20 %.
     pub size: f32,
 }
+
+/// A classic taper of length 1 spans this many canvas pixels, whatever the brush's size
+/// (ProCraft's `CLASSIC_TAPER_SPAN`).
+pub const CLASSIC_TAPER_SPAN: f32 = 512.0;
 
 impl Default for Taper {
     fn default() -> Self {
@@ -716,12 +720,12 @@ impl Default for Taper {
 }
 
 impl Taper {
-    /// No taper at all (a brush that ends at full size).
+    /// No taper at all (a brush that ends at the pen's own lift).
     pub const NONE: Self = Self { enabled: false, end: 0.0, size: 0.0 };
 
-    /// The taper's window in milliseconds.
-    pub fn window_ms(&self) -> f64 {
-        if self.enabled { f64::from(self.end.max(0.0)) * crate::dynamics::TAPER_TIME_MS } else { 0.0 }
+    /// How long the end taper is along the stroke, in document pixels.
+    pub fn span_px(&self) -> f64 {
+        if self.enabled { f64::from(self.end.clamp(0.0, 1.0)) * f64::from(CLASSIC_TAPER_SPAN) } else { 0.0 }
     }
 }
 

@@ -276,10 +276,16 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
     let (id, brush, zoom) = stroke_target(s, p, brush)?;
     let cmyk = doc_cmyk_space(s);
+    // The end taper is decided at the lift: the live preview laid the pen's own pressure all the
+    // way to the end, so its pixels can't stand for this stroke — the stroke renders again with its
+    // tail faded (ProCraft's classic taper lands when the stroke ends too).
+    let tapered = brush.taper.enabled && brush.taper.size > 0.0;
+    let mut pts = pts;
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
-    let live = s.live_commit.take().filter(|l| l.matches(s, cmd, p, &pts));
+    let live = s.live_commit.take().filter(|l| !tapered && l.matches(s, cmd, p, &pts));
     let from_live = live.is_some();
+    photocraft_paint::dynamics::taper_end(&brush, &mut pts);
     let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
         s.edit(label, |doc, _| {
             if let Some(l) = live {
