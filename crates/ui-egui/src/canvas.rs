@@ -134,6 +134,11 @@ use transform_controls::{transform_controls_hit, transform_controls_layers};
 pub use view_xform::{ViewXform, doc_point_at, fill_view, fit_view};
 use view_xform::{animated_view, wheel_anchor, zoom_about};
 
+/// Least span, in screen pixels, a frame's pen track must cover before it lays a stroke: a track
+/// whose samples all sit on one spot is no position at all (a driver with zero screen extents
+/// maps every packet to the same pixel), and the pointer's move stays the source instead.
+const MIN_PEN_TRACK_PX: f32 = 1.0;
+
 pub struct CanvasCache {
     pub revision: u64,
     pub texture: Option<egui::TextureHandle>,
@@ -1250,16 +1255,32 @@ fn handle_canvas_tool_stroke(
         }
         app.defer_live_stroke = true;
         let base = app.stylus.last_point_ms().map_or(now_ms, |t| t.min(now_ms));
-        // Preferences › Tablet › Tablet optimization: the pen's own positions (the WinTab
-        // packets carry the pen's coordinates, several per frame) lay the stroke along the path
-        // the hand drew. The pointer's single move a frame is a chord, which is what makes a fast
-        // stroke a polyline: its segments grow as the speed does (ProCraft reads the same packet
-        // coordinates). The pen's positions are virtual-screen pixels, so they are anchored to the
-        // frame's own pointer position: that needs no window origin, only the scale factor.
+        // The pen's own positions (the WinTab packets carry the pen's coordinates, several per
+        // frame) lay the stroke along the path the hand drew, whatever the pen page's switches
+        // say: they are the pen's real input, not an option. The pointer's single move a frame is
+        // a chord, which is what makes a fast stroke a polyline: its segments grow as the speed
+        // does (ProCraft reads the same packet coordinates). The pen's positions are
+        // virtual-screen pixels, so they are anchored to the frame's own pointer position: that
+        // needs no window origin, only the scale factor. A pen backend that reports no position
+        // (Windows Ink, a mouse) leaves the pointer's moves as the only source, as before.
         let mut timed: Vec<(egui::Pos2, Option<f64>)> = Vec::new();
-        if freehand_tool(tool) && app.stylus.optimized {
+        if freehand_tool(tool) {
             let pen: Vec<([f32; 2], f64)> = app.stylus.pen_track().into_iter().filter(|(_, at)| *at > base).collect();
+            // A track whose samples all sit on one spot is no position at all (a driver whose
+            // screen extents are zero maps every packet to the same pixel): the pointer's move
+            // stays the source rather than a stroke collapsed onto it.
+            let span = pen.first().zip(pen.last()).map_or(0.0, |(a, b)| ((a.0[0] - b.0[0]).powi(2) + (a.0[1] - b.0[1]).powi(2)).sqrt());
+            {
+                // How many pen positions a frame brought, and how far they reach: a pen whose
+                // packets never reach the stroke shows here (`PENDBG track n=1`).
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static TRACKDBG: AtomicUsize = AtomicUsize::new(0);
+                if TRACKDBG.fetch_add(1, Ordering::Relaxed) < 12 {
+                    log::info!("PENDBG track n={} span={span:.1}", pen.len());
+                }
+            }
             if pen.len() >= 2
+                && span >= MIN_PEN_TRACK_PX
                 && let Some(anchor) = positions.last().copied().or_else(|| ui.input(|i| i.pointer.latest_pos()))
             {
                 let scale = ctx.pixels_per_point().max(1e-3) as f32;

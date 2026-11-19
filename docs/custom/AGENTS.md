@@ -214,11 +214,13 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    - `photocraft-tablet` 的 `Sample` 多了 `pos: Option<[f32;2]>`，WinTab 的 `poll` 用
      `Context::to_screen(packet.x, packet.y)` 填（虚拟屏幕像素，y 向下）；Ink/macOS/X11 仍是 `None`。
    - `PenSample.pos` 一路带到 `ui-egui`，`Stylus::pen_track()` 给出这一帧的 `(位置, 时刻)`。
-   - `canvas.rs` 的 freehand 分支在**数位板优化开**时用这些位置铺笔迹：系统光标只提供**锚点**
-     （这一帧最新的指针位置），笔的位置按 `(p - 最新样本)/pixels_per_point` 相对换算，
-     因此不需要窗口原点或 DPR 绝对换算；比最后一个点旧的样本丢掉（`at > base`）。
-   - 开关关（默认）时行为与旧链路一样，仍只用 `pointer_moves`。不要把它做成默认，
-     驱动把数位板映射成非全屏区域时相对换算的尺度会不对，需要用户实测确认。
+   - `canvas.rs` 的 freehand 分支用这些位置铺笔迹（**不看任何开关**：笔的真实位置不是选项）：
+     系统光标只提供**锚点**（这一帧最新的指针位置），笔的位置按 `(p - 最新样本)/pixels_per_point`
+     相对换算，因此不需要窗口原点或 DPR 绝对换算；比最后一个点旧的样本丢掉（`at > base`）。
+   - 一帧的笔轨迹跨度 < `MIN_PEN_TRACK_PX`(1px) 时整段丢掉（驱动把每个包都映射到同一像素 =
+     没有位置），退回 `pointer_moves`；Windows Ink / 鼠标本来就 `pos=None`，也走旧链路。
+   - 驱动把数位板映射成非全屏区域时，相对换算的尺度会不对（笔迹比手快/慢），实测到再改成
+     绝对换算（要拿窗口原点）。
 
 ## 6. 交付物
 

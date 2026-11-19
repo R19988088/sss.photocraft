@@ -78,7 +78,11 @@
   `Sample::pos` → `PenSample::pos` → `Stylus::pen_track()`，数位板优化开时由 `canvas.rs` 以系统
   光标的最新位置为锚点铺点（相对换算，不需要窗口原点/DPR）。原来只有 winit 的 cursor（实测
   约 60Hz，一帧一点），快速划动时相邻点被拉成 ~90px 长弦，笔迹就是直线段折线——和 dab 间距无关。
-  细则是 `AGENTS.md` §5 第 12 条；未开启开关时行为与旧链路一致。
+  细则是 `AGENTS.md` §5 第 12 条；这条**不看「数位板优化」开关**，笔有位置就一直用。
+- **整树 Apply 时笔页的镜像最后写**（2026-11-19，修「开关打开后点应用又关了」）：Apply/OK 发的是
+  整棵树，`tablet.optimization` 与它对应的 `tools.tabletOptimization` 同时在树里（后者还是旧值），
+  按 key 顺序 `tools` 在后会把刚打开的开关盖回去。`Session::set_pref` 的整树分支现在把 `tablet`
+  镜像留到 `tools` 之后再写；`Preferences::set("")` 也做同样的折叠。
 
 注意：选项栏的 `pressure_size` 快捷开关保持上游默认 `false`。
 「每个参数的控制默认 Off」由 `Dynamic::default()` 的 `Control::Off` 保证，两者是不同层级。

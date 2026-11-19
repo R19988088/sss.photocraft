@@ -1541,6 +1541,17 @@ impl Preferences {
         }
         let mut root = self.to_json();
         set_path(&mut root, path, value)?;
+        // A whole-tree update (Apply/OK send every value at once) carries the pen page's mirror
+        // object, whose keys are stored under `tools`. Folding it back first keeps a mirrored
+        // setting the page just changed (`tablet.optimization`) from being shadowed by the stale
+        // `tools` copy the same tree also carries.
+        if path.is_empty() && let Some(page) = root.get("tablet").and_then(Value::as_object).cloned() {
+            for (key, value) in page {
+                if let Some(target) = tablet_storage_path(&key) {
+                    set_path(&mut root, target, value)?;
+                }
+            }
+        }
         *self = serde_json::from_value(root).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
         // A whole-section update can carry `tools.useTabletPressure` too: there is no switch any
         // more, so it stays on.
@@ -1822,7 +1833,16 @@ impl Session {
         if path.is_empty() || SECTIONS.iter().any(|(id, _)| *id == path) || matches!(path, "shortcuts" | "alternateShortcuts" | "menus" | "toolbar") {
             // Whole section (or everything): merge the object key by key so each value is checked.
             let obj = value.as_object().ok_or_else(|| format!("`{path}` needs an object"))?;
+            // Apply and OK send every value at once, and that tree carries the pen page's mirror
+            // (`tablet`) beside the `tools` copy its keys are stored under. The mirror is what the
+            // page just edited, so it goes last: otherwise `tools.tabletOptimization` (still the
+            // old value in the same tree) would shadow the switch that was just turned on.
+            let mut page: Option<&Map<String, Value>> = None;
             for (k, v) in obj {
+                if path.is_empty() && k == "tablet" {
+                    page = v.as_object();
+                    continue;
+                }
                 let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
                 if path.is_empty() && k == "colorSettings" {
                     color_changed |= self.set_pref("colorSettings", v.clone(), validate_color)?;
@@ -1839,6 +1859,11 @@ impl Session {
                     }
                 } else {
                     next.set(&p, v.clone())?;
+                }
+            }
+            for (k, v) in page.into_iter().flatten() {
+                if let Some(target) = tablet_storage_path(k) {
+                    next.set(target, v.clone())?;
                 }
             }
         } else {

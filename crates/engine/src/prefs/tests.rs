@@ -557,6 +557,26 @@ fn tablet_optimization_defaults_off_and_the_pen_page_owns_it() {
 }
 
 #[test]
+fn a_whole_tree_apply_keeps_the_pen_pages_own_settings() {
+    // Apply and OK send every value at once: the working copy carries the pen page's mirror
+    // (`tablet.optimization`) next to the stale `tools` copy it started from. Folding the mirror
+    // back is what keeps a switch just turned on from snapping back off (reported 2026-11-19).
+    let mut s = session();
+    let mut values = s.prefs().to_json();
+    values["tablet"]["optimization"] = json!(true);
+    values["tablet"]["tabletInput"] = json!("winTab");
+    assert_eq!(values["tools"]["tabletOptimization"], json!(false), "the tree still holds the old copy");
+    s.execute("prefs.set", json!({"path": "", "value": values})).unwrap();
+    assert!(s.prefs().tools.tablet_optimization, "the page's value wins over the stale copy");
+    assert_eq!(s.prefs().tools.tablet_input.name(), "winTab");
+    // Turning it off through the same whole-tree apply works too.
+    let mut values = s.prefs().to_json();
+    values["tablet"]["optimization"] = json!(false);
+    s.execute("prefs.set", json!({"path": "", "value": values})).unwrap();
+    assert!(!s.prefs().tools.tablet_optimization);
+}
+
+#[test]
 fn use_tablet_pressure_has_no_switch_any_more() {
     // Preferences › Tablet shows the pen's curve and the optimization switch; the pen always
     // paints with its pressure, so nothing can turn it off (a script, a whole-section update or
