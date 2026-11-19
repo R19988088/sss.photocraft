@@ -489,7 +489,39 @@ fn tip_from_image_with(bytes: &[u8], invert_luma: bool, max_channel: bool) -> Re
             luma[(y * w + x) as usize] = (v * a * 255.0 + 0.5) as u8;
         }
     }
+    let (w, h, luma) = downsampled_luma(w, h, &luma);
     Ok(cropped_tile(w, h, &luma))
+}
+
+/// The largest tip a file may contribute: Procreate ships 2048 px shapes, but the brush engine
+/// rasterises sampled tips per dab, so an oversized tip turns a stroke into seconds of CPU work.
+const MAX_TIP_SIDE: u32 = 1024;
+
+/// Box-average a coverage plane down to at most [`MAX_TIP_SIDE`] on its long side.
+fn downsampled_luma(w: u32, h: u32, luma: &[u8]) -> (u32, u32, Vec<u8>) {
+    let factor = (w.max(h)).div_ceil(MAX_TIP_SIDE).max(1);
+    if factor <= 1 {
+        return (w, h, luma.to_vec());
+    }
+    let (dw, dh) = ((w / factor).max(1), (h / factor).max(1));
+    let mut out = vec![0u8; (dw * dh) as usize];
+    for y in 0..dh {
+        for x in 0..dw {
+            let mut sum = 0u32;
+            let mut n = 0u32;
+            for dy in 0..factor {
+                for dx in 0..factor {
+                    let (sx, sy) = (x * factor + dx, y * factor + dy);
+                    if sx < w && sy < h {
+                        sum += u32::from(luma[(sy * w + sx) as usize]);
+                        n += 1;
+                    }
+                }
+            }
+            out[(y * dw + x) as usize] = (sum / n.max(1)) as u8;
+        }
+    }
+    (dw, dh, out)
 }
 
 /// A coverage tile from straight RGBA pixels: the alpha channel is the coverage (stamps that
@@ -502,6 +534,7 @@ pub(crate) fn tip_from_rgba_alpha(w: u32, h: u32, rgba: &[u8]) -> GrayTile {
     for (i, out) in a.iter_mut().enumerate() {
         *out = rgba[i * 4 + 3];
     }
+    let (w, h, a) = downsampled_luma(w, h, &a);
     cropped_tile(w, h, &a)
 }
 
