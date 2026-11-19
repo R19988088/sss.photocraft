@@ -56,11 +56,16 @@ pub struct Sample {
     pub rotation: f32,
     /// The eraser end of the pen is in use.
     pub eraser: bool,
+    /// The pen's own position, in virtual-screen pixels (`x` right, `y` down), for the backends
+    /// that report it: the driver's WinTab packets carry the pen's coordinates, so a stroke gets
+    /// the pen's own sample rate instead of the ~60 Hz the system cursor moves at (ProCraft reads
+    /// the same `PK_X`/`PK_Y`). `None` where the backend leaves the position to the pointer.
+    pub pos: Option<[f32; 2]>,
 }
 
 impl Default for Sample {
     fn default() -> Self {
-        Self { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false }
+        Self { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false, pos: None }
     }
 }
 
@@ -77,6 +82,8 @@ impl Sample {
             // `rem_euclid` can round up to exactly 360 for tiny negative inputs.
             rotation: if rotation >= 360.0 { 0.0 } else { rotation },
             eraser: self.eraser,
+            // A position that is not two finite numbers is no position at all.
+            pos: self.pos.filter(|p| p[0].is_finite() && p[1].is_finite()),
         }
     }
 }
@@ -125,9 +132,9 @@ mod tests {
 
     #[test]
     fn sanitized_clamps_and_replaces_non_finite() {
-        let s = Sample { pressure: 1.7, tilt_x: -120.0, tilt_y: f32::NAN, rotation: -90.0, eraser: true }.sanitized();
-        assert_eq!(s, Sample { pressure: 1.0, tilt_x: -90.0, tilt_y: 0.0, rotation: 270.0, eraser: true });
-        let s = Sample { pressure: f32::NAN, tilt_x: f32::INFINITY, tilt_y: f32::NEG_INFINITY, rotation: f32::INFINITY, eraser: false }.sanitized();
+        let s = Sample { pressure: 1.7, tilt_x: -120.0, tilt_y: f32::NAN, rotation: -90.0, eraser: true, pos: None }.sanitized();
+        assert_eq!(s, Sample { pressure: 1.0, tilt_x: -90.0, tilt_y: 0.0, rotation: 270.0, eraser: true, pos: None });
+        let s = Sample { pressure: f32::NAN, tilt_x: f32::INFINITY, tilt_y: f32::NEG_INFINITY, rotation: f32::INFINITY, eraser: false, pos: None }.sanitized();
         assert_eq!(s, Sample::default());
         let s = Sample { pressure: -0.5, rotation: -1e-9, ..Default::default() }.sanitized();
         assert_eq!((s.pressure, s.rotation), (0.0, 0.0));

@@ -138,7 +138,9 @@ pub fn poll(focused: bool, callback: &dyn Fn(Option<Sample>)) {
                         }
                         continue;
                     }
-                    let sample = sample(&packet, pressure_axis, axes);
+                    let (px, py) = context.to_screen(packet.x, packet.y);
+                    let pos = [px as f32, py as f32];
+                    let sample = sample(&packet, pressure_axis, axes, pos);
                     *last_packet = Instant::now();
                     *emitted = true;
                     callback(Some(sample));
@@ -155,7 +157,9 @@ pub fn poll(focused: bool, callback: &dyn Fn(Option<Sample>)) {
                         }
                         continue;
                     }
-                    let sample = sample_pressure(&packet, pressure_axis);
+                    let (px, py) = context.to_screen(packet.x, packet.y);
+                    let pos = [px as f32, py as f32];
+                    let sample = sample_pressure(&packet, pressure_axis, pos);
                     *last_packet = Instant::now();
                     *emitted = true;
                     callback(Some(sample));
@@ -210,7 +214,7 @@ pub fn uninstall() {
 ///
 /// Angles come from the device's own axes (`TU_CIRCLE`), falling back to Wintab's usual tenths
 /// of a degree when an axis does not measure angles.
-fn sample(packet: &PenPacket, pressure: &wintab::Axis, orientation: &[wintab::Axis; 3]) -> Sample {
+fn sample(packet: &PenPacket, pressure: &wintab::Axis, orientation: &[wintab::Axis; 3], pos: [f32; 2]) -> Sample {
     let raw = packet.orientation;
     let degrees = |index: usize, value: i32| orientation[index].degrees(value).map_or(value as f32 / 10.0, |degrees| degrees as f32);
     let azimuth = degrees(0, raw.azimuth).to_radians();
@@ -228,14 +232,22 @@ fn sample(packet: &PenPacket, pressure: &wintab::Axis, orientation: &[wintab::Ax
         tilt_y: in_plane_y.atan2(height).to_degrees(),
         rotation: degrees(2, raw.twist),
         eraser: packet.status.inverted(),
+        pos: Some(pos),
     }
     .sanitized()
 }
 
 /// One packet from a device without orientation axes: pressure and the eraser end, neutral tilt.
-fn sample_pressure(packet: &PressurePacket, pressure: &wintab::Axis) -> Sample {
-    Sample { pressure: pressure.normalize(packet.normal_pressure as i32), tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: packet.status.inverted() }
-        .sanitized()
+fn sample_pressure(packet: &PressurePacket, pressure: &wintab::Axis, pos: [f32; 2]) -> Sample {
+    Sample {
+        pressure: pressure.normalize(packet.normal_pressure as i32),
+        tilt_x: 0.0,
+        tilt_y: 0.0,
+        rotation: 0.0,
+        eraser: packet.status.inverted(),
+        pos: Some(pos),
+    }
+    .sanitized()
 }
 
 #[cfg(test)]
@@ -267,9 +279,9 @@ mod tests {
     #[test]
     fn pressure_maps_through_the_device_axis() {
         let axes = axes();
-        let s = sample(&packet(16384), &pressure_axis(), &axes);
+        let s = sample(&packet(16384), &pressure_axis(), &axes, [0.0, 0.0]);
         assert!((s.pressure - 0.5).abs() < 0.01, "{}", s.pressure);
-        let s = sample(&packet(0), &pressure_axis(), &axes);
+        let s = sample(&packet(0), &pressure_axis(), &axes, [0.0, 0.0]);
         assert_eq!(s.pressure, 0.0);
     }
 
@@ -278,8 +290,8 @@ mod tests {
     fn eraser_comes_from_the_inverted_status() {
         let axes = axes();
         let inverted = PenPacket { status: wintab::Status(wintab::sys::TPS_INVERT), ..packet(0) };
-        assert!(sample(&inverted, &pressure_axis(), &axes).eraser);
-        assert!(!sample(&packet(0), &pressure_axis(), &axes).eraser);
+        assert!(sample(&inverted, &pressure_axis(), &axes, [0.0, 0.0]).eraser);
+        assert!(!sample(&packet(0), &pressure_axis(), &axes, [0.0, 0.0]).eraser);
     }
 
     /// Orientation axes are converted to degrees for the W3C tilt projection.
@@ -287,7 +299,7 @@ mod tests {
     fn orientation_axes_report_degrees() {
         let axes = axes();
         let tilted = PenPacket { orientation: wintab::Orientation { azimuth: 450, altitude: 300, twist: 900 }, ..packet(0) };
-        let sample = sample(&tilted, &pressure_axis(), &axes);
+        let sample = sample(&tilted, &pressure_axis(), &axes, [0.0, 0.0]);
         assert!((sample.tilt_x - 50.8).abs() < 0.1, "{}", sample.tilt_x);
         assert!((sample.tilt_y + 50.8).abs() < 0.1, "{}", sample.tilt_y);
         assert!((sample.rotation - 90.0).abs() < 0.1, "{}", sample.rotation);
@@ -296,11 +308,11 @@ mod tests {
     /// A pressure-only device keeps pressure and the eraser end, with neutral tilt.
     #[test]
     fn pressure_only_devices_get_pressure_and_neutral_tilt() {
-        let s = sample_pressure(&pressure_packet(16384), &pressure_axis());
+        let s = sample_pressure(&pressure_packet(16384), &pressure_axis(), [0.0, 0.0]);
         assert!((s.pressure - 0.5).abs() < 0.01, "{}", s.pressure);
         assert_eq!((s.tilt_x, s.tilt_y, s.rotation), (0.0, 0.0, 0.0));
         let inverted = PressurePacket { status: wintab::Status(wintab::sys::TPS_INVERT), ..pressure_packet(0) };
-        assert!(sample_pressure(&inverted, &pressure_axis()).eraser);
+        assert!(sample_pressure(&inverted, &pressure_axis(), [0.0, 0.0]).eraser);
     }
 
     /// Wintab azimuth 0 is the tablet top; W3C axes are right and toward the user.
@@ -309,7 +321,7 @@ mod tests {
         let axes = axes();
         let tilt = |azimuth: i32| {
             let p = PenPacket { orientation: wintab::Orientation { azimuth, altitude: 450, twist: 0 }, ..packet(0) };
-            sample(&p, &pressure_axis(), &axes)
+            sample(&p, &pressure_axis(), &axes, [0.0, 0.0])
         };
         let top = tilt(0);
         assert!(top.tilt_x.abs() < 0.1 && (top.tilt_y + 45.0).abs() < 0.1, "{top:?}");
@@ -326,10 +338,10 @@ mod tests {
     fn an_upright_pen_has_no_tilt_and_a_flat_one_has_the_most() {
         let axes = axes();
         let upright = PenPacket { orientation: wintab::Orientation { azimuth: 0, altitude: 900, twist: 0 }, ..packet(0) };
-        let s = sample(&upright, &pressure_axis(), &axes);
+        let s = sample(&upright, &pressure_axis(), &axes, [0.0, 0.0]);
         assert!(s.tilt_x.abs() < 0.1 && s.tilt_y.abs() < 0.1, "{s:?}");
         let flat = PenPacket { orientation: wintab::Orientation { azimuth: 0, altitude: 0, twist: 0 }, ..packet(0) };
-        let s = sample(&flat, &pressure_axis(), &axes);
+        let s = sample(&flat, &pressure_axis(), &axes, [0.0, 0.0]);
         assert!(s.tilt_x.abs() < 0.1 && (s.tilt_y + 90.0).abs() < 0.1, "{s:?}");
     }
 }

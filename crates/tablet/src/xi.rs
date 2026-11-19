@@ -171,6 +171,7 @@ impl State {
                 tilt_y: tilt_y.unwrap_or(0.0),
                 rotation: rotation.unwrap_or(0.0),
                 eraser: dev.eraser,
+                pos: None,
             }
             .sanitized(),
         ))

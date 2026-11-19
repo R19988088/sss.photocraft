@@ -206,6 +206,20 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    - `pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins` 的时间戳按 240Hz（4ms）
      且压力末段保持 0.2：软化让压力滞后几帧，这是行为不是 bug，别把断言改回去。
 
+12. **笔迹的点来自笔本身，不是系统光标**（2026-11-19，「速度还是影响了距离」的根因）：
+   ProCraft 的 `desktop/src/pen/windows*.rs` 读 WinTab 包的 `PK_X`/`PK_Y`，位置按笔的采样率到；
+   我们原来只用 winit 的 cursor 事件，实测约 60Hz（一帧一个点，`tool_input` 的 `PENDBG move#`
+   相邻两条 17–31ms），快速划动时相邻两点被拉成 ~90px 的长弦，于是笔迹是等宽直线段拼的折线
+   （不是 dab 间距问题：放大后看不到 dab 珠链）。
+   - `photocraft-tablet` 的 `Sample` 多了 `pos: Option<[f32;2]>`，WinTab 的 `poll` 用
+     `Context::to_screen(packet.x, packet.y)` 填（虚拟屏幕像素，y 向下）；Ink/macOS/X11 仍是 `None`。
+   - `PenSample.pos` 一路带到 `ui-egui`，`Stylus::pen_track()` 给出这一帧的 `(位置, 时刻)`。
+   - `canvas.rs` 的 freehand 分支在**数位板优化开**时用这些位置铺笔迹：系统光标只提供**锚点**
+     （这一帧最新的指针位置），笔的位置按 `(p - 最新样本)/pixels_per_point` 相对换算，
+     因此不需要窗口原点或 DPR 绝对换算；比最后一个点旧的样本丢掉（`at > base`）。
+   - 开关关（默认）时行为与旧链路一样，仍只用 `pointer_moves`。不要把它做成默认，
+     驱动把数位板映射成非全屏区域时相对换算的尺度会不对，需要用户实测确认。
+
 ## 6. 交付物
 
 - `dist/release/PhotoCraft.app`、`dist/release/PhotoCraft-0.24.0-arm64.zip`（`custom-merged` 的构建产物）。

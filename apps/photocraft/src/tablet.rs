@@ -27,7 +27,7 @@ use photocraft_ui_egui::stylus::{PenSample, StylusFeed};
 /// A tablet sample as the UI's pen sample.
 #[allow(dead_code)]
 pub fn pen_sample(s: Sample) -> PenSample {
-    PenSample { pressure: s.pressure, tilt_x: s.tilt_x, tilt_y: s.tilt_y, rotation: s.rotation, eraser: s.eraser }.sanitized()
+    PenSample { pressure: s.pressure, tilt_x: s.tilt_x, tilt_y: s.tilt_y, rotation: s.rotation, eraser: s.eraser, pos: s.pos }.sanitized()
 }
 
 /// Writes tablet samples into `feed` (`None` = a mouse).

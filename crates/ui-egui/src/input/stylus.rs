@@ -43,11 +43,14 @@ pub struct PenSample {
     pub rotation: f32,
     /// The pen's eraser end is in use.
     pub eraser: bool,
+    /// The pen's own position in virtual-screen pixels (`x` right, `y` down) when the backend
+    /// reports one (WinTab's packets), so a stroke follows the pen's rate instead of the pointer's.
+    pub pos: Option<[f32; 2]>,
 }
 
 impl Default for PenSample {
     fn default() -> Self {
-        Self { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false }
+        Self { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false, pos: None }
     }
 }
 
@@ -62,6 +65,7 @@ impl PenSample {
             // `rem_euclid` rounds tiny negative angles up to exactly 360.
             rotation: if self.rotation.is_finite() { self.rotation.rem_euclid(360.0) % 360.0 } else { 0.0 },
             eraser: self.eraser,
+            pos: self.pos.filter(|p| p[0].is_finite() && p[1].is_finite()),
         }
     }
 }
@@ -158,12 +162,17 @@ struct TimedSample {
 fn lerp_sample(a: PenSample, b: PenSample, t: f32) -> PenSample {
     let lerp = |x: f32, y: f32| x + (y - x) * t;
     let round = (b.rotation - a.rotation + 540.0).rem_euclid(360.0) - 180.0;
+    let pos = match (a.pos, b.pos) {
+        (Some(a), Some(b)) => Some([lerp(a[0], b[0]), lerp(a[1], b[1])]),
+        _ => None,
+    };
     PenSample {
         pressure: lerp(a.pressure, b.pressure),
         tilt_x: lerp(a.tilt_x, b.tilt_x),
         tilt_y: lerp(a.tilt_y, b.tilt_y),
         rotation: a.rotation + round * t,
         eraser: b.eraser,
+        pos,
     }
     .sanitized()
 }
@@ -445,6 +454,14 @@ impl Stylus {
     /// calibration: pressing the pen while dragging there records its peak.
     pub(crate) fn calibration_peak(&self) -> Option<f32> {
         self.frame.iter().map(|s| s.sample).chain(self.feed.get()).map(|s| s.pressure).reduce(f32::max)
+    }
+
+    /// This frame's pen positions (virtual-screen pixels, `x` right and `y` down) with the time
+    /// each came, oldest first, for the canvas to lay a stroke along the pen's own samples instead
+    /// of the few pointer moves a frame gets. Empty for a mouse and for a backend that reports no
+    /// position (the pointer's moves are then the only source, as before).
+    pub fn pen_track(&self) -> Vec<([f32; 2], f64)> {
+        self.frame.iter().filter_map(|s| s.sample.pos.map(|p| (p, s.at))).collect()
     }
 
     /// The current pen sample, `None` for a mouse (and for any pen while Use Tablet Pressure is

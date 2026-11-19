@@ -71,6 +71,32 @@ fn pen(pressure: f32) -> PenSample {
     PenSample { pressure, ..Default::default() }
 }
 
+/// The pen's own positions (WinTab packets carry them) come with the frame, oldest first and
+/// stamped with the frame's clock, so the canvas can lay a stroke along the pen's samples rather
+/// than the pointer's one move a frame. A mouse, or a backend with no position, gives none.
+#[test]
+fn the_frames_pen_positions_come_with_their_times() {
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.clock_ms = 500.0;
+    let base = pen_clock_ms();
+    s.feed.set_at(PenSample { pressure: 0.3, pos: Some([100.0, 200.0]), ..Default::default() }, base - 8.0);
+    s.feed.set_at(PenSample { pressure: 0.5, pos: Some([140.0, 210.0]), ..Default::default() }, base - 4.0);
+    s.feed.set_at(PenSample { pressure: 0.7, pos: Some([180.0, 220.0]), ..Default::default() }, base);
+    s.update(&[]);
+    let track = s.pen_track();
+    assert_eq!(track.len(), 3, "every sample of the frame, not only the last");
+    assert_eq!(track[0].0, [100.0, 200.0]);
+    assert_eq!(track[2].0, [180.0, 220.0]);
+    assert!(track[2].1 > track[1].1 && track[1].1 > track[0].1, "oldest first: {track:?}");
+    assert!((track[2].1 - 500.0).abs() < 1e-6, "the newest sample is the frame's own: {track:?}");
+    // A sample without a position is no position, and a mouse has none at all.
+    let mut plain = Stylus { optimized: true, ..Default::default() };
+    plain.clock_ms = 500.0;
+    plain.feed.set_at(pen(0.4), pen_clock_ms());
+    plain.update(&[]);
+    assert!(plain.pen_track().is_empty());
+}
+
 #[test]
 fn the_feed_queues_every_sample_in_order_and_keeps_the_latest() {
     let feed = StylusFeed::default();
@@ -292,8 +318,8 @@ fn a_new_tap_in_the_frame_an_old_one_lifted_keeps_its_force() {
 fn feed_wins_and_is_sanitized() {
     let mut s = Stylus::default();
     s.update(&[touch(egui::TouchPhase::Start, Some(0.3))]);
-    s.feed.set(Some(PenSample { pressure: 0.6, tilt_x: 120.0, tilt_y: -30.0, rotation: -90.0, eraser: false }));
-    assert_eq!(s.sample(), Some(PenSample { pressure: 0.6, tilt_x: 90.0, tilt_y: -30.0, rotation: 270.0, eraser: false }));
+    s.feed.set(Some(PenSample { pressure: 0.6, tilt_x: 120.0, tilt_y: -30.0, rotation: -90.0, eraser: false, pos: None }));
+    assert_eq!(s.sample(), Some(PenSample { pressure: 0.6, tilt_x: 90.0, tilt_y: -30.0, rotation: 270.0, eraser: false, pos: None }));
     s.feed.set(None);
     assert_eq!(s.pressure(), 0.3);
 }
@@ -307,10 +333,10 @@ fn pen_samples_reach_the_brush_stroke() {
     app.session.execute("layer.new.layer", json!({})).unwrap();
     app.ui.tool = crate::state::Tool::Brush;
     let m = egui::Modifiers::NONE;
-    app.stylus.feed.set(Some(PenSample { pressure: 0.2, tilt_x: 40.0, tilt_y: 0.0, rotation: 30.0, eraser: false }));
+    app.stylus.feed.set(Some(PenSample { pressure: 0.2, tilt_x: 40.0, tilt_y: 0.0, rotation: 30.0, eraser: false, pos: None }));
     let pr = app.stylus.pressure();
     tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 40.0, pressure: pr }, m);
-    app.stylus.feed.set(Some(PenSample { pressure: 0.9, tilt_x: 10.0, tilt_y: -5.0, rotation: 60.0, eraser: false }));
+    app.stylus.feed.set(Some(PenSample { pressure: 0.9, tilt_x: 10.0, tilt_y: -5.0, rotation: 60.0, eraser: false, pos: None }));
     let pr = app.stylus.pressure();
     tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 40.0, pressure: pr }, m);
     tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 40.0 }, m);
@@ -334,7 +360,7 @@ fn stroke_points_carry_tilt_only_when_present() {
     s.begin_stroke();
     s.record_point();
     assert_eq!(s.stroke_points(&pts)[1], vec![10.0, 0.0, 0.7]);
-    s.feed.set(Some(PenSample { pressure: 0.7, tilt_x: 30.0, tilt_y: 10.0, rotation: 45.0, eraser: false }));
+    s.feed.set(Some(PenSample { pressure: 0.7, tilt_x: 30.0, tilt_y: 10.0, rotation: 45.0, eraser: false, pos: None }));
     s.record_point();
     let out = s.stroke_points(&pts);
     assert_eq!(out[0], vec![0.0, 0.0, 0.5, 0.0, 0.0, 0.0]);

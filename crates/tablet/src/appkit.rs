@@ -142,7 +142,7 @@ impl State {
         }
         self.eraser = e.device == device::ERASER;
         // Hovering: no pressure yet, but the end in use is known (the eraser switch happens now).
-        Update::Set(Some(Sample { pressure: 0.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: self.eraser }))
+        Update::Set(Some(Sample { pressure: 0.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: self.eraser, pos: None }))
     }
 
     fn sample(&self, e: &RawEvent) -> Sample {
@@ -154,6 +154,7 @@ impl State {
             tilt_y: -tilt(e.tilt.1),
             rotation: e.rotation,
             eraser: self.eraser,
+            pos: None,
         }
         .sanitized()
     }
@@ -178,7 +179,7 @@ mod tests {
     fn tablet_mouse_events_carry_pressure_tilt_and_rotation() {
         let mut st = State::default();
         let s = set(st.handle(&pen(event_type::LEFT_MOUSE_DRAGGED, 0.5, (0.5, -0.25), 30.0))).unwrap();
-        assert_eq!(s, Sample { pressure: 0.5, tilt_x: 30.0, tilt_y: 15.0, rotation: 30.0, eraser: false });
+        assert_eq!(s, Sample { pressure: 0.5, tilt_x: 30.0, tilt_y: 15.0, rotation: 30.0, eraser: false, pos: None });
         let s = set(st.handle(&pen(event_type::TABLET_POINT, 0.8, (-1.0, 1.0), 0.0))).unwrap();
         assert_eq!((s.pressure, s.tilt_x, s.tilt_y), (0.8, -60.0, -60.0));
     }
@@ -236,9 +237,9 @@ mod tests {
     fn malformed_values_are_clamped_not_trusted() {
         let mut st = State::default();
         let s = set(st.handle(&pen(event_type::LEFT_MOUSE_DRAGGED, f32::NAN, (f64::NAN, f64::INFINITY), f32::NAN))).unwrap();
-        assert_eq!(s, Sample { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false });
+        assert_eq!(s, Sample { pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, eraser: false, pos: None });
         let s = set(st.handle(&pen(event_type::LEFT_MOUSE_DRAGGED, 4.0, (7.0, -9.0), -30.0))).unwrap();
-        assert_eq!(s, Sample { pressure: 1.0, tilt_x: 60.0, tilt_y: 60.0, rotation: 330.0, eraser: false });
+        assert_eq!(s, Sample { pressure: 1.0, tilt_x: 60.0, tilt_y: 60.0, rotation: 330.0, eraser: false, pos: None });
         let s = set(st.handle(&pen(event_type::LEFT_MOUSE_DRAGGED, -1.0, (f64::MAX, f64::MIN), f32::MAX))).unwrap();
         assert!(s.pressure == 0.0 && s.tilt_x == 60.0 && s.tilt_y == 60.0 && (0.0..360.0).contains(&s.rotation));
     }

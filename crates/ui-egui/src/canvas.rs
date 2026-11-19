@@ -1250,9 +1250,34 @@ fn handle_canvas_tool_stroke(
         }
         app.defer_live_stroke = true;
         let base = app.stylus.last_point_ms().map_or(now_ms, |t| t.min(now_ms));
-        let n = positions.len();
-        for (k, p) in positions.into_iter().enumerate() {
-            app.stylus.clock_ms = spread_ms(base, now_ms, k, n);
+        // Preferences › Tablet › Tablet optimization: the pen's own positions (the WinTab
+        // packets carry the pen's coordinates, several per frame) lay the stroke along the path
+        // the hand drew. The pointer's single move a frame is a chord, which is what makes a fast
+        // stroke a polyline: its segments grow as the speed does (ProCraft reads the same packet
+        // coordinates). The pen's positions are virtual-screen pixels, so they are anchored to the
+        // frame's own pointer position: that needs no window origin, only the scale factor.
+        let mut timed: Vec<(egui::Pos2, Option<f64>)> = Vec::new();
+        if freehand_tool(tool) && app.stylus.optimized {
+            let pen: Vec<([f32; 2], f64)> = app.stylus.pen_track().into_iter().filter(|(_, at)| *at > base).collect();
+            if pen.len() >= 2
+                && let Some(anchor) = positions.last().copied().or_else(|| ui.input(|i| i.pointer.latest_pos()))
+            {
+                let scale = ctx.pixels_per_point().max(1e-3) as f32;
+                let newest = pen[pen.len() - 1];
+                for (p, at) in &pen[..pen.len() - 1] {
+                    let at_pointer = egui::pos2(anchor.x + (p[0] - newest.0[0]) / scale, anchor.y + (p[1] - newest.0[1]) / scale);
+                    timed.push((at_pointer, Some(*at)));
+                }
+                // The newest sample is where the pointer itself is, at the frame's end.
+                timed.push((anchor, Some(newest.1)));
+                positions.clear();
+            }
+        }
+        let spread: Vec<(egui::Pos2, Option<f64>)> = positions.into_iter().map(|p| (p, None)).collect();
+        timed.extend(spread);
+        let n = timed.len();
+        for (k, (p, at)) in timed.into_iter().enumerate() {
+            app.stylus.clock_ms = at.unwrap_or_else(|| spread_ms(base, now_ms, k, n));
             // This move's share of the pen samples the frame brought (pressure, tilt, rotation).
             app.stylus.select(k, n);
             let d = xf.to_doc(p);

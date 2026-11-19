@@ -2380,7 +2380,7 @@ fn live_stroke_uses_pen_tilt_and_updates_a_reduced_texture_partially() {
     app.ui.tool = Tool::Brush;
     assert_eq!(ensure_texture(&mut app, &ctx, 0, None).map(|t| t.1), Some(0.5));
     let m = egui::Modifiers::NONE;
-    app.stylus.feed.set(Some(crate::stylus::PenSample { pressure: 1.0, tilt_x: 60.0, tilt_y: 0.0, rotation: 0.0, eraser: false }));
+    app.stylus.feed.set(Some(crate::stylus::PenSample { pressure: 1.0, tilt_x: 60.0, tilt_y: 0.0, rotation: 0.0, eraser: false, pos: None }));
     tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 45.0, pressure: 1.0 }, m);
     for x in [300.0, 600.0, 900.0] {
         tool_event(&mut app, ToolEvent::Move { x, y: 45.0, pressure: 1.0 }, m);

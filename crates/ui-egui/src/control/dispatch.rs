@@ -1519,7 +1519,7 @@ fn forward_pointer_event(app: &mut PhotocraftApp, g: &PointerGesture, s: Pointer
     // A simulated pen: tilt/rotation reach the stroke like a real stylus's (see `stylus`).
     if s.pen != (None, None, None) {
         let (tilt_x, tilt_y, rotation) = (s.pen.0.unwrap_or(0.0), s.pen.1.unwrap_or(0.0), s.pen.2.unwrap_or(0.0));
-        app.stylus.feed.set(Some(crate::stylus::PenSample { pressure: s.pressure, tilt_x, tilt_y, rotation, eraser: false }));
+        app.stylus.feed.set(Some(crate::stylus::PenSample { pressure: s.pressure, tilt_x, tilt_y, rotation, eraser: false, pos: None }));
     }
     if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
         d.reposition = g.space;

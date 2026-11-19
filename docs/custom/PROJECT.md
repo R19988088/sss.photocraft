@@ -74,6 +74,11 @@
   25 px 起、125 px 满，sqrt 曲线、3 帧平滑），压力走 `SOFTEN_FRAMES=2` 的软化（头几个点渐入，
   之后按帧计低通）。没位移的点（抬笔/原地加压）不软化、不改速度，抬笔压力仍是原始读数。
   细则与测试口径见 `AGENTS.md` §5 第 11 条。
+- **笔迹的点取自笔本身**（2026-11-19，「速度还是影响了距离」）：winTab 包的 `PK_X/PK_Y` 进
+  `Sample::pos` → `PenSample::pos` → `Stylus::pen_track()`，数位板优化开时由 `canvas.rs` 以系统
+  光标的最新位置为锚点铺点（相对换算，不需要窗口原点/DPR）。原来只有 winit 的 cursor（实测
+  约 60Hz，一帧一点），快速划动时相邻点被拉成 ~90px 长弦，笔迹就是直线段折线——和 dab 间距无关。
+  细则是 `AGENTS.md` §5 第 12 条；未开启开关时行为与旧链路一致。
 
 注意：选项栏的 `pressure_size` 快捷开关保持上游默认 `false`。
 「每个参数的控制默认 Off」由 `Dynamic::default()` 的 `Control::Off` 保证，两者是不同层级。
