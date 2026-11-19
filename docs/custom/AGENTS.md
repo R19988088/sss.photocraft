@@ -126,23 +126,69 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
 用户对笔迹的判断口径是画面：**直线棱角 = 点数不足；墨迹落后指针 / 每笔乱跑 = 定位被破坏**。
 下面几条是踩过坑之后定下来的，不要回退：
 
-1. **dab 间距只跟笔刷尺寸与百分比有关**：`dynamics.rs` 的 `DabBuilder::step_len`（以及 Dual Brush 的
-   `DualBuilder::step_len`）= `max(0.5, 笔刷 size × spacing%)`，size 取笔刷面板本身的尺寸（不小于 1px）。
-   笔压/倾斜/速度的尺寸动力学只改 dab 大小，**不改 dab 间距**——用户口径是「间距必须只和实际尺寸
-   有关」，试过跟随 `base_diameter`（PS 行为），轻压时"小 dab + 大盘距"会读成间距被速度带跑，2026-11-16
-   两次往返后定回本规则。
-   `PathWalker` 里**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
+1. **dab 间距跟着 dab 的实际尺寸走**（ProCraft 口径，2026-11-19 用户推翻旧规则后定下）：
+   `dynamics.rs` 的 `DabBuilder::step_len`（以及 `DualBuilder::step_len`）= `max(0.5, 实际直径 × roundness × spacing%)`；
+   实际直径取 `controlled_input` 按压力/倾斜/速度算出的 `base_diameter`（含 `tilt_size` 的加宽），
+   所以笔画变细时间距同步变细、重叠密度恒定。旧规则（`size × spacing%`，dab 缩而间距不缩）正是
+   「间距随速度变稀 / 一变细就断」的来源，别再改回去。
+   `PathWalker` 用**相邻两个 gap 的均值**推进：`next_at += 0.5*(上一个 gap + 当前 gap)`，首个 gap
+   就是首个点的 `step_len`（ProCraft `StrokeBuilder::step/step_as` 的 `gap()`）。
+   **乘法必须在 f32 里做**：`b.spacing` 用 `f64::from` 展开会带上 f32 的 1e-9 误差，段长 100px 处
+   `100.00000149 > 100 + 1e-9`，段末最后一个 dab 被吃掉（`render::material_regression` 会红）。
+   ProCraft 的圆头 1.226 放大（`ROUND_TIP_SHARE`）与 `+extra` 半像素额外间距**没有**照搬：本仓库保持
+   PS 的精确密度（size 20 / spacing 25% = 5px，21 个 dab）。
+   `PathWalker` 里仍然**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
    `MIN_SPEED_STEP` 已删除）；`spacing_enabled` 只为老预设兼容，不再改变规则。
-   慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::dab_pitch_is_...`）。
+   慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::pitch_follows_...`）。
 2. **插值是采样点之间的线性等距插值**（`PathWalker::push` → `lerp_pt`）。不要引入 cubic / 曲线 /
    handle / 「曲线圆角」开关：试过，会让笔迹脱离指针（用户判为「强制开拉绳、乱定位」）。
 3. **指针稳定器只管压力**：`tablet_pressure.rs` 的 `TabletPressureFilter` 只在 `input/stylus.rs`
-   里给压力用；它不参与笔迹几何，不要把它接进 `DabGenerator`。
+   里给压力用，而且**按样本**喂：一帧里笔报了几个样本就过几次（`Stylus::advance_pressure_filter`），
+   再按 move 的时间取对应的那个（`filtered_at`）。按帧只喂一条会让 60Hz 的窗口滞后约 5 帧/80ms，
+   抬笔尾巴偏粗。它不参与笔迹几何，不要把它接进 `DabGenerator`。同一时间轴上的配给见第 6 条。
 4. **确定性的描边不插帧**：矢量 `path.stroke`（`vector_cmds/paths.rs`）与修图类工具
    （`retouch_cmds.rs::parse_brush`，减淡/加深/海绵/模糊/锐化/涂抹/修复/仿制）把 dabs 直接混进
    自己的像素、没有「待定段」这一层，所以这两处显式把间距当纯比例、不引入任何曲线。
 5. **唯一特殊路径**：像素网格铅笔（`aliased && size × spacing ≤ 1px`）走 `PathWalker::pixel_grid`，
    一个像素一步，这是本仓库独有特性，别改成距离步进。
+6. **压力按时间配给 move，抬笔守住最后一次读数**（ProCraft 口径）：`StylusFeed` 的每个样本带到达
+   时间（`pen_clock_ms`），`update` 把这一帧的样本对齐到 `clock_ms`，`Stylus::select` 用 move 自己的
+   时间去前后两个样本间插值——不再「按 index 均分一帧的样本」，那种配法在笔与指针速率不同时配错样本。
+   抬笔帧没有样本：`held` 保留笔离开时的读数，`canvas/tool_input.rs` 的 `ToolEvent::Up` 用
+   `release_pressure()` 收尾（掉回鼠标的 1.0 就是「抬笔压力接收极差」、每笔末尾突然变粗）。
+   压力 0 的样本（悬停、离开）不算接触，帧里全是 0 就整帧丢掉；要瞬间高压（Windows 轻点）由 touch
+   的 force 负责，别在 `feed` 里伪造 1.0。
+7. **第 6 条是新管线，挂在开关后面，默认关**（2026-11-19 用户要求）：`tools.tabletOptimization`
+   → `Stylus::optimized`（`Preferences › 数位板 › 数位板优化`）。关（默认）时走旧链路：`select` 按
+   index 均分一帧的样本、`latest` 取帧尾或 feed、滤波每帧只喂一次（`filtered` 只有一个值）、
+   `ToolEvent::Up` 用末点压力。开才走第 6 条（按时间插值、按样本滤波、`release_pressure()`）。
+   改压力链路时两条都要过：`input::stylus` 的测试里时间相关的用例显式置 `optimized = true`，
+   新增用例 `the_tablet_optimization_is_off_by_default_and_a_frames_moves_then_split_by_index`
+   锁住默认关。
+8. **压感开关与压感曲线的位置**：`tools.useTabletPressure` 的 UI 行已删除（`field_visible` 里和
+   `tools.pressureCurve` 一起隐藏），压感永远开启——`Preferences::set` 与 `load_prefs_json` 都把它
+   强制成 `true`，脚本/整段写入/旧文件都关不掉。压感曲线的编辑器搬到了 `数位板` 页
+   （`prefs_ui::fields::tablet_fields` 直接调 `crate::pressure_curve_ui::editor`），
+   存回 `tools.pressureCurve`（`tablet_storage_path` 负责映射）。
+9. **压感不做窗口平均，抬笔读笔自己的最后读数**（2026-11-19，用户报「抬笔有错误的压力提升」）：
+   - `TabletPressureSettings::pressure_window` 默认从 5 改成 **1**（ProCraft 的压力就是原始读数，
+     ProCraft 只有一段 3 样本的一阶软化，没有均值窗口）；`load_prefs_json` 把旧文件里存的
+     `pressureWindow` 也拉回 1，否则老配置永远钝。UI 从不暴露这一项，改它只能写配置文件。
+   - 抬笔压力走 `TabletPressureFilter::mapped_pressure()`（同一份死区/满压/弹性映射，
+     **不进 `Filter16` 窗口、不经坐标延迟线**），样本取 `held`（最后真实接触样本）。
+     之前 `release_pressure()` 读 `filtered_at(clock_ms)`：那是窗口均值 + 延迟输出，笔在抬笔时
+     变细，窗口里还留着前几个较粗的样本 → 抬笔点明显变粗，就是「抬笔压力提升」的来源。
+     **别再让抬笔去读 `filtered_at` / `pressure_now` / `last_emitted`**（都有滞后）。
+   - 抬笔的 hold 顺序：`held` → 本帧最后样本 → `prev` → `feed`；**不要**再用 `current`
+     （它是某次 move 的插值，跟抬笔位置无关）。
+10. **参考项目间距公式的两处刻意差异**（研究结论，2026-11-19）：ProCraft 是
+   `(spacing * square_at(p) * thinned * SPACED_SQUARE * roundness + extra).max(0.25)`，其中
+   `extra = 0.5 + (spacing - 0.005)/1.414`、`SPACED_SQUARE = 262/256`；本仓库用的是
+   `实际直径 × roundness × spacing%`（PS 的精确密度，size20/25% 恰好 5px、21 个 dab），
+   没有 `SPACED_SQUARE` 的 2.34% 放大与 `extra` 的 0.5–1.7px 加宽，下限 0.5px 而不是 0.25px。
+   这两处是**有意的**，不是漏改：照搬会让每条笔画的 dab 数比 PS 多 10–15%。
+   ProCraft 的 `gap()` 里还有 `p.speed * speed_spacing` 加宽项，默认 `speed_spacing = 0`
+   （所以参考项目默认也不随速度变稀），本仓库没有这一项，别加回来。
 
 ## 6. 交付物
 

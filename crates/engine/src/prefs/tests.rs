@@ -536,6 +536,43 @@ fn svg_group_rasterization_threshold_is_bounded_by_document_depth() {
 }
 
 #[test]
+fn tablet_optimization_defaults_off_and_the_pen_page_owns_it() {
+    let mut s = session();
+    assert!(!s.prefs().tools.tablet_optimization, "the new pen reception is opt-in");
+    assert_eq!(s.execute("prefs.get", json!({"path": "tablet.optimization"})).unwrap(), json!(false));
+    assert_eq!(s.execute("prefs.get", json!({"path": "tools.tabletOptimization"})).unwrap(), json!(false));
+    // Preferences › Tablet writes it back where it is stored.
+    s.execute("prefs.set", json!({"path": "tablet.optimization", "value": true})).unwrap();
+    assert!(s.prefs().tools.tablet_optimization);
+    assert_eq!(s.execute("prefs.get", json!({"path": "tools.tabletOptimization"})).unwrap(), json!(true));
+    assert!(s.execute("prefs.set", json!({"path": "tablet.optimization", "value": 1})).is_err());
+    // The pen page carries the pressure curve too (moved off Tools).
+    assert_eq!(s.execute("prefs.get", json!({"path": "tablet.pressureCurve"})).unwrap(), json!([[0.0, 0.0], [1.0, 1.0]]));
+    s.execute("prefs.set", json!({"path": "tablet.pressureCurve", "value": [[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]]})).unwrap();
+    assert_eq!(s.prefs().tools.pressure_curve, vec![[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]]);
+    // Reset of the pen page brings both back to their defaults.
+    s.execute("prefs.reset", json!({"path": "tablet"})).unwrap();
+    assert!(!s.prefs().tools.tablet_optimization);
+    assert_eq!(s.prefs().tools.pressure_curve, vec![[0.0, 0.0], [1.0, 1.0]]);
+}
+
+#[test]
+fn use_tablet_pressure_has_no_switch_any_more() {
+    // Preferences › Tablet shows the pen's curve and the optimization switch; the pen always
+    // paints with its pressure, so nothing can turn it off (a script, a whole-section update or
+    // a file saved with it off).
+    let mut s = session();
+    assert!(s.prefs().tools.use_tablet_pressure);
+    s.execute("prefs.set", json!({"path": "tools.useTabletPressure", "value": false})).unwrap();
+    assert!(s.prefs().tools.use_tablet_pressure);
+    s.execute("prefs.set", json!({"path": "tools", "value": json!({"useTabletPressure": false})})).unwrap();
+    assert!(s.prefs().tools.use_tablet_pressure);
+    let mut old = Session::new();
+    old.load_prefs_json(r#"{"tools": {"useTabletPressure": false}}"#).unwrap();
+    assert!(old.prefs().tools.use_tablet_pressure, "a file saved off loads on");
+}
+
+#[test]
 fn tablet_input_pref_defaults_to_windows_ink() {
     let mut s = session();
     assert_eq!(s.prefs().tools.tablet_input, TabletInput::WindowsInk);

@@ -69,20 +69,30 @@ impl PenSample {
 /// Most samples a [`StylusFeed`] keeps between two frames (a stalled UI drops the oldest).
 const FEED_QUEUE: usize = 1024;
 
+/// The clock every backend's samples are stamped with, in milliseconds: one monotonic epoch for
+/// the whole process, so samples written by a tablet thread and read by the UI share their spacing
+/// (the UI aligns it to its own frame clock when it drains them).
+fn pen_clock_ms() -> f64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let epoch = EPOCH.get_or_init(std::time::Instant::now);
+    epoch.elapsed().as_secs_f64() * 1000.0
+}
+
 #[derive(Debug, Default)]
 struct FeedState {
     /// The current sample (`None` = no pen down).
     latest: Option<PenSample>,
-    /// Every sample set since the canvas last drained them, oldest first.
-    queue: VecDeque<PenSample>,
+    /// Every sample set since the canvas last drained them, oldest first, with the time it came.
+    queue: VecDeque<(PenSample, f64)>,
     /// A native backend (WinTab) supplies this pen's samples, so winit's own copy of the same
     /// stroke (the touch force Windows Ink reports) would double-report its pressure.
     native: bool,
 }
 
 /// Shared state a platform backend writes pen samples into. Cloning shares it. Each sample both
-/// becomes the current one and is queued, so a frame sees every sample the pen reported, in
-/// order, not just the last one (the pressure of each pointer move is interpolated from them).
+/// becomes the current one and is queued with its arrival time, so a frame sees every sample the
+/// pen reported, in order, and a pointer move takes the pressure the pen had at its own time
+/// rather than an index's share of the frame.
 #[derive(Clone, Debug, Default)]
 pub struct StylusFeed(Arc<Mutex<FeedState>>);
 
@@ -96,12 +106,25 @@ impl StylusFeed {
             if g.queue.len() >= FEED_QUEUE {
                 g.queue.pop_front();
             }
-            g.queue.push_back(s);
+            g.queue.push_back((s, pen_clock_ms()));
         }
     }
 
     pub fn get(&self) -> Option<PenSample> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).latest
+    }
+
+    /// Queue a sample stamped at `at` (milliseconds on [`pen_clock_ms`]'s clock): tests give the
+    /// pen its own rate without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn set_at(&self, s: PenSample, at: f64) {
+        let mut g = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let s = s.sanitized();
+        g.latest = Some(s);
+        if g.queue.len() >= FEED_QUEUE {
+            g.queue.pop_front();
+        }
+        g.queue.push_back((s, at));
     }
 
     /// Says a native backend (WinTab) supplies this pen's samples. WinTab and Windows Ink both
@@ -117,10 +140,55 @@ impl StylusFeed {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).native
     }
 
-    /// The samples set since the last drain, oldest first.
-    pub fn drain(&self) -> Vec<PenSample> {
+    /// The samples set since the last drain, oldest first, each with the time it came (see
+    /// [`pen_clock_ms`]).
+    pub fn drain(&self) -> Vec<(PenSample, f64)> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).queue.drain(..).collect()
     }
+}
+
+/// One pen sample and when it came, in milliseconds on [`Stylus::clock_ms`]'s clock.
+#[derive(Clone, Copy, Debug)]
+struct TimedSample {
+    sample: PenSample,
+    at: f64,
+}
+
+/// `a` to `b` by `t`, rotation taking the shorter way round.
+fn lerp_sample(a: PenSample, b: PenSample, t: f32) -> PenSample {
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    let round = (b.rotation - a.rotation + 540.0).rem_euclid(360.0) - 180.0;
+    PenSample {
+        pressure: lerp(a.pressure, b.pressure),
+        tilt_x: lerp(a.tilt_x, b.tilt_x),
+        tilt_y: lerp(a.tilt_y, b.tilt_y),
+        rotation: a.rotation + round * t,
+        eraser: b.eraser,
+    }
+    .sanitized()
+}
+
+/// The sample of a track (oldest first) at time `t`, interpolated between the two it falls
+/// between and held at the ends. Samples sharing an instant (a burst written between two frames,
+/// automation) use the last of them.
+fn sample_at(track: &[TimedSample], t: f64) -> Option<PenSample> {
+    let first = *track.first()?;
+    if !t.is_finite() || t <= first.at {
+        return Some(first.sample);
+    }
+    let mut a = first;
+    for b in track.iter().skip(1) {
+        if b.at <= a.at {
+            a = *b;
+            continue;
+        }
+        if t <= b.at {
+            let f = ((t - a.at) / (b.at - a.at)) as f32;
+            return Some(lerp_sample(a.sample, b.sample, f));
+        }
+        a = *b;
+    }
+    Some(a.sample)
 }
 
 /// Per-app stylus state.
@@ -130,6 +198,12 @@ pub struct Stylus {
     pub feed: StylusFeed,
     /// Preferences › Tools › Use Tablet Pressure: off, a pen paints like a mouse.
     pub use_pressure: bool,
+    /// Preferences › Tablet › Tablet optimization (off by default). On: the pen's samples are
+    /// timed, each move takes the pressure the pen had at its own moment, every sample of a frame
+    /// goes through the tablet response, and a stroke's lift carries the pressure the pen left
+    /// with. Off: the earlier reception — a frame's moves split the frame's samples by index, the
+    /// response runs once per frame on the frame's last sample, and the lift falls back.
+    pub optimized: bool,
     /// Preferences › Tools › Pressure Curve (`None`: linear), with the points it was built from.
     pressure_curve: Option<photocraft_engine::prefs::PressureCurve>,
     curve_points: Vec<[f32; 2]>,
@@ -146,12 +220,21 @@ pub struct Stylus {
     touch_pen: bool,
     /// The contact ended this frame: keep its force for this frame's last tool events, clear next frame.
     lifted: bool,
-    /// This frame's pen samples, oldest first (the feed's queue and the touch forces).
-    frame: Vec<PenSample>,
-    /// The last pen sample of an earlier frame: where this frame's interpolation starts.
-    prev: Option<PenSample>,
+    /// This frame's pen samples, oldest first, each with the time it came (on [`Self::clock_ms`]'s
+    /// clock).
+    frame: Vec<TimedSample>,
+    /// The last pen sample of an earlier frame: where this frame's moves interpolate from when the
+    /// pen reported nothing new (the frame it lifts in, a frame the driver's queue starved).
+    prev: Option<TimedSample>,
     /// The sample [`Self::select`] interpolated for the pointer move being processed.
     current: Option<PenSample>,
+    /// The pen's last real reading: kept through the lift so the release carries the pressure the
+    /// pen left with, never the mouse's 1 and never the lift's 0 (ProCraft's `pen::pressure` on a
+    /// contact that has no force of its own).
+    held: Option<PenSample>,
+    /// A stroke is in progress: a pen that stops reporting keeps its readings for the stroke's
+    /// release rather than clearing them at the frame's start.
+    stroke_active: bool,
     /// The highest pen pressure (before the curve) since the drag began, for a tap's one dab.
     peak: f32,
     /// The pen's touch contacts in the raw input, so a held pen is no press-and-hold right click.
@@ -165,8 +248,17 @@ pub struct Stylus {
     /// averaging) and its per-stroke state.
     tablet_response: Option<photocraft_paint::TabletPressureSettings>,
     pressure_filter: photocraft_paint::TabletPressureFilter,
-    filtered_pressure: Option<f32>,
+    /// The response's pressure at each of this frame's samples, in the same order: every sample
+    /// goes through it (ProCraft smooths each input sample), and a move takes the one at its time.
+    filtered: Vec<TimedSample>,
+    /// The filter has begun this stroke (its window is filling) or has been flushed.
+    filter_open: bool,
+    /// Without the optimization: the raw pressure the response last emitted a value for, so the
+    /// same reading arriving in a later frame isn't fed to it twice.
     last_filtered_raw: Option<f32>,
+    /// The feed's clock read at the last drain, subtracted from [`Self::clock_ms`] so the two
+    /// clocks line up (the feed's newest sample is the frame's own).
+    feed_offset: Option<f64>,
     /// Tilt X, tilt Y, rotation of each point of the current drag (parallel to its points).
     pub(crate) stroke: Vec<[f32; 3]>,
     /// Time in milliseconds of each point of the current drag (parallel to its points), from
@@ -182,6 +274,7 @@ impl Default for Stylus {
         Self {
             feed: StylusFeed::default(),
             use_pressure: true,
+            optimized: false,
             pressure_curve: None,
             curve_points: Vec::new(),
             end: None,
@@ -193,14 +286,18 @@ impl Default for Stylus {
             frame: Vec::new(),
             prev: None,
             current: None,
+            held: None,
+            stroke_active: false,
             peak: 0.0,
             pen_contacts: PenContacts::default(),
             updated_frame: None,
             external_pen: false,
             tablet_response: None,
             pressure_filter: photocraft_paint::TabletPressureFilter::default(),
-            filtered_pressure: None,
+            filtered: Vec::new(),
+            filter_open: false,
             last_filtered_raw: None,
+            feed_offset: None,
             stroke: Vec::new(),
             times: Vec::new(),
             clock_ms: 0.0,
@@ -226,7 +323,21 @@ impl Stylus {
         if let Some(last) = self.frame.last() {
             self.prev = Some(*last);
         }
-        self.frame = self.feed.drain();
+        let now = self.clock_ms;
+        let drained = self.feed.drain();
+        if self.optimized {
+            // The feed's clock and the canvas's are both monotonic milliseconds: the newest
+            // sample is this frame's, so align once and keep the alignment.
+            if let Some((_, at)) = drained.last() {
+                self.feed_offset = Some(now - *at);
+            }
+            let offset = self.feed_offset.unwrap_or(0.0);
+            self.frame = drained.into_iter().map(|(sample, at)| TimedSample { sample, at: at + offset }).collect();
+        } else {
+            // Without the optimization the samples are still the frame's own; each is tagged with
+            // the frame's time, which nothing in this path reads.
+            self.frame = drained.into_iter().map(|(sample, _)| TimedSample { sample, at: now }).collect();
+        }
         // A native backend (WinTab) supplies this pen: Windows Ink's own copy of the same stroke
         // would double-report its pressure (see `StylusFeed::set_native`).
         let native = self.external_pen || self.feed.is_native();
@@ -264,7 +375,10 @@ impl Stylus {
                             // WinTab (or another native backend) supplies this pen's pressure:
                             // winit's copy of the same stroke would double-report it.
                             if !native {
-                                self.frame.push(PenSample { pressure: f, ..Default::default() });
+                                // A touch carries its force at the moment egui handed it over, so
+                                // it lands at the frame's end; the frame's moves before it take
+                                // the pressure from the samples around them.
+                                self.frame.push(TimedSample { sample: PenSample { pressure: f, ..Default::default() }, at: now });
                             }
                         }
                     }
@@ -275,33 +389,62 @@ impl Stylus {
                 }
             }
         }
-        // A pen reports pressure 0 while it hovers and as it lifts (X11, macOS): that is no
-        // contact, so a frame that also touched keeps only its contact samples. A stroke's last
+        // A pen reports pressure 0 while it hovers and as it lifts (X11, macOS, WinTab): that is
+        // no contact, so a frame that also touched keeps only its contact samples, and (with the
+        // optimization on) a frame of nothing but zeros is no contact at all. A stroke's last
         // moves then keep the pressure the pen left with, and a tap its own (#1798).
-        if self.frame.iter().any(|s| s.pressure > 0.0) {
-            self.frame.retain(|s| s.pressure > 0.0);
+        if self.frame.iter().any(|s| s.sample.pressure > 0.0) {
+            self.frame.retain(|s| s.sample.pressure > 0.0);
+        } else if self.optimized {
+            self.frame.clear();
         }
-        self.peak = self.frame.iter().fold(self.peak, |m, s| m.max(s.pressure));
-        // This frame's samples are all in now; run the tablet response over the freshest one.
+        if let Some(last) = self.frame.last() {
+            self.held = Some(last.sample);
+        }
+        self.peak = self.frame.iter().fold(self.peak, |m, s| m.max(s.sample.pressure));
+        // A pen that has left keeps its last reading for one frame — the frame it lifts in, whose
+        // moves have no sample of their own — and is a mouse after that; a stroke keeps it to its
+        // end, so its release carries the pressure the pen left with.
+        if self.optimized {
+            let pen_here = !self.frame.is_empty() || self.feed.get().is_some() || self.touch.is_some();
+            if !pen_here && !self.stroke_active {
+                self.prev = None;
+                self.held = None;
+            }
+        }
+        // Every sample of the frame goes through the tablet response, in order.
         self.advance_pressure_filter();
     }
 
     /// The pen's current sample. When the pen touched during this frame but has lifted since
     /// (the feed is cleared or back at pressure 0 by the time the UI runs, as for a tap shorter
-    /// than a frame), the frame's last contact sample: never full pressure as for a mouse, and
-    /// never the lift's 0.
+    /// than a frame), the last sample it reported: never full pressure as for a mouse, and never
+    /// the lift's 0.
     fn latest(&self) -> Option<PenSample> {
         let feed = self.feed.get();
-        match self.frame.last() {
-            Some(s) if s.pressure > 0.0 && feed.is_none_or(|f| f.pressure <= 0.0) => Some(*s),
-            _ => feed,
+        if !self.optimized {
+            // The earlier pairing: the pen's own reading while it reports one, else this frame's
+            // last contact sample (never full pressure as for a mouse, never the lift's 0).
+            return match self.frame.last().map(|s| s.sample) {
+                Some(s) if s.pressure > 0.0 && feed.is_none_or(|f| f.pressure <= 0.0) => Some(s),
+                _ => feed,
+            };
         }
+        if let Some(feed) = feed
+            && feed.pressure > 0.0
+        {
+            return Some(feed);
+        }
+        if let Some(last) = self.frame.last() {
+            return Some(last.sample);
+        }
+        self.prev.map(|p| p.sample).or(feed)
     }
 
     /// The highest pressure the pen pressed with this frame, for Preferences › Tablet's pressure
     /// calibration: pressing the pen while dragging there records its peak.
     pub(crate) fn calibration_peak(&self) -> Option<f32> {
-        self.frame.iter().copied().chain(self.feed.get()).map(|s| s.pressure).reduce(f32::max)
+        self.frame.iter().map(|s| s.sample).chain(self.feed.get()).map(|s| s.pressure).reduce(f32::max)
     }
 
     /// The current pen sample, `None` for a mouse (and for any pen while Use Tablet Pressure is
@@ -326,34 +469,73 @@ impl Stylus {
         }
     }
 
-    /// Choose the pen sample for move `k` of the `n` pointer moves this frame delivered: the pen
-    /// reports at its own rate, so each move takes the samples interpolated at its share of the
-    /// frame (from the previous frame's last sample), instead of all sharing the latest one. A
-    /// mouse, or a frame without pen samples, keeps the current sample.
+    /// Choose the pen sample for the pointer move being processed: the one the pen reported at
+    /// that move's own time ([`Self::clock_ms`]), interpolated between the two samples it falls
+    /// between. Each move then carries the pressure the pen had as it passed there, at whatever
+    /// rate the pen and the pointer deliver — not an index's share of the frame, which paired the
+    /// wrong sample with a move wherever either rate changed.
+    ///
+    /// `k` of `n` is kept for the callers that spread a frame's moves; the time is the canvas's.
     pub(crate) fn select(&mut self, k: usize, n: usize) {
         self.current = None;
-        if !self.use_pressure || n == 0 || self.frame.is_empty() || self.sample().is_none() {
+        if !self.use_pressure {
+            return;
+        }
+        if self.optimized {
+            if self.prev.is_none() && self.frame.is_empty() {
+                return;
+            }
+            self.current = self.at_time(self.clock_ms);
+            return;
+        }
+        // Without the optimization a frame's moves split the frame's samples by index, from the
+        // previous frame's last sample.
+        if n == 0 || self.frame.is_empty() || self.sample().is_none() {
             return;
         }
         let m = self.frame.len();
-        let start = self.prev.or(self.frame.first().copied()).unwrap_or_default();
-        let at = |i: usize| if i == 0 { start } else { self.frame.get(i - 1).copied().unwrap_or(start) };
+        let start = self.prev.or(self.frame.first().copied()).map(|s| s.sample).unwrap_or_default();
+        let at = |i: usize| if i == 0 { start } else { self.frame.get(i - 1).map(|s| s.sample).unwrap_or(start) };
         let pos = (k + 1).min(n) as f32 / n as f32 * m as f32;
         let i = pos.floor() as usize;
         let (a, b, t) = (at(i), at((i + 1).min(m)), pos - pos.floor());
-        let lerp = |x: f32, y: f32| x + (y - x) * t;
-        // Rotation takes the shorter way round.
-        let dr = (b.rotation - a.rotation + 540.0).rem_euclid(360.0) - 180.0;
-        self.current = Some(
-            PenSample {
-                pressure: lerp(a.pressure, b.pressure),
-                tilt_x: lerp(a.tilt_x, b.tilt_x),
-                tilt_y: lerp(a.tilt_y, b.tilt_y),
-                rotation: a.rotation + dr * t,
-                eraser: b.eraser,
-            }
-            .sanitized(),
-        );
+        self.current = Some(lerp_sample(a, b, t));
+    }
+
+    /// The pen's reading at `t` (milliseconds, [`Self::clock_ms`]'s clock): this frame's samples
+    /// interpolated, starting from the previous frame's last one.
+    fn at_time(&self, t: f64) -> Option<PenSample> {
+        let mut track: Vec<TimedSample> = Vec::with_capacity(self.frame.len() + 1);
+        if let Some(prev) = self.prev
+            && self.frame.first().is_none_or(|first| prev.at <= first.at)
+        {
+            track.push(prev);
+        }
+        track.extend(self.frame.iter().copied());
+        sample_at(&track, t)
+    }
+
+    /// The released stroke's pressure: the reading the pen left with. A pen's lift has no force
+    /// of its own (Windows reports none, WinTab a 0), so the last real sample is the one the
+    /// stroke ends at — the pressure the user drew the tail with, never the mouse's full 1 that
+    /// a lost sample used to fall back to, and never the response's averaged or delayed value:
+    /// its window still holds the coarser samples just before the lift, so reading it here makes
+    /// the tail's pressure jump *up* as the pen thins away. The last reading goes through the
+    /// same calibration and elasticity as the stroke's samples (`mapped_pressure`), on its own.
+    pub(crate) fn release_pressure(&self) -> f32 {
+        let hold = self
+            .held
+            .or_else(|| self.frame.last().map(|s| s.sample))
+            .or(self.prev.map(|p| p.sample))
+            .or(self.feed.get());
+        let Some(hold) = hold else { return 1.0 };
+        if let Some(settings) = self.tablet_response {
+            return self.pressure_filter.mapped_pressure(hold.pressure, settings);
+        }
+        match &self.pressure_curve {
+            Some(c) => c.eval(hold.pressure),
+            None => hold.pressure,
+        }
     }
 
     /// Back to the current sample after a frame's moves.
@@ -400,15 +582,17 @@ impl Stylus {
 
     /// Pressure for the next tool event (1 for a mouse).
     pub fn pressure(&self) -> f32 {
-        match (self.sample(), self.filtered_pressure) {
-            (Some(s), Some(filtered)) if self.tablet_response.is_some() => {
-                // The response is active for this sample: use the filtered value.
-                let _ = s;
-                filtered
-            }
-            (Some(s), _) => s.pressure,
-            (None, _) => 1.0,
+        let Some(s) = self.sample() else { return 1.0 };
+        match (self.tablet_response.is_some(), self.current_filtered()) {
+            (true, Some(filtered)) => filtered,
+            _ => s.pressure,
         }
+    }
+
+    /// The response's pressure for the event being processed: the one at the event's time with
+    /// the optimization on, the last one the response emitted without it.
+    fn current_filtered(&self) -> Option<f32> {
+        if self.optimized { self.filtered_at(self.clock_ms) } else { self.filtered.last().map(|s| s.sample.pressure) }
     }
 
     /// Preferences › Tools › Tablet Pressure response (off when the filter is disabled).
@@ -416,7 +600,8 @@ impl Stylus {
         self.tablet_response = settings.enabled.then_some(settings.clamped());
         if self.tablet_response.is_none() {
             self.pressure_filter.reset();
-            self.filtered_pressure = None;
+            self.filtered.clear();
+            self.filter_open = false;
             self.last_filtered_raw = None;
         }
     }
@@ -425,34 +610,69 @@ impl Stylus {
     /// empty (`Stylus::pressure` then returns the filtered values).
     pub(crate) fn begin_pressure_filter(&mut self) {
         self.pressure_filter.reset();
-        self.filtered_pressure = None;
+        self.filtered.clear();
+        self.filter_open = false;
         self.last_filtered_raw = None;
         self.advance_pressure_filter();
     }
 
-    /// Feed the current pen sample through the response once per frame. The delay line makes the
-    /// filter emit a point a couple of samples behind, so this keeps the last emitted pressure;
-    /// a stroke's end flushes it in [`Self::finish_pressure_filter`].
+    /// Feed this frame's pen samples through the response, in the order the pen reported them:
+    /// the response averages the last few *samples* (C3's window), not the last few frames, so a
+    /// 200 Hz pen is smoothed over 25 ms and the pressure follows the pen to its lift instead of
+    /// trailing it by the frame rate.
     fn advance_pressure_filter(&mut self) {
+        if !self.optimized {
+            return self.advance_pressure_filter_by_frame();
+        }
+        self.filtered.clear();
         let Some(settings) = self.tablet_response else { return };
-        let Some(sample) = self.sample() else {
-            self.filtered_pressure = None;
+        for s in &self.frame {
+            let point = photocraft_paint::StrokePoint { is_pen: true, x: 0.0, y: 0.0, pressure: s.sample.pressure, ..Default::default() };
+            // The filter's returned point is the delayed one; the pressure below is the freshest.
+            let _out = if self.filter_open {
+                self.pressure_filter.push(point)
+            } else {
+                self.filter_open = true;
+                self.pressure_filter.begin(point, settings)
+            };
+            // Coordinate stability holds points back a segment; the pressure the brush uses must
+            // be the freshest one, so read the filter's current pressure rather than the point.
+            let pressure = self.pressure_filter.pressure_now();
+            self.filtered.push(TimedSample { sample: PenSample { pressure, ..s.sample }, at: s.at });
+        }
+    }
+
+    /// The earlier response, run once per frame over the frame's last sample (the pen's real
+    /// reading, or this frame's last contact): the delay line makes the filter emit a point a
+    /// couple of samples behind, so this keeps the last emitted pressure for the whole frame.
+    fn advance_pressure_filter_by_frame(&mut self) {
+        let Some(settings) = self.tablet_response else {
+            self.filtered.clear();
             return;
         };
-        if self.last_filtered_raw == Some(sample.pressure) && self.filtered_pressure.is_some() {
+        let Some(sample) = self.sample() else {
+            self.filtered.clear();
+            return;
+        };
+        if self.last_filtered_raw == Some(sample.pressure) && self.filter_open {
             return;
         }
         self.last_filtered_raw = Some(sample.pressure);
         let point = photocraft_paint::StrokePoint { is_pen: true, x: 0.0, y: 0.0, pressure: sample.pressure, ..Default::default() };
-        // The filter's returned point is the delayed one; the pressure below is the freshest.
-        let _out = if self.filtered_pressure.is_none() {
-            self.pressure_filter.begin(point, settings)
-        } else {
+        let _out = if self.filter_open {
             self.pressure_filter.push(point)
+        } else {
+            self.filter_open = true;
+            self.pressure_filter.begin(point, settings)
         };
-        // Coordinate stability holds points back a segment; the pressure the brush uses must be
-        // the freshest one, so read the filter's current pressure rather than the delayed point.
-        self.filtered_pressure = Some(self.pressure_filter.pressure_now());
+        let pressure = self.pressure_filter.pressure_now();
+        self.filtered.clear();
+        self.filtered.push(TimedSample { sample: PenSample { pressure, ..sample }, at: self.clock_ms });
+    }
+
+    /// The response's pressure at `t` (milliseconds, [`Self::clock_ms`]'s clock).
+    fn filtered_at(&self, t: f64) -> Option<f32> {
+        sample_at(&self.filtered, t).map(|s| s.pressure)
     }
 
     /// Flush the tablet response at the end of a stroke.
@@ -460,8 +680,10 @@ impl Stylus {
         if self.tablet_response.is_some() {
             let _ = self.pressure_filter.finish(None);
         }
-        self.filtered_pressure = None;
+        self.filtered.clear();
+        self.filter_open = false;
         self.last_filtered_raw = None;
+        self.stroke_active = false;
     }
 
     /// Pressure for a tap, a drag released where it was pressed: the highest the pen pressed
@@ -481,7 +703,9 @@ impl Stylus {
         // A new stroke's first moves interpolate from this frame's samples, never from a sample
         // left over from an earlier stroke.
         self.prev = None;
-        self.peak = self.frame.iter().fold(0.0, |m, s| m.max(s.pressure));
+        self.held = None;
+        self.stroke_active = true;
+        self.peak = self.frame.iter().fold(0.0, |m, s| m.max(s.sample.pressure));
         self.stroke.clear();
         self.times.clear();
         self.record_point();

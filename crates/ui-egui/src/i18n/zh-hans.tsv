@@ -3394,6 +3394,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stroke stability	笔触稳定
 	Pressure calibration	压力校准
 	Retained peak	保留峰值
+	Tablet optimization	数位板优化
+	Times the pen's samples so each move takes the pressure the pen had at its own moment, and the lift keeps the pressure the pen left with.	给笔的每个采样打上时间，让每次移动取笔在自己那一刻的压力，抬笔也留住笔离开时的压力。
 	Tablet input mode	数位板输入模式
 	Windows Ink	Windows Ink
 	WinTab	WinTab

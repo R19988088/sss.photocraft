@@ -78,7 +78,7 @@ fn the_feed_queues_every_sample_in_order_and_keeps_the_latest() {
         feed.set(Some(pen(p)));
     }
     assert_eq!(feed.get().map(|s| s.pressure), Some(0.3));
-    assert_eq!(feed.drain().iter().map(|s| s.pressure).collect::<Vec<_>>(), vec![0.1, 0.2, 0.3]);
+    assert_eq!(feed.drain().iter().map(|(s, _)| s.pressure).collect::<Vec<_>>(), vec![0.1, 0.2, 0.3]);
     assert!(feed.drain().is_empty(), "drained once");
     feed.set(None);
     assert_eq!(feed.get(), None, "a lifted pen is not queued");
@@ -91,26 +91,47 @@ fn the_feed_queues_every_sample_in_order_and_keeps_the_latest() {
 }
 
 #[test]
-fn each_move_takes_its_share_of_the_frames_pen_samples() {
+fn the_tablet_optimization_is_off_by_default_and_a_frames_moves_then_split_by_index() {
+    // Off (Preferences › Tablet › Tablet optimization), the earlier pairing: a frame's `n` moves
+    // split its `m` samples evenly by index, whatever times the pen reported them at.
     let mut s = Stylus::default();
-    s.feed.set(Some(pen(0.2)));
-    s.update(&[]);
-    s.begin_stroke();
-    // Next frame: the pen reported 0.4, 0.6 and 0.8 while six pointer moves arrived.
-    for p in [0.4, 0.6, 0.8] {
-        s.feed.set(Some(pen(p)));
+    assert!(!s.optimized, "the optimization is opt-in");
+    s.clock_ms = 100.0;
+    for (p, at) in [(0.2, 84.0), (0.5, 90.0), (0.8, 96.0)] {
+        s.feed.set_at(pen(p), at);
     }
     s.update(&[]);
-    let got: Vec<f32> = (0..6)
-        .map(|k| {
-            s.select(k, 6);
-            s.pressure()
-        })
-        .collect();
-    let want = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
-    assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6), "{got:?}");
-    s.clear_selection();
-    assert_eq!(s.pressure(), 0.8, "back to the current sample");
+    let pressure = |s: &mut Stylus, k: usize| {
+        s.select(k, 3);
+        s.pressure()
+    };
+    assert!((pressure(&mut s, 0) - 0.2).abs() < 1e-6, "{}", pressure(&mut s, 0));
+    assert!((pressure(&mut s, 1) - 0.5).abs() < 1e-6, "{}", pressure(&mut s, 1));
+    assert!((pressure(&mut s, 2) - 0.8).abs() < 1e-6, "{}", pressure(&mut s, 2));
+}
+
+#[test]
+fn a_move_takes_the_pressure_the_pen_had_at_its_own_time() {
+    // The pen reports at its own rate; the frame's moves are spread over the frame's time. Each
+    // move takes the sample interpolated at its time, not an index's share of the frame — the
+    // pairing the old `select` guessed, which gave a fast move a slower sample's pressure.
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.clock_ms = 100.0;
+    for (p, at) in [(0.2, 84.0), (0.5, 90.0), (0.8, 96.0)] {
+        s.feed.set_at(pen(p), at);
+    }
+    s.update(&[]);
+    // The newest sample is this frame's end, so the three sit at 88, 94 and 100 ms.
+    let at = |s: &mut Stylus, t: f64| {
+        s.clock_ms = t;
+        s.select(0, 1);
+        s.pressure()
+    };
+    assert!((at(&mut s, 91.0) - 0.35).abs() < 1e-6, "{}", s.pressure());
+    assert!((at(&mut s, 97.0) - 0.65).abs() < 1e-6, "{}", s.pressure());
+    assert!((at(&mut s, 100.0) - 0.8).abs() < 1e-6, "{}", s.pressure());
+    // A time past the frame's samples holds the last one, never a share of a later frame's.
+    assert!((at(&mut s, 120.0) - 0.8).abs() < 1e-6);
 }
 
 #[test]
@@ -132,18 +153,24 @@ fn the_pressure_curve_reshapes_pen_pressure_but_not_the_mouse() {
 #[test]
 fn a_second_update_in_the_same_frame_keeps_its_samples() {
     // The canvas runs once per view, and egui may run a frame in several passes.
-    let mut s = Stylus::default();
+    let mut s = Stylus { optimized: true, ..Default::default() };
     s.feed.set(Some(pen(0.4)));
     s.feed.set(Some(pen(0.8)));
     s.update_for_frame(7, &[]);
     s.update_for_frame(7, &[]);
+    // A time before the frame's samples is the first of them (both were kept, not drained twice).
+    s.clock_ms = -1.0;
     s.select(0, 2);
     assert!((s.pressure() - 0.4).abs() < 1e-6, "{}", s.pressure());
+    // The frame's end is the last of them.
+    s.clock_ms = 0.0;
+    s.select(0, 2);
+    assert!((s.pressure() - 0.8).abs() < 1e-6, "{}", s.pressure());
 }
 
 #[test]
 fn a_new_stroke_never_starts_from_an_old_strokes_pressure() {
-    let mut s = Stylus::default();
+    let mut s = Stylus { optimized: true, ..Default::default() };
     s.feed.set(Some(pen(0.9)));
     s.update(&[]);
     s.feed.set(Some(pen(0.1)));
@@ -168,14 +195,18 @@ fn a_mouse_or_use_pressure_off_paints_at_full_pressure() {
 
 #[test]
 fn rotation_between_samples_takes_the_short_way_round() {
-    let mut s = Stylus::default();
-    s.feed.set(Some(PenSample { rotation: 350.0, ..pen(1.0) }));
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.clock_ms = 10.0;
+    s.feed.set_at(PenSample { rotation: 350.0, ..pen(1.0) }, pen_clock_ms());
     s.update(&[]);
-    s.feed.set(Some(PenSample { rotation: 10.0, ..pen(1.0) }));
+    s.clock_ms = 30.0;
+    s.feed.set_at(PenSample { rotation: 10.0, ..pen(1.0) }, pen_clock_ms());
     s.update(&[]);
+    // Halfway between the two frames' samples (10 ms and 30 ms).
+    s.clock_ms = 20.0;
     s.select(0, 2);
     let r = s.sample().map_or(-1.0, |p| p.rotation);
-    assert!(r.abs() < 1e-3 || (r - 360.0).abs() < 1e-3, "halfway from 350° to 10° is 0°, got {r}");
+    assert!(r.abs() < 0.5 || (r - 360.0).abs() < 0.5, "halfway from 350° to 10° is 0°, got {r}");
 }
 
 #[test]
@@ -318,6 +349,127 @@ fn use_pressure_off_ignores_pen_and_touch() {
     assert_eq!((s.sample(), s.pressure()), (None, 1.0));
     s.begin_stroke();
     assert_eq!(s.stroke_points(&[[1.0, 2.0, 1.0]]), vec![vec![1.0, 2.0, 1.0]], "no tilt either");
+}
+
+#[test]
+fn a_lift_does_not_raise_the_pressure_while_the_pen_thins() {
+    // The stroke's samples go through the tablet response; its window (an older file's five
+    // samples) still holds the coarser readings just before the lift. Reading that at the lift
+    // made the tail's pressure jump up as the pen thinned away.
+    use photocraft_paint::TabletPressureSettings;
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.set_tablet_response(TabletPressureSettings { pressure_window: 5, ..Default::default() });
+    s.clock_ms = 100.0;
+    s.begin_stroke();
+    s.begin_pressure_filter();
+    for (i, p) in [0.8, 0.7, 0.6, 0.2].into_iter().enumerate() {
+        s.clock_ms = 100.0 + i as f64 * 10.0;
+        s.feed.set_at(pen(p), 330.0 + i as f64 * 10.0);
+        s.update(&[]);
+    }
+    let lifted = s.release_pressure();
+    // The pen's own last reading maps the same way the stroke's samples do (elasticity 6 turns
+    // 0.2 into about 0.047), not the window's mean of the coarser samples above it (about 0.22).
+    assert!(lifted < 0.1, "the lift reads the pen's own reading, got {lifted}");
+    assert!(lifted < s.pressure() - 0.05, "the lift must not be above the stroke's windowed pressure");
+}
+
+#[test]
+fn the_lift_keeps_the_pressure_the_pen_left_with() {
+    // A stroke's last moves come in the frame the pen lifts in: the pen has reported nothing new,
+    // and its lift has no pressure of its own (ProCraft reads the pen's own last reading there).
+    // They keep the pressure the pen left with — never the mouse's full 1, which made every stroke
+    // end in a sudden fat dab — and the release carries it too.
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.clock_ms = 100.0;
+    s.begin_stroke();
+    s.feed.set_at(pen(0.35), 92.0);
+    s.update(&[]);
+    s.feed.set(None);
+    s.clock_ms = 116.0;
+    s.update(&[]);
+    s.select(0, 1);
+    assert!((s.pressure() - 0.35).abs() < 1e-6, "the lift frame's moves: {}", s.pressure());
+    assert!((s.release_pressure() - 0.35).abs() < 1e-6, "the release: {}", s.release_pressure());
+    // A mouse (no pen at all) still releases at 1.
+    let mut m = Stylus::default();
+    m.update(&[egui::Event::PointerMoved(egui::pos2(1.0, 1.0))]);
+    assert_eq!(m.release_pressure(), 1.0);
+    // The stroke is over: the next frame's pen-less events are a mouse's again.
+    s.finish_pressure_filter();
+    s.clock_ms = 130.0;
+    s.update(&[]);
+    s.select(0, 1);
+    assert_eq!(s.pressure(), 1.0);
+    assert_eq!(s.release_pressure(), 1.0);
+}
+
+#[test]
+fn the_tablet_response_smooths_every_sample_of_a_frame() {
+    // The response's window is over the pen's own samples (C3's pressure window), not over frames:
+    // a 240 Hz pen is smoothed over a few milliseconds, so the pressure follows the pen to its
+    // lift instead of trailing it by the frame rate (a 60 Hz window held the tail's thick
+    // pressure for a fifth of a second).
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.set_tablet_response(photocraft_paint::TabletPressureSettings {
+        enabled: true,
+        dead_zone: 0.6,
+        pressure_window: 3,
+        ..Default::default()
+    });
+    s.begin_pressure_filter();
+    s.clock_ms = 100.0;
+    for i in 0..5 {
+        s.feed.set_at(pen(1.0), 90.0 + i as f64);
+    }
+    s.update(&[]);
+    assert!((s.pressure() - 1.0).abs() < 1e-3, "{}", s.pressure());
+    // Five light samples in one frame fall under the dead zone, so all five reach the filter
+    // and its whole window empties: the pressure is 0, not a frame's single sample's share.
+    s.clock_ms = 116.0;
+    for i in 0..5 {
+        s.feed.set_at(pen(0.5), 108.0 + i as f64);
+    }
+    s.update(&[]);
+    s.select(0, 1);
+    assert_eq!(s.pressure(), 0.0, "the frame's samples did not all reach the filter");
+}
+
+#[test]
+fn a_stroke_ends_at_the_pressure_the_pen_lifted_with() {
+    use crate::canvas::{ToolEvent, tool_event};
+    use serde_json::json;
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.execute("file.new", json!({"width": 120, "height": 80})).unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.ui.tool = crate::state::Tool::Brush;
+    app.stylus.optimized = true;
+    let m = egui::Modifiers::NONE;
+    let mut frame = |app: &mut crate::PhotocraftApp, at: f64, pressure: Option<f32>| {
+        app.stylus.clock_ms = at;
+        match pressure {
+            Some(p) => app.stylus.feed.set(Some(PenSample { pressure: p, ..Default::default() })),
+            None => app.stylus.feed.set(None),
+        }
+        app.stylus.update(&[]);
+    };
+    frame(&mut app, 0.0, Some(0.8));
+    let p0 = app.stylus.pressure();
+    tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 40.0, pressure: p0 }, m);
+    frame(&mut app, 16.0, Some(0.5));
+    let p1 = app.stylus.pressure();
+    tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 40.0, pressure: p1 }, m);
+    app.stylus.record_point();
+    // The pen thinned to 0.3 and lifted where it was: the stroke's last point takes the lift.
+    frame(&mut app, 32.0, Some(0.3));
+    let p2 = app.stylus.pressure();
+    tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 40.0, pressure: p2 }, m);
+    app.stylus.record_point();
+    frame(&mut app, 48.0, None);
+    tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 40.0 }, m);
+    let p = app.session.journal.iter().rev().find(|(id, _)| id == "paint.stroke").map(|(_, p)| p.clone()).unwrap();
+    let last = p["points"].as_array().unwrap().last().unwrap();
+    assert!((last[2].as_f64().unwrap() - 0.3).abs() < 1e-6, "the lift painted at {}", last[2]);
 }
 
 #[test]

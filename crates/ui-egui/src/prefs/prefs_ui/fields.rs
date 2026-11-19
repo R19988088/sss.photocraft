@@ -389,7 +389,7 @@ pub(super) fn field_visible(section: &str, obj: &Map<String, Value>, k: &str, qu
         // The browser presents frames itself: Low-Latency Drawing does nothing there.
         || (cfg!(target_arch = "wasm32") && path == "performance.lowLatencyDrawing")
         || (section == "export" && !export_field_visible(obj, k))
-        || (section == "tools" && (!tools_field_visible(obj, k) || k == "tabletPressure"));
+        || (section == "tools" && (!tools_field_visible(obj, k) || matches!(k, "tabletPressure" | "useTabletPressure" | "pressureCurve")));
     (query.is_empty() || preference_matches(section, k, query))
         && !drawn_elsewhere
         && !prefs::is_hidden(&path)
@@ -451,6 +451,17 @@ fn tablet_fields(ui: &mut egui::Ui, obj: &mut Map<String, Value>, pressure_peak:
         });
         ui.add_space(6.0);
     }
+    // The experimental pen reception: samples are timed and the pressure follows the pen through
+    // the stroke and to its lift (ProCraft's). Off by default.
+    let mut optimized = obj.get("optimization").and_then(Value::as_bool).unwrap_or(false);
+    if crate::widgets::checkbox(ui, &mut optimized, tl!("Tablet optimization")).changed() {
+        obj.insert("optimization".into(), json!(optimized));
+    }
+    ui.add(
+        egui::Label::new(RichText::new(tl!("Times the pen's samples so each move takes the pressure the pen had at its own moment, and the lift keeps the pressure the pen left with.")).small().color(t.text_dim))
+            .wrap(),
+    );
+    ui.add_space(8.0);
     egui::Grid::new("prefs-tablet-grid").num_columns(2).spacing([14.0, 7.0]).show(ui, |ui| {
         let mut row = |ui: &mut egui::Ui, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, scale: f64, suffix: &str| {
             ui.label(RichText::new(tl!(label)).color(t.text_dim).strong());
@@ -506,6 +517,14 @@ fn tablet_fields(ui: &mut egui::Ui, obj: &mut Map<String, Value>, pressure_peak:
     let trace = ui.data(|d| d.get_temp::<Vec<egui::Pos2>>(trace_id).unwrap_or_default());
     if trace.len() > 1 {
         ui.painter().add(egui::Shape::line(trace, egui::Stroke::new(2.0, t.accent)));
+    }
+    ui.add_space(12.0);
+    // The pen's pressure response, moved here off Tools (with the presets beside its square).
+    ui.label(RichText::new(tl!("Pressure curve")).color(t.text).strong());
+    ui.add_space(4.0);
+    let curve = obj.get("pressureCurve").cloned().unwrap_or_else(|| json!([[0.0, 0.0], [1.0, 1.0]]));
+    if let Some(next) = crate::pressure_curve_ui::editor(ui, &curve) {
+        obj.insert("pressureCurve".into(), next);
     }
     ui.add_space(8.0);
     ui.add(

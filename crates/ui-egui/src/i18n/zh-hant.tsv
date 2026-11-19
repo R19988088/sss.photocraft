@@ -3446,6 +3446,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace deletes everything in “{group}” first, including presets you edited or moved there. This can't be undone.	「替換」會先刪除「{group}」中的所有內容，包括您編輯過或移過去的預設。此操作無法復原。
 	Resize windows when zooming using the Zoom Tool	使用縮放工具縮放時調整窗口大小
 	Retained peak	保留峯值
+	Tablet optimization	數位板優化
+	Times the pen's samples so each move takes the pressure the pen had at its own moment, and the lift keeps the pressure the pen left with.	給筆的每個採樣打上時間，讓每次移動取筆在自己那一刻的壓力，抬筆也留住筆離開時的壓力。
 	Saturation Boost	飽和度增強
 	Save Image Pyramid	存儲圖像金字塔
 	Save Transparency	存儲透明度

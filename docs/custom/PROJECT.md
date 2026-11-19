@@ -49,6 +49,26 @@
 - 因果滤波：死区、满压校准、弹性曲线、坐标/压力滑动窗口
 - 原生低延迟通道（AppKit `install_input` + WinTab）
 - 默认值按 C3：**滤波默认开启，弹性 6，稳定度 2**
+- **接收按时间、按样本**（2026-11-19，ProCraft 口径）：`StylusFeed` 每个样本带到达时间，
+  `Stylus::select` 在 move 自己的时间上插值；抬笔帧用 `held`（笔离开时的读数）收尾，
+  `ToolEvent::Up` 走 `release_pressure()`，不再回落到鼠标的 1.0。滤波按 **每个样本**喂，
+  不再一帧一条（那会让窗口滞后约 80ms，抬笔尾巴变粗）。
+- **dab 间距跟着实际直径**（同日）：`DabBuilder::step_len` = 实际直径 × roundness × spacing%，
+  `PathWalker` 用相邻 gap 的均值推进，笔画变细时间距同步变细（重叠密度恒定）。
+  旧规则（size × spacing%）会让快笔/轻压读成「间距变稀」。细则见 `AGENTS.md` §5 第 1 条。
+- **新接收管线挂在开关上，默认关**（2026-11-19）：`tools.tabletOptimization` → `Stylus::optimized`，
+  UI 在 `Preferences › 数位板` 的「数位板优化」。关时完全走旧链路（index 均分 / 每帧一次滤波 /
+  末点压力收尾），开才启用上面两条新口径。
+- **`使用数位板压感` 开关已移除**：`tools.useTabletPressure` 的 UI 行隐藏，`set` 与加载都强制
+  `true`（压感永远开启）；`压感曲线`（方格 + 线性/软/硬）整块从 `工具` 页搬到 `数位板` 页，
+  仍存 `tools.pressureCurve`。
+- **压感不做窗口平均，抬笔读真实读数**（2026-11-19，修「抬笔有错误的压力提升」）：
+  `pressure_window` 默认 5 → 1，加载时强制 1（ProCraft 的压力是原始读数，只有 3 样本一阶软化）；
+  抬笔改走 `mapped_pressure()`（同一映射、无窗口、无延迟线），样本取 `held` 而非 `current`。
+  旧实现 `filtered_at(clock_ms)` 取的是「窗口均值 + 延迟输出」，笔在抬笔时变细却读到前面较粗的
+  样本，所以末段突然变粗。
+- **参考项目间距公式的两处刻意差异**：不照搬 `SPACED_SQUARE`(262/256) 与 `extra`(0.5+
+  0.174px)，保持 PS 精确密度；ProCraft 的 `speed_spacing` 默认为 0，本仓库不实现速度间距。
 
 注意：选项栏的 `pressure_size` 快捷开关保持上游默认 `false`。
 「每个参数的控制默认 Off」由 `Dynamic::default()` 的 `Control::Off` 保证，两者是不同层级。
@@ -72,6 +92,10 @@
 ### 2.5 默认工作区模板 D 与工具预设停靠
 
 - 右侧面板自上而下固定为：**颜色（C2 布局）→ 图层 → 画笔 → 工具预设**，颜色之上不再有属性卡。
+- 颜色卡的页签组合是 **颜色 | 色板 | 属性**（所有主题一致，2026-11-17）：属性面板
+  （`properties`）并入颜色卡当第三页签；渐变、图案（`gradients` / `patterns`）离开颜色卡，
+  改为独立的「预置」卡（`dock::Group::Presets`，默认关闭，`Window › Gradients / Patterns`
+  照旧打开，菜单勾选与折叠语义不变）。
 - `D` 是内置工作区模板（`Window › Workspace` 列表首位、顶栏工作区切换器第一项），也是
   **启动默认**：没有记忆布局（首次启动、新装、Reset Workspace）时一律应用 D
   （`crate::workspace_ui::DEFAULT`，`dock::launch_template` + `dock::restore`）。
@@ -366,6 +390,22 @@ codesign --force --sign - --options runtime \
 
 前者是色板采样器 0.5px 的像素中心偏移，后者是 cylinder warp 的模式判定。
 **修它们不属于本仓库范围**，跟随上游自行修复即可。
+
+## 9. 自研改动：Ctrl+S 写回（2026-11-19）
+
+上游只有在能装下整份文档的格式里才把保存当成"写回"（`crates/engine/src/cmd/file_cmds/paths.rs`
+的 `saves_in_place` / `holds`），平铺格式一律退回"另存为"，因此打开或存成 PNG/JPG 之后每次
+Ctrl+S 都会再弹一次文件选择框。改动三处：
+
+- `paths.rs`：`layered_extension` 增加 `sssp`，`holds` 里 SSSP 视为能容纳整份文档（含印刷调整层）。
+- `menus/invoke.rs` 的 `file.save`：文档已有自己的文件、且平铺文件仍装得下当前内容
+  （`services::plain_raster`，单层、满不透明度、无蒙版/效果、Normal/PassThrough）时直接原地写回；
+  外部程序改过该文件仍先问（`disk_change_prompt`）。
+- `app/files.rs`：新增 `save_own_flat`，平铺自有文件原地保存时只留 JPEG/TIFF/Targa/DDS 选项，
+  步骤记为 `file.save` 而非 `file.saveAs`。
+
+口径：**无文件名第一次保存仍弹另存为**；平铺文件装不下（加了图层/文字/蒙版等）仍走"另存为"，
+不无声压平原图。测试见 `file_dialog/tests.rs`、`file_open/tests.rs`、`file_cmds/tests.rs`。
 
 ### 备份
 

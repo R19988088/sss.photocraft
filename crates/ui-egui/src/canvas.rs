@@ -2176,12 +2176,18 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // Pen pressure/tilt for this frame's tool events (mouse = 1.0), unless Preferences › Tools ›
     // Use Tablet Pressure is off; the pen's eraser end selects the Eraser.
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
+    // Preferences › Tablet › Tablet optimization: the pen's samples are timed and each move takes
+    // its own pressure (off: the earlier per-frame pairing).
+    app.stylus.optimized = app.session.prefs().tools.tablet_optimization;
     let curve = app.session.prefs().tools.pressure_curve.clone();
     app.stylus.set_pressure_curve(&curve);
     // The custom tablet response: dead zone, full-pressure calibration, elasticity and
     // pressure averaging, applied to every pen sample before the brush sees it.
     let tablet_response = app.session.prefs().tools.tablet_pressure.clamped();
     app.stylus.set_tablet_response(tablet_response);
+    // The frame's clock before the pen samples are read: a sample's arrival time is aligned to it
+    // (see `Stylus::update`), and this frame's moves spread between the last point and it.
+    app.stylus.clock_ms = ui.input(|i| i.time) * 1000.0;
     app.stylus.update_for_frame(ui.ctx().cumulative_frame_nr(), &ui.input(|i| i.events.clone()));
     crate::stylus::Stylus::sync_eraser_tool(app);
     // A Magnetic Lasso border left behind by a tool or document switch is dropped.

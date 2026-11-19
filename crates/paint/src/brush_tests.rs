@@ -1356,10 +1356,11 @@ fn dab_pitch_is_the_diameter_times_the_spacing_whatever_the_sampling() {
 }
 
 #[test]
-fn pitch_is_the_size_times_the_spacing_whatever_the_pressure() {
-    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on: the dabs shrink, the
-    // distance between them must not — the pitch is the brush's own size times the spacing, as
-    // the user asked ("间距必须只和实际尺寸有关").
+fn pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins() {
+    // Pressure falls off 1.0 → 0.2 across 400 px with Pressure→Size on, as a light, hurried
+    // stroke really does. The dabs shrink, and the pitch shrinks with them (ProCraft's `step`,
+    // Photoshop's spacing measure the gap on the stamp's own size): the stroke keeps the density
+    // the panel says instead of spreading apart wherever it thins — what "间距随速度变化" was.
     let b = BrushSettings { size: 100.0, spacing: 0.1, pressure_size: true, ..brush() };
     let pts: Vec<StrokePoint> = (0..=40)
         .map(|i| {
@@ -1371,8 +1372,14 @@ fn pitch_is_the_size_times_the_spacing_whatever_the_pressure() {
     let xs: Vec<f64> = d.iter().map(|d| d.center.x).collect();
     let gaps: Vec<f64> = xs.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(!gaps.is_empty());
-    assert!(gaps.iter().all(|g| (g - 10.0).abs() < 1e-6), "pitch changed with pressure: {gaps:?}");
-    // The size itself still follows the pressure, which is what the dynamics are for.
+    // The pitch is the spacing's share of the dabs either side (ProCraft averages consecutive
+    // gaps, so a gap sits within a step of a pressure change of the mean of the two).
+    for (i, gap) in gaps.iter().enumerate() {
+        let want = 0.1 * f64::from((d[i].radius + d[i + 1].radius).max(0.0001));
+        assert!((gap / want - 1.0).abs() < 0.12, "gap {gap} is not 10 % of the stamp {want} at {i}");
+    }
+    assert!(gaps[0] > 8.0 && *gaps.last().unwrap() < 2.5, "the pitch did not shrink: {gaps:?}");
+    // The size itself follows the pressure, which is what the dynamics are for.
     let ctx = BrushContext::new(&b);
     let first = ctx.dab_rect(&d[0], false);
     let last = ctx.dab_rect(d.last().unwrap(), false);

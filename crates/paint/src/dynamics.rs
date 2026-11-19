@@ -191,6 +191,10 @@ pub struct PathWalker {
     sensor_distance: f32,
     release_reference: f32,
     pressure_released: bool,
+    /// The pitch the last dab was placed at. Each next pitch is the mean of it and the new one
+    /// (ProCraft's `gap`), so a pen that presses or hurries eases the gaps over two dabs rather
+    /// than jumping at one.
+    gap: f64,
 }
 
 impl PathWalker {
@@ -210,6 +214,7 @@ impl PathWalker {
             sensor_distance: 0.0,
             release_reference: 1.0,
             pressure_released: false,
+            gap: 0.0,
         }
     }
 
@@ -294,6 +299,7 @@ impl PathWalker {
             self.last = Some(p);
             self.pending_first = Some(p);
             self.next_at = step_len(&self.input(p));
+            self.gap = self.next_at;
             return;
         };
         let (dx, dy) = (p.x - a.x, p.y - a.y);
@@ -312,7 +318,9 @@ impl PathWalker {
                 while self.next_at <= len + 1e-9 {
                     let q = lerp_pt(&a, &p, (self.next_at / len).min(1.0));
                     self.emit(q, out);
-                    self.next_at += step_len(&self.input(q)).max(0.25);
+                    let gap = step_len(&self.input(q)).max(0.25);
+                    self.next_at += 0.5 * (self.gap + gap);
+                    self.gap = gap;
                 }
                 self.next_at -= len;
             }
@@ -522,6 +530,10 @@ pub fn base_diameter(b: &BrushSettings, s: &StepInput) -> f32 {
     b.size * f
 }
 
+/// ProCraft's `SPACING_FLOOR` and `SPACING_SPAN` are deliberately not reproduced: its extra
+/// half-pixel gap (and the 1.226 round-tip factor of `ROUND_TIP_SHARE`) widen every pitch, and this
+/// app keeps Photoshop's exact density — size 20 at spacing 25% stays 5 px, 21 dabs over 100 px.
+
 fn resolved_flow(b: &BrushSettings, seed: u64, index: u64, s: &StepInput) -> f32 {
     let mut flow = b.flow;
     if b.transfer.enabled {
@@ -551,12 +563,26 @@ impl DabBuilder {
         StepInput { speed: speed * speed * (3.0 - 2.0 * speed), distance: s.distance / (self.brush.size * self.brush.spacing.max(0.05) * 32.0).max(96.0), ..*s }
     }
 
-    pub fn step_len(&self, _s: &StepInput) -> f64 {
+    /// Distance to the next dab: ProCraft's rule, the spacing's share of the **stamp's own
+    /// square** at that point — the size the dab is really drawn at, after pressure, speed, tilt
+    /// and the tip's roundness — plus a half-pixel and a little more as the spacing grows
+    /// (`StrokeBuilder::step_as` and `gap`). A stroke that thins as the pen presses light or
+    /// hurries therefore keeps its overlap: what the spacing panel says is what the eye sees,
+    /// however the speed changes. The size jitter and `b.size` alone are not used: the pitch took
+    /// the stated size while the dabs shrank under it, which read as spacing following speed.
+    pub fn step_len(&self, s: &StepInput) -> f64 {
+        let s = &self.controlled_input(s);
         let b = &self.brush;
-        // Distance to the next dab: the brush's own size times the spacing, at least half a pixel.
-        // Only the size and the percentage feed it — not pressure, tilt, speed or the sampling
-        // rate — so a stroke keeps one pitch wherever the pen thins, tilts or hurries.
-        f64::from(b.size.max(1.0) * b.spacing.max(0.01)).max(0.5)
+        let sd = &b.shape_dynamics;
+        let s = &StepInput { tilt_angle: sd.tilt_angle, ..*s };
+        let lean = s.point.tilt_x.hypot(s.point.tilt_y).clamp(0.0, 90.0);
+        let reach = tilt_reach(lean.to_radians(), sd.tilt_angle);
+        let diameter = base_diameter(b, s).max(0.0) * (1.0 + sd.tilt_size.clamp(0.0, 2.0) * reach);
+        // The tip's shorter side is what the gap runs along when the stamp is flat (ProCraft's
+        // `shorter`, its `stamp's square × roundness`). A round stamp (the usual) leaves it at the
+        // diameter, and a stroke that thins as the pen presses light or hurries keeps its overlap.
+        let shorter = diameter * b.roundness.clamp(0.01, 1.0);
+        f64::from(b.spacing.max(0.01) * shorter).max(0.5)
     }
 
     fn diameter_at(&self, s: &StepInput, index: u64) -> f32 {
@@ -798,12 +824,13 @@ impl DualBuilder {
     pub fn new(brush: &BrushSettings) -> Self {
         Self { brush: brush.clone(), next_index: 0, full: brush.dual_brush.resolved_brush(brush).as_ref().map(DabBuilder::new) }
     }
-    pub fn step_len(&self, _p: &StepInput) -> f64 {
+    pub fn step_len(&self, p: &StepInput) -> f64 {
         if let Some(full) = &self.full {
-            return full.step_len(_p);
+            return full.step_len(p);
         }
         let d = &self.brush.dual_brush;
-        f64::from(d.size.max(1.0) * d.spacing.max(0.01)).max(0.5)
+        // The plain dual tip has no size dynamics (see `build`), so its pitch is its own size.
+        f64::from(d.spacing.max(0.01) * d.size.max(1.0)).max(0.5)
     }
     pub fn build(&mut self, s: &StepInput, out: &mut Vec<Dab>) {
         if let Some(full) = &mut self.full {

@@ -483,6 +483,11 @@ pub struct Tools {
     /// Native tablet calibration and causal coordinate/pressure filters, plus the Windows
     /// WinTab/Ink choice.
     pub tablet_pressure: photocraft_paint::TabletPressureSettings,
+    /// Tablet optimization (off by default): the pen's samples are timed, each move takes the
+    /// pressure the pen had at its own moment, every sample of a frame goes through the pressure
+    /// response, and a stroke's lift carries the pressure the pen left with. Off: the earlier
+    /// per-frame pairing, kept as the default until it has been tried.
+    pub tablet_optimization: bool,
     /// Arrow-key nudges of one thing (the selected layers, the selection outline, the Free
     /// Transform box) that follow each other within [`Tools::nudge_bundle_pause_ms`] are one
     /// History state (#2259). Off: every press is a state.
@@ -510,6 +515,7 @@ impl Default for Tools {
             tablet_input: TabletInput::WindowsInk,
             pressure_curve: vec![[0.0, 0.0], [1.0, 1.0]],
             tablet_pressure: Default::default(),
+            tablet_optimization: false,
             bundle_nudges: true,
             nudge_bundle_pause_ms: 1000,
         }
@@ -1444,6 +1450,10 @@ fn tablet_storage_path(key: &str) -> Option<&'static str> {
         "elasticity" => "tools.tabletPressure.elasticity",
         "coordinateWindow" => "tools.tabletPressure.coordinateWindow",
         "pressureWindow" => "tools.tabletPressure.pressureWindow",
+        // The pen's page owns the pressure curve and the optimization switch too (moved off
+        // Tools): they are still stored under `tools`.
+        "pressureCurve" => "tools.pressureCurve",
+        "optimization" => "tools.tabletOptimization",
         _ => return None,
     })
 }
@@ -1460,11 +1470,14 @@ impl Preferences {
         v
     }
 
-    /// The `tablet` page's values, gathered from `tools.tabletPressure` and `tools.tabletInput`.
+    /// The `tablet` page's values, gathered from `tools.tabletPressure`, `tools.tabletInput` and
+    /// the pen settings that moved there from Tools.
     fn tablet_json(&self) -> Value {
         let mut t = serde_json::to_value(&self.tools.tablet_pressure).unwrap_or_else(|_| json!({}));
         if let Value::Object(m) = &mut t {
             m.insert("tabletInput".into(), json!(self.tools.tablet_input.name()));
+            m.insert("pressureCurve".into(), json!(self.tools.pressure_curve));
+            m.insert("optimization".into(), json!(self.tools.tablet_optimization));
         }
         t
     }
@@ -1476,6 +1489,9 @@ impl Preferences {
 
     /// Set a value by dotted path, validating it. Unknown paths and wrong types are errors.
     pub fn set(&mut self, path: &str, value: Value) -> std::result::Result<(), String> {
+        // Use Tablet Pressure has no switch any more (Preferences › Tablet shows the pen's curve
+        // and the optimization switch instead): the pen always paints with its pressure.
+        let value = if path == "tools.useTabletPressure" { Value::Bool(true) } else { value };
         if path == "alternateShortcuts" {
             let obj = value.as_object().ok_or("`alternateShortcuts` maps command ids to lists of shortcuts")?;
             let mut map = BTreeMap::new();
@@ -1526,6 +1542,9 @@ impl Preferences {
         let mut root = self.to_json();
         set_path(&mut root, path, value)?;
         *self = serde_json::from_value(root).map_err(|e| format!("invalid value for `{path}`: {e}"))?;
+        // A whole-section update can carry `tools.useTabletPressure` too: there is no switch any
+        // more, so it stays on.
+        self.tools.use_tablet_pressure = true;
         Ok(())
     }
 
@@ -1746,6 +1765,12 @@ impl Session {
         // or by a 64-bit build; a hand-edited 0) loads as the nearest value it does. Otherwise
         // Apply from another Preferences tab, which validates every value, would reject it.
         prefs.performance.effect_cache_mb = accepted_effect_cache_mb(prefs.performance.effect_cache_mb, SMALL_ADDRESS_SPACE);
+        // Use Tablet Pressure has no switch any more: a file that saved it off still paints with
+        // the pen's pressure.
+        prefs.tools.use_tablet_pressure = true;
+        // Pressure is no longer averaged over a window (that only dulled every change and read
+        // too coarse at the lift): a file saved with the old five-sample window comes back at one.
+        prefs.tools.tablet_pressure.pressure_window = 1;
         if let Some(c) = color {
             self.color.settings = read_lenient(c, &["colorSettings"], &mut invalid);
             photocraft_compose::psblend::set_text_gamma(self.color.settings.blend_text_gamma);

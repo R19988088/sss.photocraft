@@ -19,9 +19,12 @@ pub struct TabletPressureSettings {
 
 impl Default for TabletPressureSettings {
     /// On by default, with the C3 tablet defaults: full pressure reached at the pen's own
-    /// maximum, no dead zone, elasticity 6 and stroke stability 2.
+    /// maximum, no dead zone, elasticity 6 and stroke stability 2. Pressure itself is not
+    /// averaged: a window's mean dulls every change in the pen's pressure and reads too coarse
+    /// at exactly the moments that matter (the stroke's start and its lift), so the window is
+    /// one sample — the pen's own reading, through the calibration and the elasticity curve.
     fn default() -> Self {
-        Self { enabled: true, maximum_pressure: 1.0, dead_zone: 0.0, elasticity: 6.0, coordinate_window: 2, pressure_window: 5 }
+        Self { enabled: true, maximum_pressure: 1.0, dead_zone: 0.0, elasticity: 6.0, coordinate_window: 2, pressure_window: 1 }
     }
 }
 
@@ -42,6 +45,23 @@ impl TabletPressureSettings {
 
 fn finite(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
+}
+
+/// Full-press calibration, the dead zone and the elasticity curve for one reading, in the
+/// 0..=65535 units the response works in: the mapping every sample of a stroke goes through,
+/// with or without the windows around it.
+fn calibrated(pressure: f32, settings: &TabletPressureSettings) -> i64 {
+    let maximum = (settings.maximum_pressure * 65535.0).round() as i64;
+    let dead_zone = (settings.dead_zone * 65535.0).round() as i64;
+    let maximum = maximum.max(dead_zone + 1);
+    let raw = (finite(pressure as f64, 0.0).clamp(0.0, 1.0) * 65535.0).round() as i64;
+    let mapped = if raw <= dead_zone { 0 } else { ((raw.min(maximum) - dead_zone) * PRESSURE_MAX / (maximum - dead_zone)).min(PRESSURE_MAX) };
+    if mapped == 0 {
+        return 0;
+    }
+    let p = mapped as f64 / 65535.0;
+    let rise = p.powf(0.92);
+    (rise / (rise + settings.elasticity * (1.0 - p).powf(1.19)) * 65535.0).round() as i64
 }
 
 #[derive(Clone, Debug, Default)]
@@ -239,6 +259,19 @@ impl TabletPressureFilter {
         self.last_emitted.map_or(1.0, |node| node.sample.pressure)
     }
 
+    /// This filter's pressure for one reading on its own: the dead zone, full-press calibration
+    /// and the elasticity curve, without the averaging window and without the coordinate delay.
+    /// The lift takes the pen's last reading through this: the window's mean still holds the
+    /// coarser samples just before it, and reading that at the lift is what makes the tail's
+    /// pressure jump *up* exactly when the pen thins away.
+    pub fn mapped_pressure(&self, pressure: f32, settings: TabletPressureSettings) -> f32 {
+        let settings = settings.clamped();
+        if !settings.enabled {
+            return finite(pressure as f64, 1.0).clamp(0.0, 1.0) as f32;
+        }
+        pressure_value(calibrated(pressure, &settings))
+    }
+
     pub fn finish(&mut self, sample: Option<StrokePoint>) -> Vec<StrokePoint> {
         let Some(settings) = self.settings else {
             return Vec::new();
@@ -263,20 +296,13 @@ impl TabletPressureFilter {
     }
 
     fn filtered_node(&mut self, sample: StrokePoint, settings: TabletPressureSettings) -> Node {
-        let maximum = (settings.maximum_pressure * 65535.0).round() as i64;
-        let dead_zone = (settings.dead_zone * 65535.0).round() as i64;
-        let maximum = maximum.max(dead_zone + 1);
-        let raw = (finite(sample.pressure as f64, 0.0).clamp(0.0, 1.0) * 65535.0).round() as i64;
-        let mapped = if raw <= dead_zone { 0 } else { ((raw.min(maximum) - dead_zone) * PRESSURE_MAX / (maximum - dead_zone)).min(PRESSURE_MAX) };
-        let pressure = if mapped == 0 {
+        let curved = calibrated(sample.pressure, &settings);
+        let pressure = if curved == 0 {
             self.pressure = Filter16::default();
             self.pressure_active = false;
             self.pressure_activated = false;
             0
         } else {
-            let p = mapped as f64 / 65535.0;
-            let rise = p.powf(0.92);
-            let curved = (rise / (rise + settings.elasticity * (1.0 - p).powf(1.19)) * 65535.0).round() as i64;
             let filtered = self.pressure.apply(curved, settings.pressure_window);
             if self.pressure_active {
                 filtered.max(PRESSURE_FLOOR)
@@ -334,6 +360,34 @@ mod tests {
         assert_eq!(end.last().unwrap().time, 10.0);
         assert_eq!(end.last().unwrap().tilt_x, 30.0);
         assert!(filter.push(StrokePoint::default()).is_empty());
+    }
+
+    #[test]
+    fn a_lift_does_not_read_the_pressure_window_behind_it() {
+        // A pen thinning away as it lifts: the response's window still averages the coarser
+        // samples before it, so reading it at the lift is what makes the tail's pressure jump
+        // up. The lift reads the pen's own last reading through the same mapping instead.
+        let settings = TabletPressureSettings { pressure_window: 5, ..settings() };
+        let own = TabletPressureFilter::default().mapped_pressure(0.2, settings);
+        let mut windowed = TabletPressureFilter::default();
+        windowed.begin(StrokePoint::new(0.0, 0.0, 0.8), settings);
+        for p in [0.8, 0.7, 0.6, 0.2] {
+            windowed.push(StrokePoint::new(0.0, 0.0, p));
+        }
+        let mean = windowed.pressure_now();
+        assert!(own + 0.05 < mean, "the lift's own reading {own} must not be the window's mean {mean}");
+    }
+
+    #[test]
+    fn the_default_pressure_is_the_reading_itself() {
+        // No averaging window: the pen's reading through calibration and the elasticity curve.
+        assert_eq!(TabletPressureSettings::default().pressure_window, 1);
+        let mut filter = TabletPressureFilter::default();
+        let mut settings = TabletPressureSettings::default();
+        settings.coordinate_window = 1;
+        filter.begin(StrokePoint::new(0.0, 0.0, 0.3), settings);
+        let next = filter.push(StrokePoint::new(10.0, 0.0, 0.6));
+        assert!((next[0].pressure - 0.237).abs() < 0.01, "elasticity 6 maps 0.6 to about 0.24, got {}", next[0].pressure);
     }
 
     #[test]
