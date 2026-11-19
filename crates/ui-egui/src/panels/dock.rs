@@ -314,28 +314,45 @@ pub fn request_dock_width(ctx: &egui::Context, w: f32) {
 /// One dock group's tab content; `panel_docking` bounds it and scrolls it when it's taller.
 pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate::dock::Group, tab: usize) {
     use crate::dock::Group;
+    // The Color card's bodies follow its tab names (颜色 | 色板 | 属性), so the strip's order never
+    // has to match a fixed index.
     let pro = Tokens::get(ui.ctx()).pro;
-    match (group, tab) {
-        (Group::Color, 2) => crate::preset_panels::gradients_panel(app, ui),
-        (Group::Color, 3) => crate::preset_panels::patterns_panel(app, ui),
-        // The Color tab is the same in every theme, in the mode picked from its panel menu
-        // (#6000); only the tab order differs between themes.
-        (Group::Color, tab) if group.tabs(pro).get(tab) == Some(&"Color") => crate::color_panel_ui::panel(app, ui),
-        (Group::Color, _) => crate::swatches_ui::panel(app, ui),
-        (Group::Properties, 0) => properties_body(app, ui),
-        (Group::Properties, _) => adjustments_grid(app, ui),
-        (Group::Character, tab) => crate::type_tool::character_panel(app, ui, tab == 1),
-        (Group::Navigator, 0) => navigator(app, ui),
-        (Group::Navigator, 1) => crate::histogram_panel::show(app, ui),
-        (Group::Navigator, _) => info_panel(app, ui),
-        (Group::History, 0) => history(app, ui),
-        (Group::History, 1) => crate::actions::panel(app, ui),
-        (Group::History, _) => crate::comps_ui::panel(app, ui),
-        (Group::Layers, 0) => layers(app, ui),
-        (Group::Layers, 1) => channels(app, ui),
-        (Group::Layers, _) => crate::vector_ui::paths_panel(app, ui),
-        (Group::Brushes, 0) => crate::brushes_tab::show(app, ui),
-        (Group::Brushes, _) => crate::preset_panels::tool_presets_panel(app, ui),
-        (Group::ToolPresets, _) => crate::preset_panels::tool_presets_panel(app, ui),
+    let label = |group: Group| group.tabs(pro).get(tab).copied();
+    match group {
+        Group::Color => match label(Group::Color) {
+            Some("Swatches") => crate::swatches_ui::panel(app, ui),
+            Some("Properties") => properties_body(app, ui),
+            _ => crate::color_panel_ui::panel(app, ui),
+        },
+        // Gradients and Patterns left the Color strip for their own card (Window › Gradients /
+        // Patterns), which a customized workspace can show anywhere.
+        Group::Presets => match label(Group::Presets) {
+            Some("Patterns") => crate::preset_panels::patterns_panel(app, ui),
+            _ => crate::preset_panels::gradients_panel(app, ui),
+        },
+        // Properties moved into the Color card; a saved customized layout may still hold its tab
+        // in this strip, so that body stays.
+        Group::Properties => match label(Group::Properties) {
+            Some("Properties") => properties_body(app, ui),
+            _ => adjustments_grid(app, ui),
+        },
+        Group::Character => crate::type_tool::character_panel(app, ui, tab == 1),
+        Group::Navigator => match tab {
+            0 => navigator(app, ui),
+            1 => crate::histogram_panel::show(app, ui),
+            _ => info_panel(app, ui),
+        },
+        Group::History => match tab {
+            0 => history(app, ui),
+            1 => crate::actions::panel(app, ui),
+            _ => crate::comps_ui::panel(app, ui),
+        },
+        Group::Layers => match tab {
+            0 => layers(app, ui),
+            1 => channels(app, ui),
+            _ => crate::vector_ui::paths_panel(app, ui),
+        },
+        Group::Brushes if tab == 0 => crate::brushes_tab::show(app, ui),
+        Group::Brushes | Group::ToolPresets => crate::preset_panels::tool_presets_panel(app, ui),
     }
 }

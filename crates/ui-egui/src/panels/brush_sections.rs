@@ -111,7 +111,7 @@ fn numeric_fields(ui: &mut egui::Ui, label: &str, fields: [(Option<&mut f32>, st
                     ui.push_id(index, |ui| {
                         if let Some(field) = field {
                             let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
-                            changed |= widgets::value_field_named(ui, &format!("{label} {hint}"), field, range, suffix, width)
+                            changed |= widgets::value_field_integer_named(ui, &format!("{label} {hint}"), field, range, suffix, width)
                                 .on_hover_text(hint)
                                 .changed();
                         } else {
@@ -135,7 +135,7 @@ fn numeric_fields(ui: &mut egui::Ui, label: &str, fields: [(Option<&mut f32>, st
                     let Some(field) = field else { continue };
                     fields_ui.push_id(index, |ui| {
                         let hint = [tl!("Minimum"), tl!("Maximum"), tl!("Jitter")].get(index).copied().unwrap_or("");
-                        changed |= widgets::value_field_named(ui, &format!("{label} {hint}"), field, range, suffix, cell)
+                        changed |= widgets::value_field_integer_named(ui, &format!("{label} {hint}"), field, range, suffix, cell)
                             .on_hover_text(hint)
                             .changed();
                     });
@@ -220,7 +220,7 @@ fn control_row(ui: &mut egui::Ui, id: &str, d: &mut Dynamic, angle: bool) {
         widgets::dropdown(ui, id, "", &mut d.control, &reference_controls(id), width);
         if d.control == Control::Fade {
             let mut steps = d.fade_steps as f32;
-            if widgets::value_field_named(ui, tl!("Fade steps"), &mut steps, 1.0..=9999.0, "", 56.0)
+            if widgets::value_field_integer_named(ui, tl!("Fade steps"), &mut steps, 1.0..=9999.0, "", 56.0)
                 .on_hover_text(tl!("Fade steps"))
                 .changed()
             {
@@ -266,7 +266,7 @@ fn parameter(
             parameter_label(ui, label, label_width);
             if ui
                 .add_enabled_ui(dynamics_enabled && (d.control != Control::Off || d.jitter > 0.0 || id == "brush-flow-ctl" || id == "brush-depth-ctl"), |ui| {
-                    widgets::value_field_named(ui, &format!("{label} {}", tl!("Minimum")), &mut minimum, 0.0..=100.0, "%", width)
+                    widgets::value_field_integer_named(ui, &format!("{label} {}", tl!("Minimum")), &mut minimum, 0.0..=100.0, "%", width)
                 })
                 .inner
                 .on_hover_text(tl!("Minimum"))
@@ -274,7 +274,7 @@ fn parameter(
             {
                 d.minimum = minimum / 100.0;
             }
-            if widgets::value_field_named(
+            if widgets::value_field_integer_named(
                 ui,
                 &format!("{label} {}", tl!("Maximum")),
                 &mut maximum,
@@ -296,7 +296,7 @@ fn parameter(
             ui.add_space(12.0);
             if ui
                 .add_enabled_ui(dynamics_enabled, |ui| {
-                    widgets::value_field_named(
+                    widgets::value_field_integer_named(
                         ui,
                         &format!("{label} {}", tl!("Jitter")),
                         &mut jitter,
@@ -365,28 +365,40 @@ pub fn ellipse_drag(grab: EllipseGrab, rel: egui::Vec2, angle: f32, roundness: f
 
 /// Photoshop's angle/roundness widget: drag the arrow to rotate, the dots to squash.
 pub(crate) fn ellipse_widget(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut f32) -> bool {
+    ellipse_widget_sized(ui, angle, roundness, 84.0)
+}
+
+/// [`ellipse_widget`] drawn in a `side`-point box: the Brush Settings tip area gives it 60 % of
+/// the controls column, so the tip reads at the size the brush is, not as a small dial.
+pub(crate) fn ellipse_widget_sized(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut f32, side: f32) -> bool {
     let t = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::click_and_drag());
+    let side = if side.is_finite() { side.max(84.0) } else { 84.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::click_and_drag());
     let c = rect.center();
+    // The drag maths works in the 84-point widget's units: a pointer offset is converted into
+    // them, so a bigger box grabs and drags with the same feel (`ELLIPSE_R` stays the unit).
+    let radius = (side / 2.0 - 6.0).max(ELLIPSE_R);
+    let unit = ELLIPSE_R / radius;
+    let to_unit = |p: egui::Pos2| (p - c) * unit;
     let grab_id = resp.id.with("grab");
     let mut changed = false;
     if resp.drag_started()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        let g = ellipse_grab(p - c, *angle, *roundness);
+        let g = ellipse_grab(to_unit(p), *angle, *roundness);
         ui.data_mut(|d| d.insert_temp(grab_id, g == EllipseGrab::Roundness));
     }
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
     {
         let grab = if resp.clicked() {
-            ellipse_grab(p - c, *angle, *roundness)
+            ellipse_grab(to_unit(p), *angle, *roundness)
         } else if ui.data(|d| d.get_temp::<bool>(grab_id)).unwrap_or(false) {
             EllipseGrab::Roundness
         } else {
             EllipseGrab::Angle
         };
-        let (a, r) = ellipse_drag(grab, p - c, *angle, *roundness);
+        let (a, r) = ellipse_drag(grab, to_unit(p), *angle, *roundness);
         if a != *angle || (r - *roundness).abs() > 1e-4 {
             *angle = a;
             *roundness = r;
@@ -394,10 +406,11 @@ pub(crate) fn ellipse_widget(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut
         }
     }
     let p = ui.painter();
-    p.circle_filled(c, 40.0, t.field);
-    p.circle_stroke(c, 40.0, Stroke::new(1.0, t.field_border));
-    p.line_segment([c - vec2(40.0, 0.0), c + vec2(40.0, 0.0)], Stroke::new(1.0, t.separator));
-    p.line_segment([c - vec2(0.0, 40.0), c + vec2(0.0, 40.0)], Stroke::new(1.0, t.separator));
+    let ring = radius + 6.0;
+    p.circle_filled(c, ring, t.field);
+    p.circle_stroke(c, ring, Stroke::new(1.0, t.field_border));
+    p.line_segment([c - vec2(ring, 0.0), c + vec2(ring, 0.0)], Stroke::new(1.0, t.separator));
+    p.line_segment([c - vec2(0.0, ring), c + vec2(0.0, ring)], Stroke::new(1.0, t.separator));
     let (s, co) = angle.to_radians().sin_cos();
     let major = vec2(co, -s);
     let minor = vec2(-s, -co);
@@ -405,21 +418,33 @@ pub(crate) fn ellipse_widget(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut
     let pts: Vec<egui::Pos2> = (0..48)
         .map(|i| {
             let a = i as f32 / 48.0 * std::f32::consts::TAU;
-            c + major * a.cos() * ELLIPSE_R + minor * a.sin() * ELLIPSE_R * rr
+            c + major * a.cos() * radius + minor * a.sin() * radius * rr
         })
         .collect();
     p.add(egui::Shape::convex_polygon(pts, t.text.gamma_multiply(0.18), Stroke::new(1.5, t.text)));
     // Arrow along the major axis.
-    let tip = c + major * (ELLIPSE_R + 5.0);
+    let tip = c + major * (radius + 5.0);
     p.line_segment([c, tip], Stroke::new(1.5, t.accent));
     let back = tip - major * 7.0;
     p.add(egui::Shape::convex_polygon(vec![tip, back + minor * 4.0, back - minor * 4.0], t.accent, Stroke::NONE));
+    let handle_k = radius / ELLIPSE_R;
     for h in roundness_handles(*angle, *roundness) {
-        p.circle_filled(c + h, 4.0, Color32::WHITE);
-        p.circle_stroke(c + h, 4.0, Stroke::new(1.0, t.accent));
+        let h = c + h * handle_k;
+        p.circle_filled(h, 4.0, Color32::WHITE);
+        p.circle_stroke(h, 4.0, Stroke::new(1.0, t.accent));
     }
     let _ = resp.on_hover_text(tl!("Drag the arrow to set the angle, the dots to set the roundness"));
     changed
+}
+
+/// Share of the controls column the tip's curve takes (the numbers take the rest, at its right).
+const TIP_CURVE_SHARE: f32 = 0.6;
+
+/// A caption above its whole-number field, for the narrow column at the tip curve's right: the
+/// caption is cut to the column rather than truncating the number beside it.
+fn stacked_field(ui: &mut egui::Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, col: f32) -> bool {
+    widgets::elided_label_sensed(ui, label, col, Sense::hover());
+    widgets::value_field_integer_named(ui, label, value, range, suffix, col).changed()
 }
 
 /// The tip a preset contributes to a tip grid: (shape, size, hardness, angle, roundness, spacing).
@@ -530,12 +555,38 @@ fn tip_shape(ui: &mut egui::Ui, b: &mut BrushSettings, presets: &[BrushPreset], 
     if signed_pct(ui, tl!("Spacing"), &mut b.spacing, 0.01, 10.0) {
         b.spacing_enabled = true;
     }
+    // The tip's own curve takes 60 % of the controls column, and its two numbers sit at the curve's
+    // right: the dial reads as the brush's tip instead of a small gauge, and neither the Roundness
+    // nor the Angle caption is cut short.
+    let lane = ui.available_width();
+    let side = (lane * TIP_CURVE_SHARE).floor().max(84.0);
     let mut widget_angle = if b.c3_tip_math { -b.angle } else { b.angle };
-    if ellipse_widget(ui, &mut widget_angle, &mut b.roundness) {
+    let widget_changed = ui
+        .horizontal_top(|ui| {
+            let changed = ellipse_widget_sized(ui, &mut widget_angle, &mut b.roundness, side);
+            ui.add_space(ui.spacing().item_spacing.x.max(8.0));
+            let col = ui.available_width().max(56.0);
+            ui.vertical(|ui| {
+                ui.set_width(col);
+                ui.spacing_mut().item_spacing.y = 5.0;
+                // The two rows sit centred against the curve's height.
+                ui.add_space(((side - 84.0) / 2.0).max(0.0));
+                let mut roundness = (b.roundness * 100.0).round();
+                if stacked_field(ui, tl!("Roundness"), &mut roundness, 1.0..=100.0, "%", col) {
+                    b.roundness = (roundness / 100.0).clamp(0.01, 1.0);
+                }
+                let mut angle = if b.c3_tip_math { -b.angle } else { b.angle };
+                if stacked_field(ui, tl!("Angle"), &mut angle, -180.0..=180.0, "°", col) {
+                    b.angle = if b.c3_tip_math { -angle } else { angle };
+                    widget_angle = angle;
+                }
+            });
+            changed
+        })
+        .inner;
+    if widget_changed {
         b.angle = if b.c3_tip_math { -widget_angle } else { widget_angle };
     }
-    signed_pct(ui, tl!("Roundness"), &mut b.roundness, 0.01, 1.0);
-    num(ui, tl!("Angle"), &mut b.angle, -180.0..=180.0, "°");
     None
 }
 
@@ -798,7 +849,7 @@ pub(crate) fn lane_strength(ui: &mut egui::Ui, value: &mut f32) -> bool {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     field_ui.set_clip_rect(field_ui.clip_rect().union(row));
-    widgets::value_field_named(&mut field_ui, tl!("Strength"), value, 0.0..=100.0, "%", LANE_VALUE).changed()
+    widgets::value_field_integer_named(&mut field_ui, tl!("Strength"), value, 0.0..=100.0, "%", LANE_VALUE).changed()
 }
 
 fn color_dynamics(ui: &mut egui::Ui, b: &mut BrushSettings) {
@@ -861,7 +912,7 @@ fn material_control(ui: &mut egui::Ui, id: &str, control: &mut Control, fade_ste
         widgets::dropdown(ui, id, "", control, &reference_controls(id), (ui.available_width() - if *control == Control::Fade { 64.0 } else { 0.0 }).max(60.0));
         if *control == Control::Fade {
             let mut n = *fade_steps as f32;
-            if widgets::value_field_named(ui, tl!("Fade steps"), &mut n, 1.0..=9999.0, "", 56.0)
+            if widgets::value_field_integer_named(ui, tl!("Fade steps"), &mut n, 1.0..=9999.0, "", 56.0)
                 .on_hover_text(tl!("Fade steps"))
                 .changed()
             {
@@ -904,7 +955,13 @@ fn wet_settings(ui: &mut egui::Ui, settings: &mut Option<WetEdgeSettings>) {
             140.0,
         );
     });
-    numeric_row(ui, tl!("Strength"), Some(&mut w.minimum_strength), &mut w.strength, None, 0.0..=2.0, "");
+    // Strength is a continuous reference unit (0..2). Shown as whole percent, so no number in the
+    // panel reads a decimal point.
+    let (mut minimum, mut strength) = (w.minimum_strength * 100.0, w.strength * 100.0);
+    if numeric_row(ui, tl!("Strength"), Some(&mut minimum), &mut strength, None, 0.0..=200.0, "%") {
+        w.minimum_strength = (minimum / 100.0).clamp(0.0, 2.0);
+        w.strength = (strength / 100.0).clamp(0.0, 2.0);
+    }
     material_control(ui, "wet-control", &mut w.control, &mut w.fade_steps);
     ui.horizontal(|ui| {
         dim(ui, tl!("Edge Control"));
@@ -950,7 +1007,12 @@ fn wet_settings(ui: &mut egui::Ui, settings: &mut Option<WetEdgeSettings>) {
     if w.width_mode == WetWidthMode::Fixed {
         numeric_row(ui, tl!("Fixed Width"), Some(&mut w.minimum_width), &mut w.fixed_width, None, 0.0..=256.0, " px");
     } else {
-        numeric_row(ui, tl!("Width"), Some(&mut w.minimum_width), &mut w.width, None, 0.0..=5.0, "");
+        // A ratio (0..5) is shown as whole percent, like Strength.
+        let (mut minimum, mut width) = (w.minimum_width * 100.0, w.width * 100.0);
+        if numeric_row(ui, tl!("Width"), Some(&mut minimum), &mut width, None, 0.0..=500.0, "%") {
+            w.minimum_width = (minimum / 100.0).clamp(0.0, 5.0);
+            w.width = (width / 100.0).clamp(0.0, 5.0);
+        }
     }
     // Strength and width use continuous reference units, not integer pixel rows.
     if w != before {
@@ -1412,7 +1474,7 @@ mod tests {
             let first = rect(column[0]);
             for value in &column[1..] {
                 let other = rect(*value);
-                assert!((first.left() - other.left()).abs() < 0.1, "same column start");
+                assert!((first.left() - other.left()).abs() < 0.1, "same column start: {first:?} vs {other:?}");
                 assert!((first.width() - other.width()).abs() < 0.1, "same column width");
             }
         }
@@ -1564,5 +1626,119 @@ mod tests {
         assert!((h.x.abs() - ELLIPSE_R).abs() < 1e-3 && h.y.abs() < 1e-3, "{h:?}");
         let (_, r) = ellipse_drag(EllipseGrab::Roundness, vec2(500.0, 0.0), 90.0, 0.2);
         assert_eq!(r, 1.0);
+    }
+
+    /// The tip curve's disc on screen: its centre and its radius (the biggest circle the section
+    /// draws — the tip previews are images, the bezier curve is not a circle).
+    fn tip_curve_disc(h: &Harness<'static, BrushSettings>) -> (egui::Pos2, f32) {
+        fn biggest(shape: &egui::Shape) -> Option<(egui::Pos2, f32)> {
+            match shape {
+                egui::Shape::Circle(c) => Some((c.center, c.radius)),
+                egui::Shape::Vec(shapes) => shapes.iter().filter_map(biggest).max_by(|a, b| a.1.total_cmp(&b.1)),
+                _ => None,
+            }
+        }
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|shape| biggest(&shape.shape))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .expect("the tip curve")
+    }
+
+    /// [`section_harness`] with the harness's accessible-name check off: the tip's curve is measured
+    /// here, and the same section's rendered names are covered above.
+    fn tip_harness(b: BrushSettings) -> Harness<'static, BrushSettings> {
+        let mut ready = false;
+        let mut h = Harness::builder()
+            .with_size(vec2(340.0, 1200.0))
+            .with_accessibility_check(false)
+            .build_ui_state(
+                move |ui, b: &mut BrushSettings| {
+                    if !ready {
+                        crate::PhotocraftApp::setup_context(ui.ctx(), theme::ThemeKind::ProMedium);
+                        ready = true;
+                        return;
+                    }
+                    section_body(ui, b, 0, &[], None);
+                },
+                b,
+            );
+        h.run_steps(3);
+        h
+    }
+
+    /// The roundness dots as drawn: the section's four-point circles, at whatever size the curve is.
+    fn tip_curve_handles(h: &Harness<'static, BrushSettings>) -> Vec<egui::Pos2> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Circle(c) if (c.radius - 4.0).abs() < 1e-3 => out.push(c.center),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for shape in &h.output().shapes {
+            collect(&shape.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn tip_curve_gets_sixty_percent_and_its_numbers_sit_at_its_right() {
+        let b = BrushSettings { angle: -23.0, roundness: 0.473, c3_tip_math: false, ..Default::default() };
+        let h = tip_harness(b.clone());
+        let (centre, radius) = tip_curve_disc(&h);
+        assert!(radius * 2.0 > 84.0, "the curve grew past the old 84 point dial: {}", radius * 2.0);
+        assert!(radius * 2.0 >= (340.0 - 150.0) * 0.5, "the curve takes most of the controls column: {}", radius * 2.0);
+        let field = |value: f64| {
+            h.query_all_by_role(Role::SpinButton)
+                .find(|n| n.accesskit_node().numeric_value() == Some(value))
+                .unwrap_or_else(|| panic!("the {value} field"))
+                .rect()
+        };
+        let roundness = field(47.0);
+        let angle = field(-23.0);
+        assert!(
+            roundness.left() > centre.x + radius && angle.left() > centre.x + radius,
+            "the numbers belong right of the curve: {roundness:?} {angle:?} beside {centre:?} r{radius}"
+        );
+        assert!((roundness.left() - angle.left()).abs() < 0.5, "the two numbers share one column");
+        // Captions sit above their numbers instead of being cut beside them.
+        let caption = |text: &str| {
+            h.query_all(egui_kittest::kittest::by().label(text).include_labels())
+                .find(|n| n.accesskit_node().role() == Role::Label)
+                .unwrap_or_else(|| panic!("the {text} caption"))
+                .rect()
+        };
+        let roundness_caption = caption(&tl!("Roundness"));
+        let angle_caption = caption(&tl!("Angle"));
+        assert!(roundness_caption.bottom() <= roundness.top() + 1.0 && angle_caption.bottom() <= angle.top() + 1.0, "captions sit above their numbers");
+        assert!((roundness_caption.left() - angle_caption.left()).abs() < 0.5, "captions share the column's edge");
+        assert_eq!(h.state(), &b, "layout does not round imported values");
+    }
+
+    #[test]
+    fn tip_curve_pointer_drags_follow_the_drawn_size() {
+        let mut b = BrushSettings { roundness: 0.5, c3_tip_math: false, ..Default::default() };
+        let mut h = tip_harness(b.clone());
+        let (c, ring) = tip_curve_disc(&h);
+        // The dial's maths works in the 84 point widget's units; on screen the ellipse is drawn at
+        // `inner` (the disc carries a 6 point ring), so a unit is `scale` screen points.
+        let inner = ring - 6.0;
+        let scale = inner / ELLIPSE_R;
+        drag(&mut h, c + vec2(35.0, 0.0) * scale, c + vec2(0.0, -35.0) * scale);
+        b.angle = 90.0;
+        assert_eq!(h.state(), &b, "the arrow changes only the angle");
+        // The dots are drawn where the widget's own grab maths looks for them, at the bigger size:
+        // pressing one still grabs the roundness rather than the angle.
+        let dots = tip_curve_handles(&h);
+        for handle in roundness_handles(b.angle, b.roundness) {
+            let want = c + handle * scale;
+            let drawn = *dots.iter().min_by(|a, b| (*a).distance(want).total_cmp(&(*b).distance(want))).unwrap_or(&want);
+            assert!((drawn - want).length() <= 1.5, "a dot is drawn at {drawn:?}, its grab sits at {want:?}");
+            assert_eq!(ellipse_grab((drawn - c) / scale, b.angle, b.roundness), EllipseGrab::Roundness, "a press at the drawn dot grabs the roundness");
+        }
+        assert_eq!(h.state().angle, 90.0, "the dots leave the angle");
     }
 }

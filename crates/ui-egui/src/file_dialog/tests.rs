@@ -168,8 +168,9 @@ fn layered_save_respects_explicit_jpeg_choices() {
     }
 }
 
-/// File › Save on a flat JPEG asks for its name; confirming its own file asks JPEG Options and,
-/// once answered, records a plain Save that writes the file an action is played on (#3531).
+/// File › Save on a flat JPEG that already has its file asks no name: JPEG Options asks, and,
+/// once answered, the answer is recorded as a plain Save that writes the file an action is played
+/// on (#3531).
 #[test]
 fn plain_save_of_a_flat_jpeg_asks_jpeg_options_and_records_a_plain_save() {
     let ctx = egui::Context::default();
@@ -177,8 +178,7 @@ fn plain_save_of_a_flat_jpeg_asks_jpeg_options_and_records_a_plain_save() {
     app.run("actions.record", json!({})).unwrap();
     menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
     app.poll_file_dialog(&ctx, None);
-    answer(&open, Some(FileDialogAnswer::SaveTo("/pics/photo.jpg".into())));
-    app.poll_file_dialog(&ctx, None);
+    assert!(open.borrow().is_empty(), "the document has a file: no Save dialog");
     assert_eq!(app.jpeg_options.as_ref().map(|p| (p.record, p.copy)), Some(("file.save", false)));
     assert!(written.borrow().is_empty());
     crate::jpeg_options_ui::confirm(&mut app, &ctx);
@@ -187,8 +187,23 @@ fn plain_save_of_a_flat_jpeg_asks_jpeg_options_and_records_a_plain_save() {
     assert_eq!(app.session.actions.list[0].steps, [("file.save".to_string(), json!({}))]);
 }
 
-/// A plain Save confirmed in the dialog keeps a changed JPEG Options answer in its recorded step,
-/// and playing it writes the active flat JPEG with that answer, without asking.
+/// An SSSP project keeps everything a document has (raster and adjustment layers), so once a
+/// document lives in one, Ctrl+S writes it back with no dialog.
+#[test]
+fn an_sssp_project_saves_in_place_without_a_dialog() {
+    let ctx = egui::Context::default();
+    let (mut app, open, written) = app();
+    app.session.active_mut().unwrap().path = Some("/pics/art.sssp".into());
+    app.run("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+    let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+    assert_eq!(r["path"], "/pics/art.sssp");
+    assert!(open.borrow().is_empty(), "no Save dialog");
+    assert_eq!(*written.borrow(), ["/pics/art.sssp"]);
+    assert!(!app.session.active().unwrap().is_dirty());
+}
+
+/// A plain Save of a flat JPEG keeps a changed JPEG Options answer in its recorded step, and
+/// playing it writes the active flat JPEG with that answer, without asking.
 #[test]
 fn plain_save_of_a_flat_jpeg_records_and_replays_a_changed_quality() {
     let ctx = egui::Context::default();
@@ -202,8 +217,7 @@ fn plain_save_of_a_flat_jpeg_records_and_replays_a_changed_quality() {
     app.run("actions.record", json!({})).unwrap();
     menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
     app.poll_file_dialog(&ctx, None);
-    answer(&open, Some(FileDialogAnswer::SaveTo("/pics/photo.jpg".into())));
-    app.poll_file_dialog(&ctx, None);
+    assert!(open.borrow().is_empty(), "no Save dialog: the JPEG is the document's file");
     let prompt = app.jpeg_options.as_mut().expect("JPEG Options");
     prompt.quality = 3;
     prompt.format = photocraft_codecs::JpegFormat::Progressive;
@@ -1419,9 +1433,8 @@ fn save_asks_before_replacing_a_file_another_app_changed() {
 }
 
 #[test]
-fn save_of_a_flat_file_asks_after_the_dialog_when_another_app_changed_it() {
+fn save_of_a_flat_file_asks_when_another_app_changed_it() {
     let ctx = egui::Context::default();
-    // Lowercase: the Save dialog lowercases a typed extension by default.
     let path = "/pics/My image.jpg";
     let (mut app, open, written) = jpeg_app(None, false);
     let disk = on_disk(&mut app);
@@ -1431,8 +1444,7 @@ fn save_of_a_flat_file_asks_after_the_dialog_when_another_app_changed_it() {
     changed_by_another_app(&disk, path);
     menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
     app.poll_file_dialog(&ctx, None);
-    answer(&open, Some(FileDialogAnswer::SaveTo(path.into())));
-    app.poll_file_dialog(&ctx, None);
+    assert!(open.borrow().is_empty(), "the document has a file: no Save dialog");
     assert!(written.borrow().is_empty(), "the changed file is not replaced before the answer");
     let id = disk_prompt(&app).expect("Save asks first").id;
     crate::dialogs::confirm(&mut app, id).unwrap();
@@ -1474,8 +1486,7 @@ fn a_scripted_quality_survives_the_changed_on_disk_prompt() {
     changed_by_another_app(&disk, path);
     menus::invoke(&mut app, &ctx, "file.save", json!({"quality": 5})).unwrap();
     app.poll_file_dialog(&ctx, None);
-    answer(&open, Some(FileDialogAnswer::SaveTo(path.into())));
-    app.poll_file_dialog(&ctx, None);
+    assert!(open.borrow().is_empty(), "the document has a file: no Save dialog");
     assert!(written.borrow().is_empty(), "the changed file is not replaced before the answer");
     let id = disk_prompt(&app).expect("Save asks first").id;
     crate::dialogs::confirm(&mut app, id).unwrap();

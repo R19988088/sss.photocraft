@@ -302,6 +302,33 @@ impl PhotocraftApp {
         self.save_as_step(path, tiff_layers, choices)
     }
 
+    /// File › Save writing back the document's own flat file (a single plain layer the format keeps):
+    /// asks the format's options as Save As does (Targa, DDS, JPEG, TIFF), but records a plain Save
+    /// and writes the document's file in place, so a document that has a file never asks for a name
+    /// again (#3531).
+    pub(crate) fn save_own_flat(&mut self, path: String, choices: FormatChoices) -> Result<Value, String> {
+        if self.save_options_open() {
+            return Err(SAVE_OPTIONS_OPEN.into());
+        }
+        if choices.tga_bits.is_none() && targa_options_ui::wants_prompt(self, &path) {
+            targa_options_ui::park(self, path.clone(), false, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        if choices.dds.is_none() && dds_options_ui::wants_prompt(&path) {
+            dds_options_ui::park(self, path.clone(), false, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        if choices.jpeg.is_none() && jpeg_options_ui::wants_prompt(self, &path) {
+            jpeg_options_ui::park(self, path.clone(), false, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        if choices.tiff.is_none() && tiff_options_ui::wants_prompt(self, &path) {
+            tiff_options_ui::park(self, path.clone(), false, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        self.save_in_place(path, choices)
+    }
+
     /// File › Save back to the document's own file, recorded as a `file.save` step with the
     /// Targa, DDS or JPEG answer in `choices` (a replayed or scripted Save of a flat file brings
     /// its own).

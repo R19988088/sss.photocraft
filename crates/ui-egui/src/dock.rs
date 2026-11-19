@@ -23,9 +23,9 @@ use crate::state::{DockTabs, Panels};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Group {
-    /// Color | Swatches | Gradients | Patterns.
+    /// Color | Swatches | Properties: the Color card's three tabs.
     Color,
-    /// Properties | Adjustments.
+    /// Adjustments (Properties is the Color card's 属性 tab, document §2.5).
     Properties,
     /// Character | Paragraph (not in the default workspace; Window › Character opens it, #150).
     Character,
@@ -39,12 +39,23 @@ pub enum Group {
     Brushes,
     /// Tool presets (Window › Tool Presets), docked like Brushes.
     ToolPresets,
+    /// Gradients | Patterns (Window › Gradients / Patterns), apart from the Color card.
+    Presets,
 }
 
 impl Group {
     /// Photoshop Essentials order, top to bottom.
-    pub const ALL: [Group; 8] =
-        [Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History, Group::Layers, Group::Brushes, Group::ToolPresets];
+    pub const ALL: [Group; 9] = [
+        Group::Color,
+        Group::Properties,
+        Group::Character,
+        Group::Navigator,
+        Group::History,
+        Group::Layers,
+        Group::Brushes,
+        Group::ToolPresets,
+        Group::Presets,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -56,6 +67,7 @@ impl Group {
             Group::Layers => "layers",
             Group::Brushes => "brushes",
             Group::ToolPresets => "toolPresets",
+            Group::Presets => "presets",
         }
     }
 
@@ -71,6 +83,7 @@ impl Group {
             Group::Layers => 320.0,
             Group::Brushes => 200.0,
             Group::ToolPresets => 240.0,
+            Group::Presets => 240.0,
         }
     }
 
@@ -86,6 +99,7 @@ impl Group {
             Group::Layers => 200.0,
             Group::Brushes => 150.0,
             Group::ToolPresets => 170.0,
+            Group::Presets => 170.0,
         }
     }
 
@@ -109,12 +123,14 @@ impl Group {
         }
     }
 
-    pub fn tabs(self, pro: bool) -> &'static [&'static str] {
+    pub fn tabs(self, _pro: bool) -> &'static [&'static str] {
         match self {
-            // Photoshop Essentials: Color | Swatches | Gradients | Patterns.
-            Group::Color if pro => &["Color", "Swatches", "Gradients", "Patterns"],
-            Group::Color => &["Swatches", "Color", "Gradients", "Patterns"],
-            Group::Properties => &["Properties", "Adjustments"],
+            // The Color card's three tabs, the same in every theme: 颜色 | 色板 | 属性.
+            Group::Color => &["Color", "Swatches", "Properties"],
+            // Properties moved into the Color card, so this card is Adjustments alone.
+            Group::Properties => &["Adjustments"],
+            // Gradients and Patterns left the Color strip: their own card, closed by default.
+            Group::Presets => &["Gradients", "Patterns"],
             Group::Character => &["Character", "Paragraph"],
             Group::Navigator => &["Navigator", "Histogram", "Info"],
             Group::History => &["History", "Actions", "Layer Comps"],
@@ -144,6 +160,7 @@ impl Group {
             Group::Layers => &mut tabs.layers,
             Group::Brushes => &mut tabs.brushes,
             Group::ToolPresets => &mut tabs.tool_presets,
+            Group::Presets => &mut tabs.presets,
         }
     }
 
@@ -162,6 +179,7 @@ impl Group {
             Group::Layers => panels.layers,
             Group::Brushes => panels.brushes,
             Group::ToolPresets => panels.tool_presets,
+            Group::Presets => panels.presets,
         }
     }
 
@@ -175,6 +193,7 @@ impl Group {
             Group::Layers => &mut panels.layers,
             Group::Brushes => &mut panels.brushes,
             Group::ToolPresets => &mut panels.tool_presets,
+            Group::Presets => &mut panels.presets,
         }
     }
 }

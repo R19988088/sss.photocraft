@@ -2,7 +2,7 @@ use super::brush_controls::{
     brush_preset_chip, mixer_combination_dropdown, mixer_load_swatch, paint_mode_dropdown, smoothing_field, smoothing_options, tool_mode_dropdown,
 };
 use super::properties::{select_and_mask_button, selection_mode_buttons};
-use super::{BlendMode, Color32, PhotocraftApp, RichText, Sense, Tokens, Tool, Value, icons, json, starts_blend_group, vec2, widgets};
+use super::{BlendMode, Color32, PhotocraftApp, RichText, Sense, Tokens, Tool, Value, icons, json, starts_blend_group, widgets};
 use photocraft_paint::BrushSettings;
 
 // Custom controls also need to bring keyboard focus into a scroll viewport.
@@ -41,6 +41,14 @@ pub(super) fn options_bar_height(pro: bool, narrow: bool) -> f32 {
     }
 }
 
+/// The tools the options bar stands side by side: the whole toolbar slot the active tool belongs
+/// to, in the toolbar's own order (hidden tools left out), or the tool alone when it sits in none.
+fn tool_group(app: &PhotocraftApp) -> Vec<Tool> {
+    let mut sections = super::toolbar::visible_sections(&app.session.prefs().toolbar.hidden).into_iter().flatten();
+    let tool = app.ui.tool;
+    sections.find(|(_, tools)| tools.contains(&tool)).map(|(_, tools)| tools).unwrap_or_else(|| vec![tool])
+}
+
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::vector_ui::track_arrow_default_selection(app, ui.ctx());
     crate::eraser_ui::alert_for_a_field_gone(app, ui.ctx());
@@ -60,27 +68,52 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::chrome_ui::home_button(app, ui);
                             widgets::vline(ui, 22.0);
                         }
-                        let tool_icon = icons::button(ui, icons::tool_icon(app.ui.tool), if t.pro { 26.0 } else { 28.0 }, !t.pro, tl!(app.ui.tool.label()));
-                        // Photoshop: right-click the tool icon for Reset Tool / Reset All Tools (#2825).
-                        let mut reset = None;
-                        tool_icon.context_menu(|ui| {
-                            if ui.button(tl!("Reset Tool")).clicked() {
-                                reset = Some("tool.reset");
-                                ui.close();
+                        // Every tool of the active tool's group stands in the bar, one button each:
+                        // Pencil sits beside Brush, Blur and Sharpen beside Liquify, and the whole
+                        // marquee family beside a marquee, so no second tool hides in a flyout.
+                        let group = tool_group(app);
+                        let icon = if t.pro { 24.0 } else { 26.0 };
+                        for (index, tool) in group.iter().enumerate() {
+                            let selected = *tool == app.ui.tool;
+                            let tip = match crate::tool_shortcuts::shortcut(app, *tool) {
+                                Some(sc) => format!("{}  ({})", tl!(tool.label()), crate::shortcuts::pretty(&sc)),
+                                None => tl!(tool.label()).to_string(),
+                            };
+                            if index > 0 {
+                                ui.add_space(1.0);
                             }
-                            if ui.button(tl!("Reset All Tools")).clicked() {
-                                reset = Some("tool.resetAll");
-                                ui.close();
+                            let button = icons::button(ui, icons::tool_icon(*tool), icon, selected, &tip);
+                            // Photoshop: right-click the tool icon for Reset Tool / Reset All Tools
+                            // (#2825). Only the active tool's button carries it.
+                            let mut reset = None;
+                            if selected {
+                                button.context_menu(|ui| {
+                                    if ui.button(tl!("Reset Tool")).clicked() {
+                                        reset = Some("tool.reset");
+                                        ui.close();
+                                    }
+                                    if ui.button(tl!("Reset All Tools")).clicked() {
+                                        reset = Some("tool.resetAll");
+                                        ui.close();
+                                    }
+                                });
                             }
-                        });
-                        if let Some(id) = reset
-                            && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, json!({}))
-                        {
-                            app.ui.status = e;
-                        }
-                        if t.pro {
-                            let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
-                            icons::paint(ui, r, "chevron-down", 10.0, t.text_faint);
+                            if let Some(id) = reset
+                                && let Err(e) = crate::menus::invoke(app, ui.ctx(), id, json!({}))
+                            {
+                                app.ui.status = e;
+                            }
+                            if button.clicked() && !selected {
+                                crate::tool_memory::select(app, *tool);
+                                // Picking the Brush opens the Brushes panel, as the toolbar's own
+                                // brush button does.
+                                if *tool == Tool::Brush
+                                    && !app.ui.panels.brushes
+                                    && let Err(e) = crate::menus::invoke(app, ui.ctx(), "window.panel.brushes", json!({}))
+                                {
+                                    app.ui.status = e;
+                                }
+                            }
                         }
                         widgets::vline(ui, 22.0);
                         if app.ui.transform.is_some() {
@@ -168,7 +201,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             crate::brush_picker::settings_toggle(app, ui);
             ui.add_enabled_ui(!block, |ui| {
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field_integer(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
             });
             widgets::vline(ui, 22.0);
             // The Eraser has no blend mode: its Mode is Brush, Pencil or Block (#2662).
@@ -228,7 +261,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             widgets::vline(ui, 22.0);
             if !t.pro {
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field_integer(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
                 widgets::vline(ui, 22.0);
             }
             opt_label(ui, tl!("Mode"));
@@ -269,7 +302,7 @@ fn brush_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens,
             let block = crate::eraser_ui::block_mode(app, app.ui.tool);
             ui.add_enabled_ui(!block, |ui| {
                 opt_label(ui, tl!("Size"));
-                widgets::value_field(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
+                widgets::value_field_integer(ui, &mut b.size, 1.0..=photocraft_engine::paint::MAX_BRUSH_SIZE, "px", 76.0);
             });
             widgets::vline(ui, 22.0);
             // The Brush's own tooltips here too (#11813); the Eraser keeps its texts.
@@ -929,3 +962,29 @@ fn hint(ui: &mut egui::Ui, s: &str) {
 #[cfg(test)]
 #[path = "../eraser_range_alert_tests.rs"]
 mod eraser_range_alert_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with(tool: Tool) -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.ui.tool = tool;
+        app
+    }
+
+    /// The bar stands the whole toolbar slot the active tool belongs to, in the toolbar's order,
+    /// so no second tool hides in a flyout.
+    #[test]
+    fn the_bar_stands_the_active_tools_whole_slot() {
+        let brush = tool_group(&app_with(Tool::Pencil));
+        assert_eq!(brush, vec![Tool::Brush, Tool::Pencil], "the pencil's slot stands beside the brush");
+        assert_eq!(tool_group(&app_with(Tool::Brush)), brush, "either tool of a slot shows the slot");
+        assert_eq!(tool_group(&app_with(Tool::Blur)), vec![Tool::Liquify, Tool::Blur, Tool::Sharpen]);
+        let marquees = tool_group(&app_with(Tool::MagicWand));
+        assert_eq!(marquees.first(), Some(&Tool::RectMarquee), "the marquee family keeps the toolbar's order: {marquees:?}");
+        // The two single-line marquees stay in the slot's data but never occupy a button.
+        assert_eq!(marquees.len(), 8, "the marquee family stands at once: {marquees:?}");
+        assert_eq!(tool_group(&app_with(Tool::Zoom)), vec![Tool::Zoom], "a one-tool slot stands alone");
+    }
+}

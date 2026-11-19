@@ -402,55 +402,114 @@ fn card_tips_never_cover_their_size_number() {
     }
 }
 
-/// #7256: the Brushes tab's preview slider scales the grid cells and list rows; it is not the
-/// Size of the current brush.
+/// #7256, then the slider's removal: the Brushes tab no longer shows a preview-size slider, and a
+/// scale remembered from an older build is dropped instead of shrinking the rows.
 #[test]
-fn the_preview_slider_scales_the_previews_not_the_brush_size() {
-    for grid in [true, false] {
-        let mut sizes = Vec::new();
-        for scale in [0.5f32, 1.0, 2.0] {
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
-            app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
-            app.ui.panels.brush_settings = true;
-            app.ui.brush_tab = 1;
-            app.ui.brushes_panel.view = if grid { BrushesView::Grid } else { BrushesView::List };
-            app.ui.brushes_panel.scale = scale;
-            let size = app.session.tools.brush.size;
-            let name = app.session.tools.presets[0].name.clone();
-            let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_eframe(move |cc| {
-                PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::ALL[0]);
-                app
-            });
-            h.run_steps(4);
-            let r = h.get_by_role_and_label(Role::Button, &name).rect();
-            sizes.push(if grid { r.width() } else { r.height() });
-            assert_eq!(h.state().session.tools.brush.size, size, "the preview slider leaves the brush size alone");
+fn the_brushes_tab_draws_one_preview_size() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+    app.ui.brushes_panel.scale = 0.5;
+    app.ui.brushes_panel.view = BrushesView::List;
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(460.0, 760.0)).build_ui_state(
+        move |ui, app: &mut PhotocraftApp| {
+            if !ready {
+                PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ALL[0]);
+                ready = true;
+                return;
+            }
+            ui.set_width(440.0);
+            show(app, ui);
+        },
+        app,
+    );
+    h.run_steps(4);
+    assert_eq!(h.state().ui.brushes_panel.scale, 1.0, "the tab draws its rows at the standard size");
+}
+
+/// The preset list's scrollbar is drawn from the start, with the pointer nowhere near the panel:
+/// the theme's floating bar used to appear only while the list scrolled.
+#[test]
+fn the_preset_list_keeps_its_scrollbar_on_screen() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+    app.ui.brushes_panel.view = BrushesView::List;
+    let mut ready = false;
+    let mut h = Harness::builder()
+        .with_size(vec2(340.0, 320.0))
+        .with_accessibility_check(false)
+        .build_ui_state(
+            move |ui, app: &mut PhotocraftApp| {
+                if !ready {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ALL[0]);
+                    ready = true;
+                    return;
+                }
+                ui.set_width(332.0);
+                show(app, ui);
+            },
+            app,
+        );
+    h.run_steps(4);
+    fn bar(shape: &egui::Shape, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(r) if r.rect.width() <= 8.0 && r.rect.height() >= 24.0 => out.push(r.rect),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| bar(s, out)),
+            _ => {}
         }
-        assert!(sizes[0] < sizes[1] && sizes[1] < sizes[2], "grid {grid}: previews grow with the slider: {sizes:?}");
     }
+    let mut bars = Vec::new();
+    for shape in &h.output().shapes {
+        bar(&shape.shape, &mut bars);
+    }
+    assert!(bars.iter().any(|r| r.right() >= 320.0), "the list draws its bar at its right edge: {bars:?}");
+}
+
+/// The Size at the top of the tab is a whole number: a 197.5 px brush reads and stores as 198,
+/// so no field in the panel shows a decimal point.
+#[test]
+fn the_size_field_shows_whole_numbers() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+    app.ui.panels.brush_settings = true;
+    app.ui.brush_tab = 1;
+    app.session.tools.brush.size = 197.5;
+    let mut h = Harness::builder()
+        .with_size(vec2(1200.0, 900.0))
+        .with_accessibility_check(false)
+        .build_eframe(move |cc| {
+            PhotocraftApp::setup_context(&cc.egui_ctx, crate::theme::ThemeKind::ALL[0]);
+            app
+        });
+    h.run_steps(4);
+    assert_eq!(h.state().session.tools.brush.size, 198.0, "the field rounds a half pixel away");
+    assert!(
+        h.query_all_by_role(Role::SpinButton).any(|n| n.accesskit_node().numeric_value() == Some(198.0)),
+        "the field shows the whole number"
+    );
 }
 
 #[test]
 fn preview_scale_is_clamped_to_its_range() {
-    assert_eq!(list_row_height(1.0), 44.0);
-    assert_eq!(list_row_height(100.0), 88.0);
-    assert_eq!(list_row_height(f32::NAN), 44.0);
+    assert_eq!(list_row_height(1.0), 38.0);
+    assert_eq!(list_row_height(100.0), 76.0);
+    assert_eq!(list_row_height(f32::NAN), 38.0);
     assert_eq!(grid_cell_width(52.0, 0.0), 26.0);
     assert_eq!(grid_cell_width(52.0, f32::INFINITY), 52.0);
 }
 
-/// The list rows drop the tip thumbnail and its size number: the stroke preview starts at the
-/// row's left edge and takes the width the tip cell used to have, so the S-curve widens by the
-/// tip's cell and its gap (52 points at a 330 point row).
+/// The stroke preview takes 60 % of the row, and the preset's name sits at its right in what is
+/// left: the curve reads as the row's own stroke instead of a small squiggle.
 #[test]
-fn list_rows_start_their_stroke_at_the_left_edge() {
-    assert_eq!(stroke_span(330.0), (6.0, 184.0));
-    let old_tip_cell_and_gap = 22.0 + 36.0 + 8.0;
-    assert_eq!(330.0 - old_tip_cell_and_gap - STROKE_NAME_ROOM, 132.0, "the tip layout's stroke was 52 points narrower");
-    assert_eq!(stroke_span(140.0), (6.0, 60.0), "a narrow row keeps a 60 point minimum");
-    assert_eq!(stroke_span(1000.0), (6.0, STROKE_MAX_W), "a wide panel stops growing the stroke");
+fn list_rows_give_the_stroke_sixty_percent_of_the_row() {
+    assert_eq!(stroke_span(330.0), (6.0, 192.0), "60 % of 330, less the left pad");
+    assert_eq!(stroke_span(140.0), (6.0, 78.0));
+    assert_eq!(stroke_span(60.0), (6.0, 60.0), "a narrow row keeps a 60 point minimum");
+    assert_eq!(stroke_span(1000.0), (6.0, STROKE_MAX_W), "a very wide panel stops growing the stroke");
     assert_eq!(stroke_span(f32::NAN), (6.0, 60.0));
     assert_eq!(stroke_span(f32::INFINITY), (6.0, 60.0));
+    // The name's room is the other 40 % of the row.
+    assert!(stroke_span(330.0).1 + 6.0 < 330.0 * 0.61);
 }
 
 /// A remembered group that no longer exists opens on the selected brush's group, so the brush

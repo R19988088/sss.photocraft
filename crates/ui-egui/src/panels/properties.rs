@@ -68,9 +68,9 @@ pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.add_space(6.0);
             widgets::hairline(ui);
             ui.add_space(8.0);
-            match indices.get(sel) {
-                Some(0) | None => properties_body(app, ui),
-                Some(_) => adjustments_grid(app, ui),
+            match visible.get(sel).map(|(_, name)| *name) {
+                Some("Properties") => properties_body(app, ui),
+                _ => adjustments_grid(app, ui),
             }
         });
     });

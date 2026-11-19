@@ -203,19 +203,29 @@ fn web_drops_onto_the_canvas_are_placed_from_their_bytes() {
     assert!(app.drop_places.is_empty());
 }
 
+/// A document that already has a file saves silently back to it: a layered file, and a flat one
+/// while it still holds everything the document has (a single plain layer). A flat file the document
+/// has grown beyond still asks, so its original is never flattened over (#3806).
 #[test]
-fn pcraft_documents_save_in_place_but_flat_files_ask() {
+fn documents_save_in_place_once_they_have_a_file() {
     let (mut app, written) = app_with(vec![None]);
     let ctx = egui::Context::default();
     app.open_file("/pics/work.pcraft", b"x").unwrap();
     let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
     assert_eq!(r["path"], "/pics/work.pcraft");
     assert_eq!(written.borrow().len(), 1);
-    // A PNG goes through Save As (cancelled here), not silently flattened over the original.
+    // A PNG of one plain layer writes itself back: Ctrl+S never asks for a name again.
     app.open_file("/pics/flat.png", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+    assert_eq!(r["path"], "/pics/flat.png");
+    assert!(!app.file_dialog_open());
+    assert_eq!(written.borrow().len(), 2);
+    // With a layer the PNG can't keep, Save asks instead of silently flattening over it.
+    app.run("layer.new.layer", json!({})).unwrap();
     assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
     answer(&mut app);
-    assert_eq!(written.borrow().len(), 1);
+    assert_eq!(written.borrow().len(), 2);
     assert!(!app.ui.status_error);
 }
 

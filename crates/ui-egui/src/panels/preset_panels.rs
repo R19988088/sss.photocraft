@@ -120,11 +120,11 @@ pub fn handles(id: &str) -> bool {
     PANELS.contains(&id)
 }
 
-/// Color card tab of a Window › Gradients / Patterns id.
-fn color_tab(id: &str) -> Option<usize> {
+/// Presets card tab of a Window › Gradients / Patterns id.
+fn presets_tab(id: &str) -> Option<usize> {
     match id {
-        "window.panel.gradients" => Some(2),
-        "window.panel.patterns" => Some(3),
+        "window.panel.gradients" => Some(0),
+        "window.panel.patterns" => Some(1),
         _ => None,
     }
 }
@@ -138,20 +138,22 @@ fn float_flag<'a>(p: &'a mut PresetUi, id: &str) -> Option<&'a mut bool> {
     })
 }
 
-/// Window › <panel>: toggles the panel (Gradients and Patterns: the Color card tab).
+/// Window › <panel>: toggles the panel (Gradients and Patterns: the Presets card's tabs).
 pub fn menu(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if !handles(id) {
         return None;
     }
     let want = params.get("show").and_then(Value::as_bool);
-    if let Some(tab) = color_tab(id) {
-        // A collapsed Color group counts as not showing: the item expands it (#129).
-        let showing = app.ui.panels.color && app.ui.dock_tabs.color == tab && !app.ui.dock.is_collapsed(crate::dock::Group::Color);
+    if let Some(tab) = presets_tab(id) {
+        // A collapsed Presets card counts as not showing: the item expands it (#129).
+        let showing = app.ui.panels.presets
+            && app.ui.dock_tabs.presets == tab
+            && !app.ui.dock.is_collapsed(crate::dock::Group::Presets);
         let show = want.unwrap_or(!showing);
-        app.ui.panels.color = show || (app.ui.panels.color && app.ui.dock_tabs.color != tab);
+        app.ui.panels.presets = show || (app.ui.panels.presets && app.ui.dock_tabs.presets != tab);
         if show {
-            app.ui.dock_tabs.color = tab;
-            crate::dock::reveal(app, crate::dock::Group::Color);
+            app.ui.dock_tabs.presets = tab;
+            crate::dock::reveal(app, crate::dock::Group::Presets);
         }
         return Some(Ok(json!({"visible": show})));
     }
@@ -161,8 +163,8 @@ pub fn menu(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<
 }
 
 pub fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
-    if let Some(tab) = color_tab(id) {
-        return Some(app.ui.panels.color && app.ui.dock_tabs.color == tab);
+    if let Some(tab) = presets_tab(id) {
+        return Some(app.ui.panels.presets && app.ui.dock_tabs.presets == tab);
     }
     let mut p = app.ui.presets_ui.clone();
     float_flag(&mut p, id).map(|f| *f)

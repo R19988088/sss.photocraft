@@ -197,8 +197,7 @@ pub fn restore(app: &mut PhotocraftApp) {
 }
 
 /// Window › <panel>: (panel, dock tab) for panels that live as tabs of a dock card.
-pub(super) fn panel_tab(app: &PhotocraftApp, id: &str) -> Option<(&'static str, usize)> {
-    let pro = app.ui.theme.is_pro();
+pub(super) fn panel_tab(_app: &PhotocraftApp, id: &str) -> Option<(&'static str, usize)> {
     Some(match id {
         "window.panel.info" => ("navigator", 2),
         "window.panel.histogram" => ("navigator", 1),
@@ -209,13 +208,14 @@ pub(super) fn panel_tab(app: &PhotocraftApp, id: &str) -> Option<(&'static str, 
         "window.panel.channels" => ("layers", 1),
         "window.panel.paths" => ("layers", 2),
         "window.panel.layers" => ("layers", 0),
-        "window.panel.adjustments" => ("properties", 1),
-        "window.panel.properties" => ("properties", 0),
+        "window.panel.adjustments" => ("properties", 0),
+        // The Color card is 颜色 | 色板 | 属性 in every theme, so these indices are fixed.
+        "window.panel.properties" => ("color", 2),
         // Their own Character | Paragraph group, so Properties stays open (#150).
         "window.panel.character" | "type.panels.character" => ("character", 0),
         "window.panel.paragraph" | "type.panels.paragraph" => ("character", 1),
-        "window.panel.swatches" => ("color", usize::from(pro)),
-        "window.panel.color" => ("color", usize::from(!pro)),
+        "window.panel.swatches" => ("color", 1),
+        "window.panel.color" => ("color", 0),
         _ => return None,
     })
 }

@@ -32,7 +32,8 @@ impl PhotocraftApp {
     }
 
     pub(crate) fn apply_theme(&mut self, ctx: &egui::Context, kind: theme::ThemeKind) {
-        // Color and Swatches trade indices between Pro and Studio layouts.
+        // The Color card is 颜色 | 色板 | 属性 in every theme, so this only carries a saved
+        // selection over when that list changes (older builds put Swatches first in Studio).
         if let Some(selected) = dock::Group::Color.tabs(theme::Tokens::for_kind(self.ui.theme).pro).get(self.ui.dock_tabs.color)
             && let Some(tab) = dock::Group::Color.tabs(theme::Tokens::for_kind(kind).pro).iter().position(|name| name == selected)
         {

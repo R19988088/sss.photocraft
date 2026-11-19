@@ -3,13 +3,42 @@ use super::scrub::{label_scrub_response, take_label_scrub};
 use super::slider::slider;
 use super::text_field::first_field_id;
 use super::units::{FieldUnits, field_resolution_id, fmt_num, fmt_num_prec, fmt_num2, parse_num_in, plain, unit_of_suffix};
-use super::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, pos2, theme, vec2};
+use super::{Color32, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, pos2, theme, vec2};
 
 /// Monospace numeric field with a dimmed unit suffix, Photoshop style. Drag to scrub. Typed
 /// arithmetic (`1920/2`) applies on Enter, Tab or click-away, and a unit after a number converts
 /// into the field's unit (`1in` in a px field, at the resolution [`set_field_resolution`] gave).
 pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
     value_field_in(ui, value, range, suffix, width, 0.0, FieldOpts::default(), None).0
+}
+
+/// A [`value_field`] that keeps whole numbers: the stored value is rounded to the nearest whole
+/// number (within `range`) and the box never shows a decimal point, so a 197.5 px brush reads
+/// `198` and a scrub to 20.5 % reads `21`. Brush sizes and the Brush Settings numbers use it.
+pub fn value_field_integer(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
+    value_field_integer_in(ui, value, range, suffix, width, None).0
+}
+
+/// [`value_field_integer`] with the number's accessible name (for a caption drawn apart from it).
+pub fn value_field_integer_named(ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
+    value_field_integer_in(ui, value, range.clone(), suffix, width, Some(name)).0
+}
+
+fn value_field_integer_in(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    name: Option<&str>,
+) -> (Response, Rect) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let whole = |v: f32| if v.is_finite() { v.round().clamp(lo, hi) } else { lo };
+    *value = whole(*value);
+    let (resp, rect) = value_field_in(ui, value, range, suffix, width, 0.0, FieldOpts { decimals: Some(0), ..FieldOpts::default() }, name);
+    // A drag walks in halves and typed text can carry a fraction: both land on a whole number.
+    *value = whole(*value);
+    (resp, rect)
 }
 
 /// A [`value_field_named`] for whole numbers that says when a typed value was past `range`

@@ -2189,3 +2189,4 @@ mod panel_state_migration_tests {
         assert_eq!(PanelState::load(&ctx, new).map(|p| p.size().x), Some(290.0));
     }
 }
+

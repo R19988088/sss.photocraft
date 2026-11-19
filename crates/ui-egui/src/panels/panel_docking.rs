@@ -25,9 +25,11 @@ type Returns = std::collections::BTreeMap<String, Location<String>>;
 const PANELS: &[(&str, &str, Group)] = &[
     ("color", "Color", Group::Color),
     ("swatches", "Swatches", Group::Color),
-    ("gradients", "Gradients", Group::Color),
-    ("patterns", "Patterns", Group::Color),
-    ("properties", "Properties", Group::Properties),
+    // The Color card is 颜色 | 色板 | 属性: Gradients and Patterns moved to their own Presets
+    // card, and Properties (属性) joined this strip instead of standing above it.
+    ("properties", "Properties", Group::Color),
+    ("gradients", "Gradients", Group::Presets),
+    ("patterns", "Patterns", Group::Presets),
     ("adjustments", "Adjustments", Group::Properties),
     ("character", "Character", Group::Character),
     ("paragraph", "Paragraph", Group::Character),
@@ -1531,6 +1533,7 @@ pub(crate) fn prepare_legacy_update(
                 Group::Layers => tabs.layers,
                 Group::Brushes => tabs.brushes,
                 Group::ToolPresets => tabs.tool_presets,
+                Group::Presets => tabs.presets,
             };
             let id = group.tabs(pro).get(index).and_then(|label| normalize(label)).ok_or("dockTabs index is outside the panel group")?;
             if visibility == Some(false) {

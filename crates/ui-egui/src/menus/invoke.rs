@@ -296,7 +296,16 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
                             crate::notices::post(app, title, lines, false, None);
                             app.save_as_with(None, choices)
                         }
-                        // A flat file asks for its name; confirming its own file records a
+                        // The document's own flat file, still holding everything it has (a single
+                        // plain layer): write it back without asking for a name. Once a document
+                        // has a file, Ctrl+S saves it silently instead of re-opening the chooser.
+                        // Another app's change since the last save still asks first (#6596).
+                        Some((false, path, d)) if flat_own_file(&d.doc, &path) => {
+                            let doc = d.doc.id;
+                            crate::disk_change_prompt::intercept(app, doc, &path, true, choices)
+                                .unwrap_or_else(|| app.save_own_flat(path, choices))
+                        }
+                        // Anything else asks for its name; confirming its own file records a
                         // plain Save that writes the file an action is played on (#3531).
                         _ => app.save_dialog_flow(None, choices, true),
                     }
@@ -338,6 +347,15 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
         _ => return Ok(None),
     };
     result.map(Some)
+}
+
+/// Whether `doc`'s own file at `path` is a flat image that still holds everything the document has:
+/// a single plain layer (`plain_raster`), in a format this build writes. File › Save writes such a
+/// file back in place, so a document that already has a file never asks for a name again.
+fn flat_own_file(doc: &photocraft_doc::Document, path: &str) -> bool {
+    crate::services::plain_raster(doc).is_some()
+        && photocraft_engine::file_cmds::extension(path)
+            .is_some_and(|e| photocraft_codecs::from_extension(&e).is_some_and(|f| f.caps().write))
 }
 
 pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
@@ -832,6 +850,7 @@ fn toggle_panel(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
         "brushSettings" => &mut panels.brush_settings,
         "brushes" => &mut panels.brushes,
         "toolPresets" => &mut panels.tool_presets,
+        "presets" => &mut panels.presets,
         "dock" => &mut panels.dock,
         _ => return Err(format!("unknown panel in {id}")),
     };
@@ -882,6 +901,9 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
     // as before, so switching away and back reads the same as picking the preset fresh.
     p.brushes = d;
     p.tool_presets = d;
+    // Gradients | Patterns have their own card: closed by every preset, reopened from
+    // Window › Gradients / Patterns.
+    p.presets = false;
     // Timeline is a floating panel, not a dock group. Showing it does not create or edit
     // a document timeline; changing away from Motion closes it just like its Close button.
     app.ui.timeline.open = app.ui.workspace == "Motion";

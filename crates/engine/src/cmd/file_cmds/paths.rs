@@ -113,27 +113,27 @@ pub fn extension(path: &str) -> Option<String> {
 }
 
 /// Whether a save without a new path may write back to `path` as far as its format goes: only
-/// layered files (PSD, PSB, OpenRaster, .pcraft). A flat file goes through Save As instead, so it
-/// is never flattened over the original. Whether this document fits is [`holds_at`].
+/// layered files (PSD, PSB, OpenRaster, .pcraft, SSSP). A flat file goes through Save As instead,
+/// so it is never flattened over the original. Whether this document fits is [`holds_at`].
 pub fn saves_in_place(path: &str) -> bool {
     extension(path).is_some_and(|ext| layered_extension(&ext))
 }
 
 /// Whether the lower-case extension `ext` names a layered document format (PSD, PSB, OpenRaster,
-/// .pcraft). A save to one becomes the document's file; any other format is a copy for automation
-/// saves, desktop and headless alike (#1547, #2579).
+/// .pcraft, SSSP). A save to one becomes the document's file; any other format is a copy for
+/// automation saves, desktop and headless alike (#1547, #2579).
 pub fn layered_extension(ext: &str) -> bool {
-    matches!(ext, "psd" | "psb" | "pcraft" | "ora")
+    matches!(ext, "psd" | "psb" | "pcraft" | "ora" | "sssp")
 }
 
 /// Whether a file in format `ext` (lower-case) holds the whole of `doc`, so it can be the
-/// document's own file: PSD, PSB and .pcraft always; OpenRaster only when it drops nothing (no
+/// document's own file: PSD, PSB, .pcraft and SSSP always; OpenRaster only when it drops nothing (no
 /// adjustment layers, styles, masks…, [`photocraft_io::ora_losses`]). A save to a format that
 /// doesn't hold the document is a copy, and File › Save goes through Save As, so an editable
 /// original is never overwritten with less than it had (#3806).
 pub fn holds(doc: &photocraft_doc::Document, ext: &str) -> bool {
     match ext {
-        "psd" | "psb" | "pcraft" => true,
+        "psd" | "psb" | "pcraft" | "sssp" => true,
         "ora" => photocraft_io::ora_losses(doc).is_empty(),
         _ => false,
     }

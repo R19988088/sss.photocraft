@@ -345,30 +345,66 @@ fn preset_interactions(ui: &egui::Ui, resp: &egui::Response, r: egui::Rect, p: &
     });
 }
 
-/// Width a list row keeps for the gap around its stroke preview and the preset name.
-const STROKE_NAME_ROOM: f32 = 140.0;
+/// Width a list row keeps for the stroke preview: 60 % of the row, so the stroke reads as the
+/// row's own curve and the preset's name sits in the remaining 40 % at its right.
+const STROKE_SHARE: f32 = 0.6;
 
 /// The gap between a list row's left edge and its stroke preview.
 const STROKE_PAD: f32 = 6.0;
 
-/// The widest a list row's stroke preview grows on a wide panel, so a slow stroke keeps a
-/// readable S instead of stretching into a line.
-const STROKE_MAX_W: f32 = 260.0;
+/// Which part of a list row's height is the stroke preview (the rest pads it top and bottom).
+const STROKE_ROW_SHARE: f32 = 0.78;
 
-/// Where a list row's stroke preview starts (from the row's left edge) and how wide it is: the
-/// row's width less the name's room, 60 to [`STROKE_MAX_W`] points.
+/// The widest a list row's stroke preview grows on a very wide panel, so a slow stroke keeps a
+/// readable S instead of stretching into a line.
+const STROKE_MAX_W: f32 = 460.0;
+
+/// Where a list row's stroke preview starts (from the row's left edge) and how wide it is: 60 % of
+/// the row's width, from 60 points up to [`STROKE_MAX_W`].
 pub(crate) fn stroke_span(row_width: f32) -> (f32, f32) {
     let room = if row_width.is_finite() { row_width } else { 0.0 };
-    (STROKE_PAD, (room - STROKE_PAD - STROKE_NAME_ROOM).clamp(60.0, STROKE_MAX_W).round())
+    (STROKE_PAD, (room * STROKE_SHARE - STROKE_PAD).clamp(60.0, STROKE_MAX_W).round())
 }
 
 /// The Brushes tab's preview size slider range: what the grid cells and list rows scale between
 /// (1 = the standard size). Not the picker's cards' scale ([`crate::brush_picker::SCALE_RANGE`]).
 pub(crate) const PREVIEW_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
-/// A list row's height at preview `scale` (1 = the standard 44 points).
+/// The preset lists' bar: a thin solid groove with a visible thumb, drawn whether or not the pointer
+/// is over the list. The theme's floating bar appeared only while the list scrolled, so the panel did
+/// not read as scrollable; this restores the theme's own bar and thumb colours afterwards.
+fn bar_scroll(ui: &mut egui::Ui) -> (egui::style::ScrollStyle, egui::style::WidgetVisuals, egui::Color32) {
+    let t = Tokens::get(ui.ctx());
+    let scroll = ui.style().spacing.scroll;
+    let inactive = ui.visuals().widgets.inactive;
+    let extreme = ui.visuals().extreme_bg_color;
+    ui.style_mut().spacing.scroll = egui::style::ScrollStyle {
+        floating: false,
+        bar_width: 6.0,
+        bar_inner_margin: 2.0,
+        bar_outer_margin: 2.0,
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.2,
+        ..scroll
+    };
+    ui.visuals_mut().extreme_bg_color = t.chrome;
+    ui.visuals_mut().widgets.inactive.bg_fill = t.text_faint;
+    (scroll, inactive, extreme)
+}
+
+/// Puts the bar styles back after [`bar_scroll`], so rows and the pager keep the theme's colours.
+fn restore_scroll(ui: &mut egui::Ui, saved: (egui::style::ScrollStyle, egui::style::WidgetVisuals, egui::Color32)) {
+    let (scroll, inactive, extreme) = saved;
+    ui.style_mut().spacing.scroll = scroll;
+    ui.visuals_mut().widgets.inactive = inactive;
+    ui.visuals_mut().extreme_bg_color = extreme;
+}
+
+/// A list row's height at preview `scale` (1 = the standard 38 points, tighter than the old 44 so
+/// more presets fit in the panel).
 pub(crate) fn list_row_height(scale: f32) -> f32 {
-    44.0 * if scale.is_finite() { scale.clamp(*PREVIEW_SCALE_RANGE.start(), *PREVIEW_SCALE_RANGE.end()) } else { 1.0 }
+    38.0 * if scale.is_finite() { scale.clamp(*PREVIEW_SCALE_RANGE.start(), *PREVIEW_SCALE_RANGE.end()) } else { 1.0 }
 }
 
 /// A grid cell's width at preview `scale` (1 = the layout's own cell).
@@ -378,8 +414,8 @@ pub(crate) fn grid_cell_width(cell: f32, scale: f32) -> f32 {
 
 fn list_row(ui: &mut egui::Ui, p: &BrushPreset, current: bool, presets: &[BrushPreset], indent: f32, scale: f32, acts: &mut Vec<Action>) {
     let t = Tokens::get(ui.ctx());
-    let k = list_row_height(scale) / 44.0;
-    let (full, resp) = ui.allocate_exact_size(vec2(ui.available_width(), list_row_height(scale)), Sense::click_and_drag());
+    let row_h = list_row_height(scale);
+    let (full, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
     // Rows inside nested folders are indented; the whole width stays the drop target.
     let r = egui::Rect::from_min_max(full.min + vec2(indent.min(full.width() / 2.0), 0.0), full.max);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, current, &p.name));
@@ -392,13 +428,14 @@ fn list_row(ui: &mut egui::Ui, p: &BrushPreset, current: bool, presets: &[BrushP
         ui.painter().rect_filled(r, t.radius_sm, t.hover);
     }
     let pb = &p.brush;
-    // The row shows the stroke it paints, not the tip: no thumbnail and no size number, so the
-    // preview starts at the row's left edge and takes the width the tip used to have.
+    // The row shows the stroke it paints, not the tip: no thumbnail and no size number. The stroke
+    // takes 60 % of the row's width and the name sits to its right, in what is left.
     let (x, w) = stroke_span(r.width());
     let stroke = brush_preview::stroke_texture(ui.ctx(), &format!("brushes-stroke-{w}:{}", p.name), pb, w as u32, 36, t.text);
-    let sr = egui::Rect::from_min_size(pos2(r.left() + x, r.top() + 4.0 * k), vec2(w, 36.0 * k));
+    let sh = (row_h * STROKE_ROW_SHARE).round();
+    let sr = egui::Rect::from_min_size(pos2(r.left() + x, r.center().y - sh / 2.0), vec2(w, sh));
     ui.painter().image(stroke.id(), sr, full_uv(), Color32::WHITE);
-    crate::layer_row_ui::label(ui.painter(), sr.right() + 12.0, r.center().y, r.right() - 4.0, &p.name, egui::FontId::proportional(12.0), t.text_dim);
+    crate::layer_row_ui::label(ui.painter(), sr.right() + 10.0, r.center().y, r.right() - 6.0, &p.name, egui::FontId::proportional(12.0), t.text_dim);
     preset_interactions(ui, &resp, r, p, presets, false, acts);
 }
 
@@ -970,8 +1007,15 @@ fn paged_groups(
     pager_header(ui, label, &key, items.len(), if paged { groups.get(before).map(|(l, _)| l.as_str()) } else { None }, if paged { groups.get(next).map(|(l, _)| l.as_str()) } else { None }, acts);
     ui.add_space(4.0);
     let content_height = (layout.max_height - PAGER_H - 4.0).max(80.0);
-    // Each page keeps its scroll offset, so paging back to a group lands where it was left.
-    egui::ScrollArea::vertical().id_salt((layout.id, label.as_str())).max_height(content_height).auto_shrink([false, true]).show(ui, |ui| {
+    // Each page keeps its scroll offset, so paging back to a group lands where it was left. The
+    // bar stays on screen instead of floating in only while the list scrolls.
+    let saved_bar = bar_scroll(ui);
+    egui::ScrollArea::vertical()
+        .id_salt((layout.id, label.as_str()))
+        .max_height(content_height)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
         // A preset dragged to the page's edge scrolls it, as in the stacked list (#5741).
         let dragging = egui::DragAndDrop::has_payload_of_type::<BrushDrag>(ui.ctx()) && ui.input(|i| i.pointer.primary_down());
         let pointer = ui.ctx().pointer_interact_pos();
@@ -985,6 +1029,7 @@ fn paged_groups(
         draw_nodes(ui, &d, &folder_tree(items), 0, acts);
         ui.add_space(2.0);
     });
+    restore_scroll(ui, saved_bar);
 }
 
 /// The paged list's fixed group header: a chevron at either end pages to `before` or `after`
@@ -1066,7 +1111,14 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
         // The picker stacks every group in one scroll, and a filter shows every group's matches
         // (searching across the whole library, not only the group the panel was paging).
         let collapsed = &st.collapsed;
-        egui::ScrollArea::vertical().id_salt(layout.id).max_height(layout.max_height).auto_shrink([false, true]).show(ui, |ui| {
+        // A filter's list and the picker's stacked list keep their bar on screen too.
+        let saved_bar = bar_scroll(ui);
+        egui::ScrollArea::vertical()
+            .id_salt(layout.id)
+            .max_height(layout.max_height)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
             // A preset, group or folder dragged to the list's top or bottom edge (or past it) scrolls
             // the list, as the Layers panel's rows do, so it can be dropped on rows out of view (#5741).
             let dragging = egui::DragAndDrop::has_payload_of_type::<BrushDrag>(ui.ctx()) && ui.input(|i| i.pointer.primary_down());
@@ -1089,6 +1141,7 @@ pub fn preset_list(ui: &mut egui::Ui, presets: &[BrushPreset], current: Option<&
                 ui.add_space(2.0);
             }
         });
+        restore_scroll(ui, saved_bar);
     }
     // The dragged preset or group follows the pointer.
     if let Some(d) = egui::DragAndDrop::payload::<BrushDrag>(ui.ctx())
@@ -1155,7 +1208,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             r
         });
         let mut s = b.size;
-        if widgets::value_field(ui, &mut s, 1.0..=MAX_BRUSH_SIZE, "px", 74.0).accessible_name(tl!("Size")).changed() {
+        if widgets::value_field_integer(ui, &mut s, 1.0..=MAX_BRUSH_SIZE, "px", 74.0).accessible_name(tl!("Size")).changed() {
             b.size = s.round().clamp(1.0, MAX_BRUSH_SIZE);
         }
     });
@@ -1178,20 +1231,9 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         });
     });
-    // The size of the previews in the list below (Photoshop's Brushes panel slider), apart from the
-    // Size of the current brush above.
-    ui.horizontal(|ui| {
-        icons::paint(ui, egui::Rect::from_min_size(ui.cursor().min + vec2(0.0, 3.0), vec2(16.0, 16.0)), "image", 14.0, t.text_faint);
-        ui.add_space(20.0);
-        let w = (inner_w - 112.0).clamp(90.0, inner_w - 40.0);
-        ui.allocate_ui_with_layout(vec2(w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            let scale = &mut app.ui.brushes_panel.scale;
-            let resp = widgets::slider(ui, scale, PREVIEW_SCALE_RANGE, None).on_hover_text(tl!("Preview size"));
-            if resp.changed() {
-                *scale = (*scale * 100.0).round() / 100.0;
-            }
-        });
-    });
+    // The preview-size slider Photoshop puts here is gone: the list draws its rows at one size,
+    // and the space it took goes to the presets themselves.
+    app.ui.brushes_panel.scale = 1.0;
     ui.add_space(6.0);
     let acts = preset_list(ui, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), &mut app.ui.brushes_panel, responsive_list_layout(ui));
     apply(app, acts);

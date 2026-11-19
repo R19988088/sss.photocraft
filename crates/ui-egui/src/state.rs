@@ -82,6 +82,9 @@ pub struct Panels {
     /// Window › Tool Presets: dockable beside Brushes (it used to float).
     #[serde(default)]
     pub tool_presets: bool,
+    /// Window › Gradients / Patterns: their own card (Gradients | Patterns), closed by default.
+    #[serde(default)]
+    pub presets: bool,
     /// Window › Character / Paragraph: the Character | Paragraph dock group (#150).
     #[serde(default)]
     pub character: bool,
@@ -150,6 +153,7 @@ impl Default for Panels {
             brush_settings: false,
             brushes: false,
             tool_presets: false,
+            presets: false,
             character: false,
             toolbar_double: false,
             toolbar_side: ToolbarSide::Start,

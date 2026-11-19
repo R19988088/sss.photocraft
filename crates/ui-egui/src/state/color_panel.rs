@@ -17,6 +17,8 @@ pub struct DockTabs {
     pub brushes: usize,
     /// Tool presets.
     pub tool_presets: usize,
+    /// Gradients | Patterns.
+    pub presets: usize,
 }
 
 /// Color panel state.

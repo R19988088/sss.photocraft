@@ -299,7 +299,7 @@ pub fn body(
                 ui.label(RichText::new(tl!("Size")).color(t.text_dim));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut size = b.size;
-                    if widgets::value_field(ui, &mut size, 1.0..=MAX_BRUSH_SIZE, "px", 72.0).accessible_name(tl!("Size")).changed() {
+                    if widgets::value_field_integer(ui, &mut size, 1.0..=MAX_BRUSH_SIZE, "px", 72.0).accessible_name(tl!("Size")).changed() {
                         b.size = size.round().clamp(1.0, MAX_BRUSH_SIZE);
                     }
                 });
