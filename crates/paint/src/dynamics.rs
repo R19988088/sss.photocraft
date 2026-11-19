@@ -35,6 +35,13 @@ const FINGER_SAMPLE_FRAMES: f32 = 0.5;
 /// `2.0 / frames`): eased in over the stroke's first points, a low pass after.
 const SOFTEN_FRAMES: f32 = 2.0;
 
+// The path between two input points bends along a Centripetal Catmull–Rom stretch (ProCraft's
+// `walk_curve`), walked in chords of at most `CURVE_STEP` pixels. This is what makes a stroke
+// whose points are far apart — a fast stroke, a sparse tablet — read as a curve instead of a
+// polyline of straight chords.
+const CURVE_STEP: f64 = 4.0;
+const MOST_CURVE_PIECES: usize = 64;
+
 /// The dab centre of the pixel-grid cell holding `v` (see [`PathWalker::pixel_grid`]): the
 /// pixel's centre for `offset` 0.5, the nearest pixel corner for 0. A value within rounding
 /// noise of a cell boundary counts as on it, so a line lands on the same pixels both ways.
@@ -58,6 +65,60 @@ fn lerp_pt(a: &StrokePoint, b: &StrokePoint, f: f64) -> StrokePoint {
         wheel: a.wheel + (b.wheel - a.wheel) * ff,
         time: a.time + (b.time - a.time) * f,
     }
+}
+
+/// The point at `t` (0 at `b`, 1 at `c`) of the centripetal Catmull–Rom stretch that runs from `b`
+/// to `c` with `a` before it — ProCraft's `catmull_rom` with no point after the stretch, which is
+/// the parabola through the three there are. The curve passes through the points and bends as the
+/// path runs in from them, with no loops or cusps where they bunch up.
+fn curve_point(a: Option<[f64; 2]>, b: [f64; 2], c: [f64; 2], t: f64) -> [f64; 2] {
+    if !t.is_finite() || t <= 0.0 {
+        return b;
+    }
+    if t >= 1.0 {
+        return c;
+    }
+    let knot = |x: [f64; 2], y: [f64; 2]| {
+        let d = ((x[0] - y[0]).powi(2) + (x[1] - y[1]).powi(2)).sqrt();
+        d.sqrt().max(1e-4)
+    };
+    let t2 = knot(b, c);
+    let u = t2 * t;
+    let mix = |x: [f64; 2], y: [f64; 2], from: f64, to: f64| {
+        let share = (u - from) / (to - from);
+        [x[0] + (y[0] - x[0]) * share, x[1] + (y[1] - x[1]) * share]
+    };
+    let middle = mix(b, c, 0.0, t2);
+    match a {
+        Some(a) => {
+            let t0 = -knot(a, b);
+            mix(mix(a, b, t0, 0.0), middle, t0, t2)
+        }
+        None => middle,
+    }
+}
+
+/// The stretch from `a` to `p` walked along ProCraft's centripetal Catmull–Rom curve
+/// (`walk_curve`), bent by the point `before` that ran in to `a`: `a` first, then pieces of at most
+/// `CURVE_STEP` pixels, the last one `p` itself. Pressure, tilt, rotation and wheel change evenly
+/// along each piece (`lerp_pt`, ProCraft's `PathPoint::lerp`). A stretch short enough to be one
+/// piece is the chord itself, so nothing changes for dense input.
+fn curve_pieces(before: Option<[f64; 2]>, a: &StrokePoint, p: &StrokePoint) -> Vec<StrokePoint> {
+    let whole = ((p.x - a.x).powi(2) + (p.y - a.y).powi(2)).sqrt();
+    let pieces = if whole.is_finite() { ((whole / CURVE_STEP).ceil() as usize).clamp(1, MOST_CURVE_PIECES) } else { 1 };
+    let mut out = Vec::with_capacity(pieces + 1);
+    out.push(*a);
+    for i in 1..=pieces {
+        let t = i as f64 / pieces as f64;
+        let mut q = lerp_pt(a, p, t);
+        if i < pieces {
+            let at = curve_point(before, [a.x, a.y], [p.x, p.y], t);
+            q.x = at[0];
+            q.y = at[1];
+        }
+        out.push(q);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +278,9 @@ pub struct PathWalker {
     /// How many input points the stroke has had, for the soften's ease-in over its first ones.
     soft_points: u32,
     sensor_distance: f32,
+    /// The point the path ran through before `last`: the bend of the curve between `last` and the
+    /// point coming in (see [`curve_pieces`]).
+    before: Option<[f64; 2]>,
     release_reference: f32,
     pressure_released: bool,
     /// The pitch the last dab was placed at. Each next pitch is the mean of it and the new one
@@ -244,6 +308,7 @@ impl PathWalker {
             soft_pressure: None,
             soft_points: 0,
             sensor_distance: 0.0,
+            before: None,
             release_reference: 1.0,
             pressure_released: false,
             gap: 0.0,
@@ -406,18 +471,33 @@ impl PathWalker {
         }
         if len > 1e-9 {
             if !self.grid.is_some_and(|g| self.grid_steps(&a, &p, g, speed, out)) {
-                while self.next_at <= len + 1e-9 {
-                    let t = (self.next_at / len).min(1.0);
-                    let q = lerp_pt(&a, &p, t);
-                    // The speed runs with the line: a dab half way along goes half way between the
-                    // two points' speeds (ProCraft's `PathPoint::lerp`).
-                    let sp = (self.last_speed as f64 + (f64::from(speed) - f64::from(self.last_speed)) * t) as f32;
-                    self.emit(q, sp, out);
-                    let gap = step_len(&self.input(q, sp)).max(0.25);
-                    self.next_at += 0.5 * (self.gap + gap);
-                    self.gap = gap;
+                // The stretch is walked along the curve through the points (ProCraft's
+                // `walk_curve`), piece by piece: a stroke whose points came far apart (a fast
+                // stroke, a sparse tablet) then bends through them instead of turning at each one.
+                let pieces = curve_pieces(self.before, &a, &p);
+                let mut walked = 0.0f64;
+                let mut from = a;
+                for to in pieces.iter().skip(1) {
+                    let piece = ((to.x - from.x).powi(2) + (to.y - from.y).powi(2)).sqrt();
+                    if piece > 1e-9 {
+                        self.dir = (-(to.y - from.y)).atan2(to.x - from.x) as f32;
+                        while self.next_at <= piece + 1e-9 {
+                            let t = (self.next_at / piece).min(1.0);
+                            let q = lerp_pt(&from, to, t);
+                            // The speed runs with the line: a dab half way along goes half way
+                            // between the two points' speeds (ProCraft's `PathPoint::lerp`).
+                            let f = if len > 0.0 { ((walked + t * piece) / len).clamp(0.0, 1.0) } else { 1.0 };
+                            let sp = (self.last_speed as f64 + (f64::from(speed) - f64::from(self.last_speed)) * f) as f32;
+                            self.emit(q, sp, out);
+                            let gap = step_len(&self.input(q, sp)).max(0.25);
+                            self.next_at += 0.5 * (self.gap + gap);
+                            self.gap = gap;
+                        }
+                        self.next_at -= piece;
+                        walked += piece;
+                        from = *to;
+                    }
                 }
-                self.next_at -= len;
             }
         }
         if let Some(iv) = self.interval {
@@ -442,6 +522,7 @@ impl PathWalker {
                 }
             }
         }
+        self.before = Some([a.x, a.y]);
         self.last = Some(p);
         self.last_speed = speed;
     }

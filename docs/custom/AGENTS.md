@@ -140,8 +140,18 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    `PathWalker` 里仍然**没有**按时间/速度出 dab 的分支（`speed_spacing`、`SPEED_SPACING_MS`、
    `MIN_SPEED_STEP` 已删除）；`spacing_enabled` 只为老预设兼容，不再改变规则。
    慢画、快画、带时间戳、不带时间戳、分块送入，dab 列表必须一致（`brush_tests::pitch_follows_...`）。
-2. **插值是采样点之间的线性等距插值**（`PathWalker::push` → `lerp_pt`）。不要引入 cubic / 曲线 /
-   handle / 「曲线圆角」开关：试过，会让笔迹脱离指针（用户判为「强制开拉绳、乱定位」）。
+2. **输入点之间沿向心 Catmull–Rom 曲线走**（ProCraft `walk_curve` 口径，2026-11-19 用户
+   「尽量跟 procraft 一样」后改定）：`PathWalker::push` 把「上一个点 → 这个点」这一段交给
+   `curve_pieces`，切成最多 `MOST_CURVE_PIECES=64` 段、每段不超过 `CURVE_STEP=4` px，段内位置取
+   `curve_point`（ProCraft `catmull_rom`，只有前邻点时是过三点的抛物线——和参考项目 `flush` 里
+   `d: None` 的那一段同式），压力/倾斜/旋转/轮沿段线性变化，最后一段正好落在输入点上；
+   dab 间距仍按每段长度累加推进（`next_at += 0.5*(gap+gap)`），只是段更细。
+   **速度与软化仍在真实输入点上结算**（不按曲线小段结算）：段内时间被切碎会让
+   `frames_since` 小到 0.04 帧，`soften` 的 `2/frames` 会把起笔压力拉毛成上百像素。
+   这是「笔点稀（快画、60Hz WinTab）却看起来是折线」的解：曲线只补段内长度，端点一个不动。
+   旧规则（采样点之间只走直线 `lerp_pt`）已废除。
+   早年试过的「强制拉绳 / 把点挪到平滑后的位置」仍然禁止——那种做法会挪端点、让墨迹落后指针
+   （用户判为「强制开拉绳、乱定位」）；现在的做法只弯曲段内的路径。
 3. **指针稳定器只管压力**：`tablet_pressure.rs` 的 `TabletPressureFilter` 只在 `input/stylus.rs`
    里给压力用，而且**按样本**喂：一帧里笔报了几个样本就过几次（`Stylus::advance_pressure_filter`），
    再按 move 的时间取对应的那个（`filtered_at`）。按帧只喂一条会让 60Hz 的窗口滞后约 5 帧/80ms，
