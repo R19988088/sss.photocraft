@@ -22,7 +22,7 @@ pub struct DockTabs {
 }
 
 /// Color panel state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ColorPanelState {
     /// The panel edits the background colour (its chip was clicked), not the foreground.
@@ -40,6 +40,30 @@ pub struct ColorPanelState {
     /// The colours picked most recently (newest first), drawn as the C2 layout's swatch column.
     #[serde(default = "recent_default")]
     pub recent: [[f32; 4]; 6],
+    /// 颜色数值 (Photoshop's Show Color Values): the colour's R, G, B sliders appended under the
+    /// face's own content — the reference layout adds them below its swatches — never in place of
+    /// it. On by default, as the previous build and the reference application had it.
+    #[serde(default = "values_default")]
+    pub show_values: bool,
+}
+
+impl Default for ColorPanelState {
+    fn default() -> Self {
+        Self {
+            background: false,
+            web_only: false,
+            mode: ColorPanelMode::default(),
+            ramp: ColorRamp::default(),
+            web_safe_ramp: false,
+            recent: recent_default(),
+            show_values: values_default(),
+        }
+    }
+}
+
+/// 颜色数值 starts on, as in the reference application.
+fn values_default() -> bool {
+    true
 }
 
 /// The C2 layout's starting swatches, as the reference application shows them.

@@ -66,9 +66,9 @@ pub(crate) mod toolbar;
 pub mod type_panels_ui;
 pub(super) mod variables_ui;
 
-#[cfg(test)]
-use color::color_field_height;
-pub(crate) use color::{color_field, color_field_fill_id, field_chips, field_hsva, offer_color_field_fill, srgb_hsva};
+pub(crate) use color::{
+    color_field, color_field_fill_id, field_chips, field_hsva, offer_color_field_fill, palette_picker_side, palette_scale, srgb_hsva,
+};
 #[cfg(test)]
 pub(crate) use color::{hsva_color32, hsva_srgb, srgb_bytes};
 #[cfg(test)]

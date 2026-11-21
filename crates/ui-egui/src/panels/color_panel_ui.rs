@@ -205,7 +205,7 @@ fn channel_name(model: Model, label: &'static str) -> String {
 }
 
 /// The slider rows of `model`. Returns the edited values, if any.
-fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool) -> Option<[f32; 4]> {
+pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool) -> Option<[f32; 4]> {
     let t = Tokens::get(ui.ctx());
     // Dynamic Color Sliders off: the tracks keep the colours they had when a drag began.
     let stops_key = egui::Id::unique(("color-panel-stops", model, background));
@@ -244,6 +244,18 @@ fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, d
         }
     }
     out
+}
+
+/// 颜色数值 (the panel menu's Show Color Values): the colour's R, G, B sliders, appended under
+/// whatever face the panel shows so the face keeps its own content and only gains the values
+/// below it, the way the reference application adds its value controls under the palette.
+pub(super) fn color_values(app: &mut PhotocraftApp, ui: &mut egui::Ui, background: bool) {
+    let model = Model::Rgb;
+    let v = current_values(ui, model, background, active(app));
+    let dynamic = app.session.prefs().interface.dynamic_color_sliders;
+    if let Some(v) = slider_rows(ui, model, v, background, dynamic) {
+        apply_values(app, ui, model, v);
+    }
 }
 
 /// A slider track with Photoshop's triangle thumb under it. Returns true when dragged or clicked
@@ -553,7 +565,6 @@ fn rgb3(c: [f32; 4]) -> [f32; 3] {
 /// other corners; the add-to-swatches button sits under it.
 fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    let top = ui.cursor().top();
     let background = app.ui.color_panel.background;
     let rgb = active(app);
     let v = current_values(ui, Model::Hsb, background, rgb);
@@ -572,13 +583,11 @@ fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let mut v = edited.unwrap_or(v);
     let mut changed = edited.is_some();
     ui.add_space(6.0);
-    let fill = ui.data(|d| d.get_temp::<f32>(color_field_fill_id()));
+    // The wheel takes the palette's square, as every face does: the reference layout's 168 pt
+    // picker at the dock's width, never the height left in the group, so switching faces never
+    // changes the colour area's size or shape.
     let w = ui.available_width();
-    // The wheel takes what the dock group has left under the sliders as drawn (they stand taller
-    // than `ROW_H`), down to 28 pt as the slider modes' ramp: an estimate and an 80 pt floor ran
-    // it past the bottom of the Color group at its default height.
-    let used = ui.cursor().top() - top;
-    let side = fill.filter(|f| f.is_finite()).map_or(w.min(220.0), |f| (f - used).min(w)).max(28.0);
+    let side = crate::panels::palette_picker_side(w);
     let (area, resp) = ui.allocate_exact_size(vec2(w, side), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, ui.is_enabled(), "Color Wheel"));
     let (center, inner, outer) = wheel_geometry(area);
@@ -791,6 +800,13 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 app.ui.color_panel.mode = mode;
                 ui.close();
             }
+        }
+        ui.separator();
+        // 颜色数值: the colour's R, G, B sliders appended under the face's own content (the
+        // reference application adds its value controls below the palette) — never instead of it.
+        // The menu stays open so the change can be seen and undone in place.
+        if check_item(ui, app.ui.color_panel.show_values, "Show Color Values") {
+            app.ui.color_panel.show_values = !app.ui.color_panel.show_values;
         }
     } else {
         // Wide enough for the mixing strength row's slider and field, as the reference menu is.

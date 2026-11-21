@@ -463,32 +463,48 @@ fn color_wheel_ignores_clicks_beside_it() {
     assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 255]);
 }
 
-/// The Color Wheel shrinks to the Color group at its default height in every theme, as the
-/// slider modes' ramp does, instead of running past the group's bottom into its scroll area.
+/// 色板区域固定比例: every face draws the same square in the same panel — the C2 layout's 168 pt
+/// picker, the hue cube's field and the color wheel's area all measure that square — so switching
+/// faces never changes the colour area's size or shape. The wheel no longer shrinks to the Color
+/// group's height; a short group scrolls instead.
 #[test]
-fn color_wheel_fits_the_default_color_group() {
-    for kind in ThemeKind::ALL {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.ui.color_panel.mode = ColorPanelMode::ColorWheel;
-        app.ui.theme = kind;
-        app.ui.dock_tabs.color = Group::Color.tabs(Tokens::for_kind(kind).pro).iter().position(|name| *name == "Color").unwrap();
-        let mut h = Harness::builder().with_size(vec2(1440.0, 1200.0)).build_ui_state(
-            |ui, app: &mut PhotocraftApp| {
-                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
-                    crate::panels::dock_area(app, ui);
-                    egui::CentralPanel::default().show(ui, |_| {});
-                }
-            },
-            app,
-        );
-        PhotocraftApp::setup_context(&h.ctx, kind);
-        h.run_steps(4);
-        let group = crate::panel_docking::probe::native_group_rect(h.state(), &h.ctx, Group::Color).unwrap();
-        assert!((group.height() - Group::Color.default_height()).abs() < 0.5, "{kind:?}: Color group {group:?}");
-        let wheel = h.query_by_label("Color Wheel").unwrap_or_else(|| panic!("{kind:?}: no Color Wheel")).rect();
-        // The group's scroll area ends at least 8 pt above its bottom edge (the card's bottom margin).
-        assert!(wheel.bottom() <= group.bottom() - 8.0, "{kind:?}: wheel {wheel:?} runs past the Color group {group:?}");
+fn every_face_keeps_the_palette_square() {
+    for width in [300.0, 420.0] {
+        let c2 = mode_panel(width, ColorPanelMode::C2).get_by_label("Saturation / Brightness").rect();
+        assert_eq!((c2.width().round(), c2.height().round()), (168.0, 168.0), "the C2 picker at {width}");
+        let wheel = mode_panel(width, ColorPanelMode::ColorWheel).query_by_label("Color Wheel").unwrap_or_else(|| panic!("{width}: no Color Wheel")).rect();
+        assert_eq!(wheel.height().round(), c2.height().round(), "the wheel's area is the palette square at {width}");
+        // The Hue Cube's field is the 17 x 17 mesh.
+        let h = mode_panel(width, ColorPanelMode::HueCube);
+        let mut field = None;
+        for clipped in &h.output().shapes {
+            if let egui::Shape::Mesh(m) = &clipped.shape
+                && m.vertices.len() == 17 * 17
+            {
+                field = Some(m.calc_bounds());
+            }
+        }
+        let field = field.unwrap_or_else(|| panic!("{width}: no hue cube field"));
+        assert_eq!((field.width().round(), field.height().round()), (c2.width().round(), c2.height().round()), "the cube's field is the palette square at {width}");
     }
+}
+
+/// The panel that draws `mode` alone at `width`, as the Color tab would.
+fn mode_panel(width: f32, mode: ColorPanelMode) -> Harness<'static, PhotocraftApp> {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.tools.foreground = [1.0, 0.0, 0.0, 1.0];
+    app.ui.color_panel.mode = mode;
+    let mut h = Harness::builder().with_size(vec2(width, 400.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::color_panel_ui::panel(app, ui);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+    h.run_steps(3);
+    h
 }
 
 /// The Color tab in `mode` with a document holding one selected black rectangle, the Rectangle tool
@@ -671,6 +687,56 @@ fn the_c2_picker_keeps_a_168_pt_square_at_any_dock_width() {
         sides.push((field.width().round(), field.height().round()));
     }
     assert_eq!(sides, [(168.0, 168.0), (168.0, 168.0)], "the picker is fixed, not stretched with the dock");
+}
+
+/// 开启颜色数值: the C2 layout gains the R, G, B slider rows under its swatch row — the field,
+/// chips and swatches above keep their place, so the values are appended, never a replacement —
+/// and loses only those rows when it is off.
+#[test]
+fn the_c2_panel_appends_color_values_below_its_content() {
+    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::C2, [0.772, 0.361, 0.361, 1.0]);
+    assert!(h.state().ui.color_panel.show_values, "颜色数值 starts on, as the reference application has it");
+    assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "the swatch row is still there");
+    let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
+    let red = h.query_by_label("Red").unwrap_or_else(|| panic!("no Red row")).rect();
+    assert!(red.top() > swatch.bottom(), "the values follow the swatch row: {red:?} under {swatch:?}");
+    for name in ["Red", "Green", "Blue"] {
+        assert!(h.query_by_label(name).is_some(), "{name} row");
+    }
+    let picker = h.get_by_label("Saturation / Brightness").rect();
+    assert!(picker.height() > 100.0, "the saturation/brightness field keeps its square: {picker:?}");
+
+    h.state_mut().ui.color_panel.show_values = false;
+    h.run_steps(3);
+    for name in ["Red", "Green", "Blue"] {
+        assert!(h.query_by_label(name).is_none(), "off: no {name} row");
+    }
+    assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "and the swatches stay either way");
+}
+
+/// 颜色数值 is the panel menu's switch (the first page, after the faces): checked by default, and
+/// a click turns the value rows off, another turns them back on.
+#[test]
+fn the_panel_menu_toggles_color_values() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let mut h = Harness::builder().with_size(vec2(320.0, 500.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::color_panel_ui::panel_menu(app, ui);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+    h.run_steps(3);
+    assert!(h.state().ui.color_panel.show_values, "颜色数值 starts on");
+    h.get_by_label("✔ Show Color Values").click();
+    h.run_steps(2);
+    assert!(!h.state().ui.color_panel.show_values, "a click turns 颜色数值 off");
+    assert!(h.query_by_label("   Show Color Values").is_some(), "and the row shows unchecked");
+    h.get_by_label("   Show Color Values").click();
+    h.run_steps(2);
+    assert!(h.state().ui.color_panel.show_values, "a second click turns it back on");
 }
 
 /// The C2 layout's 实线/图案 switch at the top of the panel: 图案 arms the brush for a sampled
