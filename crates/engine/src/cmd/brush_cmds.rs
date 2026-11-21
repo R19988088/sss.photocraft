@@ -278,14 +278,20 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let cmyk = doc_cmyk_space(s);
     // The end taper is decided at the lift: the live preview laid the pen's own pressure all the
     // way to the end, so its pixels can't stand for this stroke — the stroke renders again with its
-    // tail faded (ProCraft's classic taper lands when the stroke ends too).
-    let tapered = brush.taper.enabled && brush.taper.size > 0.0;
+    // tail faded (ProCraft's classic taper lands when the stroke ends too). A stroke that paints in
+    // place (wet paint: a pigment response, a mixing transport) is laid for good as it comes, the
+    // way a smudge's is: what the canvas shows while drawing is what it leaves, and laying the
+    // whole stroke again as the pen lifts took a tenth of a second on a long one (ProCraft's
+    // `lay_stroke` after #288).
+    let taper_lands = brush.taper.enabled && brush.taper.size > 0.0 && !brush.paints_in_place();
     let mut pts = pts;
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
-    let live = s.live_commit.take().filter(|l| !tapered && l.matches(s, cmd, p, &pts));
+    let live = s.live_commit.take().filter(|l| !taper_lands && l.matches(s, cmd, p, &pts));
     let from_live = live.is_some();
-    photocraft_paint::dynamics::taper_end(&brush, &mut pts);
+    if taper_lands {
+        photocraft_paint::dynamics::taper_end(&brush, &mut pts);
+    }
     let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
         s.edit(label, |doc, _| {
             if let Some(l) = live {

@@ -2442,3 +2442,26 @@ fn spacing_and_the_dabs_do_not_depend_on_flow() {
     renderer.finish();
     assert_eq!(renderer.dabs(), full.as_slice(), "input chunking must not change spacing");
 }
+
+#[test]
+fn wet_paint_is_the_kind_of_stroke_laid_as_it_comes() {
+    // ProCraft's `Canvas::paints_in_place` (PR #288 there): a stroke that takes colour from the
+    // layer beneath has changed that layer as it came, so its commit takes the live pixels instead
+    // of laying the whole stroke again at the lift. A plain brush doesn't.
+    let plain = brush();
+    assert!(!plain.paints_in_place(), "a plain brush lays its stamps at the lift");
+    assert!(BrushSettings { pigment_mix_strength: 0.4, ..plain.clone() }.paints_in_place(), "a pigment response mixes with what is under it");
+    assert!(
+        BrushSettings { mix_settings: crate::transport::BrushMixSettings { enabled: true, strength: 0.5, ..Default::default() }, ..plain.clone() }.paints_in_place(),
+        "a mixing transport drags the layer's own paint"
+    );
+    assert!(
+        BrushSettings {
+            wet_edges: true,
+            wet_edge: Some(crate::material::WetEdgeSettings { outline: crate::material::WetOutline::Single, color_mode: crate::material::WetColorMode::Multiply, ..Default::default() }),
+            ..plain
+        }
+        .paints_in_place(),
+        "a single-dab wet rim is tinted by the canvas beneath it"
+    );
+}

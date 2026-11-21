@@ -941,6 +941,23 @@ impl Default for BrushSettings {
 }
 
 impl BrushSettings {
+    /// Whether the stroke paints in place: its dabs take colour from the layer beneath as they
+    /// come (a pigment response, a smudging or mixing transport, a single-dab wet rim tinted by
+    /// the canvas under it). Such a stroke is laid as it is drawn — the canvas already shows its
+    /// stamps — and laying the whole stroke again as the pen lifts only redoes that work, so its
+    /// commit takes the live pixels instead of rendering the stroke a second time (ProCraft's
+    /// `Canvas::paints_in_place`, PR #288 there: wet paint counts as laid for good).
+    pub fn paints_in_place(&self) -> bool {
+        self.pigment_mix_strength > 0.0
+            || self.pigment.as_ref().is_some_and(|p| p.may_be_visible())
+            || self.mix_settings.enabled
+            || (self.wet_edges
+                && self
+                    .wet_edge
+                    .as_ref()
+                    .is_some_and(|w| w.outline == crate::material::WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal))
+    }
+
     /// Resize the primary tip and keep an enabled Dual Brush tip at the same relative size.
     /// An explicit Dual Brush size edit should bypass this and retain the requested diameter.
     ///

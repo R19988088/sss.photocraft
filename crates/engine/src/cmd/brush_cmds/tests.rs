@@ -1520,3 +1520,30 @@ fn mixer_load_fills_the_reservoir_from_the_canvas_and_keeps_the_foreground() {
     assert_eq!(s.tools.foreground, foreground);
     assert_eq!(s.active().unwrap().revision, revision);
 }
+
+
+#[test]
+fn a_stroke_that_paints_in_place_takes_the_live_pixels_and_skips_the_taper_lay() {
+    // PR #288 (ProCraft): wet paint is laid for good as it comes, so laying the whole stroke again
+    // as the pen lifts only redoes work the canvas already shows — a tenth of a second on a long
+    // watercolour stroke, measured with `examples/bench_stroke_lift`. It now takes the live pixels
+    // and leaves its end as it was drawn; a plain brush still lays the stroke again for the end
+    // taper (its brush default has the taper on).
+    let pts = [[10.0, 50.0, 1.0], [60.0, 30.0, 0.7], [120.0, 60.0, 0.9], [180.0, 40.0, 0.4], [150.0, 80.0, 1.0]];
+    let plain = json!({"brush": {"size": 18, "hardness": 0.0}, "smoothing": 0.5, "target": "pixels"});
+    let wet = json!({"brush": {"size": 18, "hardness": 0.0, "pigmentMixStrength": 0.6}, "smoothing": 0.5, "target": "pixels"});
+    for (base, laid_again) in [(plain, true), (wet, false)] {
+        let mut s = session(200, 100);
+        let (live, p) = live_and_commit(&s, "paint.stroke", base, &pts);
+        s.offer_live_stroke(live).unwrap();
+        let r = s.execute("paint.stroke", p.clone()).unwrap();
+        s.clear_live_stroke();
+        assert_eq!(r.get("fromLive").is_none(), laid_again, "{p}: fromLive {:?}", r.get("fromLive"));
+        // The journal's replay renders the same pixels: it skips the taper's lay for wet paint too.
+        let mut fresh = session(200, 100);
+        fresh.execute("paint.stroke", p.clone()).unwrap();
+        assert!(same_pixels(&surface(&s), &surface(&fresh), Rect::new(0, 0, 200, 100)), "{p}");
+        s.undo();
+        assert!(same_pixels(&surface(&s), &surface(&session(200, 100)), Rect::new(0, 0, 200, 100)), "{p}: undo");
+    }
+}
