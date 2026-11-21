@@ -56,7 +56,7 @@ pub use mixer::MixerSettings;
 pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke};
 pub use tablet_pressure::{TabletPressureFilter, TabletPressureSettings};
 pub use stamp::{DabStamper, StampGeometry, StampJob, StamperSlot, process_stamper, set_process_stamper};
-pub use tile::{GrayTile, StoredTile};
+pub use tile::{GrayTile, PatternImage, StoredTile};
 
 /// One input sample. Missing stylus data defaults to "mouse": full pressure, no tilt/rotation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

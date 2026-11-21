@@ -264,12 +264,25 @@ pub struct BrushContext {
     pub brush: BrushSettings,
     tip: Option<Arc<Mips>>,
     dual_tip: Option<Arc<Mips>>,
+    /// The tip's level 0 as an 8-bit bitmap for a batch mask backend (built once, with the tip).
+    tip_mask: Option<Arc<crate::stamp::MaskTip>>,
     texture: Option<Arc<PatternImage>>,
     secondary: Option<Box<BrushContext>>,
     texture_origin: Option<Point>,
     texture_tip: Option<Dab>,
     /// The injected dab-stamping backend (the GPU kernel); empty = paint everything on the CPU.
     stamper: crate::stamp::StamperSlot,
+    /// The injected batch mask backend (the GPU paint surface); empty = rasterise every dab's
+    /// mask on the CPU, as paint alone does.
+    pub(crate) masker: crate::stamp::MaskBatchSlot,
+}
+
+/// The tip's level 0 as an 8-bit bitmap, for a backend that samples the pyramid itself. The
+/// `Shape` bitmaps brushes ship are 8-bit, so this round trip is exact.
+fn mask_tip_of(m: &Mips) -> Option<Arc<crate::stamp::MaskTip>> {
+    let (w, h, values) = m.levels.first()?;
+    let data: Vec<u8> = values.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+    Some(Arc::new(crate::stamp::MaskTip { width: *w as u32, height: *h as u32, data }))
 }
 
 fn prepare_pattern(b: &BrushSettings) -> Option<Arc<PatternImage>> {
@@ -314,10 +327,60 @@ impl BrushContext {
         self.stamper.stamper()
     }
 
+    /// Route whole-frame masks through `masker` when it handles them (the GPU paint surface),
+    /// for this context and, when the brush has a Dual Brush, its secondary context too.
+    pub fn set_masker(&mut self, masker: crate::stamp::MaskBatchSlot) {
+        if let Some(secondary) = self.secondary.as_deref_mut() {
+            secondary.set_masker(masker.clone());
+        }
+        self.masker = masker;
+    }
+
+    /// The batch mask backend this context was given, if any.
+    pub fn masker(&self) -> Option<&dyn crate::stamp::DabMaskBatch> {
+        self.masker.batch()
+    }
+
+    /// The stroke's texture as a batch backend takes it.
+    pub fn mask_texture(&self) -> crate::stamp::MaskTexture {
+        let t = &self.brush.texture;
+        crate::stamp::MaskTexture {
+            image: self.texture.clone(),
+            mode: t.mode.code(),
+            coordinate: t.coordinate_mode.code(),
+            scale: t.scale.max(0.01),
+            depth: t.depth.clamp(0.0, 1.0),
+            c3_math: t.c3_math,
+            each_tip: t.enabled && t.each_tip,
+            origin: self.texture_origin.map_or([0.0, 0.0], |p| [p.x as f32, p.y as f32]),
+        }
+    }
+
     /// The job a stamper would take for this dab, `None` for a dab only the CPU rasterises
     /// (sampled tip, per-tip texture, Noise, Grain, single-dab Wet Edges, non-finite fields).
     pub fn stamp_job(&self, d: &Dab, with_depth: bool) -> Option<crate::stamp::StampJob> {
         crate::stamp::StampJob::of(d, self, with_depth)
+    }
+
+    /// The job a batch mask backend takes for this dab: as [`stamp_job`](Self::stamp_job), but a
+    /// per-tip textured or sampled-tip dab is allowed (the backend samples both itself).
+    pub fn mask_job(&self, d: &Dab, wet: bool) -> Option<crate::stamp::StampJob> {
+        crate::stamp::StampJob::of_with(d, self, wet, true, true)
+    }
+
+    /// The tip bitmap's level-0 scale (`big / (2 r)`) and the mip level a dab samples
+    /// (`level_for(2 r ro)`), as `rasterize_into` takes them; `(0, 0)` for a computed tip.
+    pub(crate) fn tip_scale_and_level(&self, radius: f32, across: f32) -> (f32, u32) {
+        let Some(m) = self.tip.as_deref() else { return (0.0, 0) };
+        let (w, h, _) = &m.levels[0];
+        let big = *w.max(h) as f32;
+        (big / (2.0 * radius).max(0.001), m.level_for(across) as u32)
+    }
+
+    /// The brush's sampled tip as a mask backend takes it (level 0, 8-bit); `None` for a
+    /// computed tip.
+    pub fn mask_tip(&self) -> Option<std::sync::Arc<crate::stamp::MaskTip>> {
+        self.tip_mask.clone()
     }
 
     /// Whether the tip is a sampled bitmap (which a computed-tip stamper can't draw).
@@ -344,11 +407,15 @@ impl BrushContext {
             Some(g) if g.is_valid() => Some(crate::mip_cache::tip_mips(g)),
             _ => None,
         };
+        let tip = mips(&brush.tip);
+        let tip_mask = tip.as_deref().and_then(mask_tip_of);
         Self {
             texture_origin: None,
             texture_tip: None,
             stamper: crate::stamp::process_stamper(),
-            tip: mips(&brush.tip),
+            masker: crate::stamp::process_mask_batch(),
+            tip_mask,
+            tip,
             dual_tip: if brush.dual_brush.enabled { mips(&brush.dual_brush.tip) } else { None },
             texture: prepare_pattern(&brush),
             secondary: brush.dual_brush.enabled.then(|| brush.dual_brush.resolved_brush(&brush)).flatten().as_ref().map(|b| Box::new(Self::new(b))),
@@ -1216,6 +1283,84 @@ pub struct StrokeRenderer {
     regions: RegionPool,
 }
 
+/// Pixels of dab rectangles a batch mask backend gets in one submit. A backend packs them into
+/// one texture, so this is an upper bound rather than a target: past it, dabs are submitted in
+/// chunks.
+const MASK_CHUNK_PIXELS: u64 = 8_000_000;
+
+/// `PHOTOCRAFT_PAINT_PROFILE=1` prints what a frame's dab batch costs, stage by stage.
+fn profiling() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PHOTOCRAFT_PAINT_PROFILE").is_some())
+}
+
+/// Say why a frame went per-dab instead of folding, when `PC_FOLD_DEBUG` is set.
+fn fold_debug(why: &str, n: usize) -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("PC_FOLD_DEBUG").is_some()) {
+        eprintln!("[paint] frame of {n} dabs kept per-dab: {why}");
+    }
+    false
+}
+
+/// Hand one chunk of dabs to `masker` and copy back the masks whose size matches their rectangle.
+fn fill(masker: &dyn crate::stamp::DabMaskBatch, batch: &mut crate::stamp::MaskBatch, at: &[usize], out: &mut [Option<crate::stamp::MaskDab>]) {
+    let Some(masks) = masker.masks(batch) else { return };
+    if masks.len() != at.len() {
+        return;
+    }
+    for (k, m) in masks.into_iter().enumerate() {
+        let rect = batch.rects[k];
+        if m.coverage.len() == (rect.width() * rect.height()) as usize && m.depth.len() == m.coverage.len() {
+            out[at[k]] = Some(m);
+        }
+    }
+}
+
+/// The per-pixel colours a folded lane picks, lifted from the backend's straight rgb read (the
+/// coverage-weighted average of the dabs' own colours) into the surface's channels.
+fn lift_rgb(format: &PixelFormat, rgb: &[f32], out: &mut Vec<f32>) {
+    let nc = format.mode.color_channels();
+    let mut native = [0.0f32; 8];
+    out.clear();
+    out.reserve(rgb.len() / 3 * nc);
+    for p in rgb.chunks_exact(3) {
+        from_rgba_into(format, [p[0], p[1], p[2], 1.0], &mut native);
+        out.extend_from_slice(&native[..nc]);
+    }
+}
+
+/// The colours a patterned lane's dabs pick, filled over the whole `rect` of a folded frame.
+/// The pattern is sampled in each dab's own frame (`scale · (pixel − centre)`), and the dabs of
+/// one frame sit a pixel or two apart, so one reference dab stands in for the frame: the pattern
+/// keeps its size and phase, and the colour drifts by the fraction of a texel between dabs.
+fn lane_colors(pattern: &crate::brush::ColorPattern, format: &PixelFormat, rect: Rect, reference: &Dab, out: &mut Vec<f32>) {
+    let width = rect.width() as usize;
+    let nc = format.mode.color_channels();
+    let scale = pattern.width.max(pattern.height) as f32 / (2.0 * reference.radius).max(1.0);
+    out.clear();
+    out.resize(width * rect.height() as usize * nc, 0.0);
+    let row_at = |row: usize, line: &mut [f32]| {
+        let mut native = [0.0f32; 8];
+        let sy = scale * (rect.y0 as f32 + row as f32 + 0.5 - reference.center.y as f32);
+        for c in 0..width {
+            let sx = scale * (rect.x0 as f32 + c as f32 + 0.5 - reference.center.x as f32);
+            let rgba = pattern.sample_pigment(sx, sy);
+            from_rgba_into(format, rgba, &mut native);
+            line[c * nc..(c + 1) * nc].copy_from_slice(&native[..nc]);
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if parallel(width * rect.height() as usize * GENERAL_LOOP_COST) {
+        use rayon::prelude::*;
+        out.par_chunks_mut(width * nc).enumerate().for_each(|(row, line)| row_at(row, line));
+        return;
+    }
+    for (row, line) in out.chunks_mut(width * nc).enumerate() {
+        row_at(row, line);
+    }
+}
+
 impl StrokeRenderer {
     /// Composite the union of this stroke and a mirrored pass as one stroke. This keeps
     /// overlapping dabs on a symmetry axis under one opacity ceiling at every bit depth.
@@ -1490,21 +1635,307 @@ impl StrokeRenderer {
         self.dual.as_ref().filter(|_| self.ctx.secondary.is_some()).map_or(self.cov.bounds, |d| self.cov.bounds.union(&d.bounds))
     }
 
+    /// The frame's masks from the batch backend: `None` for a dab it can't take (its own CPU
+    /// raster still runs for that one, in order).
+    fn batch_masks(&mut self, dabs: &[Dab], wet: bool) -> Vec<Option<crate::stamp::MaskDab>> {
+        let mut out: Vec<Option<crate::stamp::MaskDab>> = dabs.iter().map(|_| None).collect();
+        if self.ctx.masker.is_empty() {
+            return out;
+        }
+        if let Some(first) = dabs.first() {
+            self.ctx.texture_origin.get_or_insert(first.center);
+        }
+        let slot = self.ctx.masker.clone();
+        let Some(masker) = slot.batch() else { return out };
+        let mut batch = crate::stamp::MaskBatch {
+            jobs: Vec::new(),
+            rects: Vec::new(),
+            texture: self.ctx.mask_texture(),
+            tip: self.ctx.mask_tip(),
+        };
+        let mut at = Vec::with_capacity(dabs.len());
+        let mut chunk_px = 0u64;
+        for (i, d) in dabs.iter().enumerate() {
+            let Some(job) = self.ctx.mask_job(d, wet) else { continue };
+            let rect = self.ctx.dab_rect(d, false);
+            let px = u64::from(rect.width()) * u64::from(rect.height());
+            // A frame's dabs can be far more pixels than one atlas holds (a 1%-spacing stroke of
+            // big dabs): hand the backend as many chunks as it takes.
+            if !batch.jobs.is_empty() && chunk_px + px > MASK_CHUNK_PIXELS {
+                fill(masker, &mut batch, &mut at, &mut out);
+                batch.jobs.clear();
+                batch.rects.clear();
+                at.clear();
+                chunk_px = 0;
+            }
+            batch.jobs.push(job);
+            batch.rects.push(rect);
+            at.push(i);
+            chunk_px += px;
+        }
+        if !batch.jobs.is_empty() {
+            fill(masker, &mut batch, &mut at, &mut out);
+        }
+        out
+    }
+
+    /// The frame folded by the batch backend as one rectangle, for a brush whose dabs all share
+    /// one ceiling and carry nothing per-dab: the union is drawn on the GPU and comes back folded,
+    /// so a frame costs one small readback instead of one per dab. Returns `false` (and leaves
+    /// everything alone) when the frame doesn't qualify, so the per-dab path runs exactly as before.
+    fn aggregate_frame(&mut self, dabs: &[Dab], duals: &[Dab], wet: bool, prof: bool, t_start: std::time::Instant) -> bool {
+        if dabs.is_empty() || self.ctx.masker.is_empty() {
+            return fold_debug("no dabs or no masker", dabs.len());
+        }
+        let b = &self.ctx.brush;
+        if b.erase {
+            return fold_debug("erase", dabs.len());
+        }
+        if b.pigment.is_some() || b.canvas_material.is_some() {
+            return fold_debug("pigment or material", dabs.len());
+        }
+        // Colour that follows the canvas beneath each dab (a material, pigment) has no folded
+        // form. Colour dynamics does: every dab keeps its own colour, and the backend's colour
+        // lane averages them under the same coverage the frame folds with.
+        if self.per_dab_color && (b.pigment.as_ref().is_some_and(|p| p.may_be_visible()) || b.canvas_material.is_some()) {
+            return fold_debug("per-dab colour", dabs.len());
+        }
+        if b.saturation_record_strength > 0.0 || b.saturation_preserve_output > 0.0 || self.transports[0].is_some() || self.transports[1].is_some() {
+            return fold_debug("saturation or transport", dabs.len());
+        }
+        // A single-dab Wet Edges outline tints each dab's own rim against the canvas beneath it;
+        // only the per-dab path has that base to read.
+        let single = |wb: &BrushSettings| wb.wet_edges && wb.wet_edge.as_ref().is_some_and(|w| w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
+        if single(b) {
+            return fold_debug("single-dab wet outline", dabs.len());
+        }
+        // The Dual Brush's lane has to qualify too: its dabs are folded with their own context.
+        if let Some(ctx) = self.ctx.secondary.as_deref() {
+            let s = &ctx.brush;
+            if s.pigment.is_some() || s.canvas_material.is_some() || s.saturation_record_strength > 0.0 || s.saturation_preserve_output > 0.0 || single(s) {
+                return fold_debug("secondary pigment, material, saturation or wet outline", dabs.len());
+            }
+        }
+        // A single-dab Wet Edges outline tints its own rim; folded, the frame's dabs share one
+        // rim depth, which is the same approximation the whole-stroke Wet Edges already makes.
+        let Some(first) = dabs.first() else { return false };
+        let ceil = first.opacity;
+        let color = first.color;
+        // A pattern's colour is sampled per pixel (dab-local), so it is recomputed over the
+        // union; colour dynamics instead needs the backend's colour lane (every dab keeps its
+        // own colour, and the lane averages them under the folded coverage).
+        let wants_pattern = |wb: &BrushSettings| wb.pattern_enabled && wb.sampled_pattern.is_some();
+        let want_color = b.color_dynamics.enabled && !wants_pattern(b);
+        let mut union: Option<Rect> = None;
+        let mut jobs = Vec::with_capacity(dabs.len());
+        let mut rects = Vec::with_capacity(dabs.len());
+        for d in dabs {
+            if (d.opacity - ceil).abs() > 1e-4 || d.mix_strength > 0.0 || d.blur_strength > 0.0 || !d.pigment.is_inert() {
+                return fold_debug("per-dab opacity, mix or pigment", dabs.len());
+            }
+            if !want_color && (0..4).any(|i| (d.color[i] - color[i]).abs() > 1e-3) {
+                return fold_debug("per-dab colour", dabs.len());
+            }
+            let Some(job) = self.ctx.mask_job(d, wet) else { return fold_debug("mask job refused", dabs.len()) };
+            let rect = self.ctx.dab_rect(d, false);
+            if rect.is_empty() {
+                return fold_debug("empty dab rect", dabs.len());
+            }
+            union = Some(union.map_or(rect, |u: Rect| u.union(&rect)));
+            jobs.push(job);
+            rects.push(rect);
+        }
+        let Some(union) = union else { return fold_debug("no union", dabs.len()) };
+        let lane = crate::stamp::FrameLane { want_color, jobs, rects, union, ceil, texture: self.ctx.mask_texture(), tip: self.ctx.mask_tip() };
+        // The Dual Brush's lane: its own context, its own union and ceiling.
+        let dual_lane = if duals.is_empty() {
+            None
+        } else if let Some(ctx) = self.ctx.secondary.as_deref() {
+            if duals.len() != dabs.len() {
+                return fold_debug("dual dabs out of step", dabs.len());
+            }
+            let wet2 = ctx.brush.wet_edges && !b.erase;
+            let Some(first2) = duals.first() else { return false };
+            let ceil2 = ctx.brush.opacity * first2.opacity;
+            let mut union2: Option<Rect> = None;
+            let mut jobs2 = Vec::with_capacity(duals.len());
+            let mut rects2 = Vec::with_capacity(duals.len());
+            for d in duals {
+                if d.mix_strength > 0.0 || d.blur_strength > 0.0 || !d.pigment.is_inert() || (d.opacity - first2.opacity).abs() > 1e-4 {
+                    return fold_debug("dual per-dab opacity or mix", dabs.len());
+                }
+                let Some(job) = ctx.mask_job(d, wet2) else { return fold_debug("dual mask job refused", dabs.len()) };
+                let rect = self.ctx.dab_rect(d, true);
+                if rect.is_empty() {
+                    return fold_debug("empty dual dab rect", dabs.len());
+                }
+                union2 = Some(union2.map_or(rect, |u: Rect| u.union(&rect)));
+                jobs2.push(job);
+                rects2.push(rect);
+            }
+            union2.map(|union| crate::stamp::FrameLane {
+                want_color: ctx.brush.color_dynamics.enabled && !wants_pattern(&ctx.brush),
+                jobs: jobs2,                rects: rects2,
+                union,
+                ceil: ceil2,
+                texture: ctx.mask_texture(),
+                tip: ctx.mask_tip(),
+            })
+        } else {
+            // The generator always emits paired dual dabs, but with no Dual Brush they are
+            // discarded by the per-dab path too, so the folded frame simply ignores them.
+            None
+        };
+        let Some(masker) = self.ctx.masker.batch() else { return fold_debug("no batch backend", dabs.len()) };
+        let frame = crate::stamp::MaskFrame { lane, dual: dual_lane };
+        let t = profiling().then(std::time::Instant::now);
+        let Some(out) = masker.frame(&frame) else { return fold_debug("backend refused the frame", dabs.len()) };
+        let t_masks = t.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+        let px = |r: Rect| (r.width() * r.height()) as usize;
+        if out.coverage.len() != px(frame.lane.union) || out.depth.len() != out.coverage.len() {
+            return fold_debug("mask size mismatch", dabs.len());
+        }
+        if let (Some(lane2), Some(back)) = (&frame.dual, &out.dual)
+            && (back.coverage.len() != px(lane2.union) || back.depth.len() != back.coverage.len())
+        {
+            return fold_debug("dual mask size mismatch", dabs.len());
+        }
+        if !out.color.is_empty() && out.color.len() != px(frame.lane.union) * 3 {
+            return fold_debug("colour size mismatch", dabs.len());
+        }
+        let mut native = [0.0f32; 8];
+        // The lane's per-pixel colour: the pattern's own sample (in the dab's own frame, so it is
+        // recomputed once over the union from the frame's first dab), the backend's colour lane
+        // when every dab brought its own, or else the stroke's one colour.
+        let mut lane_col = |pattern: Option<&crate::brush::ColorPattern>, rect: Rect, reference: &Dab, rgb: &[f32], colors: &mut Vec<f32>| -> Option<(Vec<f32>, bool)> {
+            let f = self.fmt?;
+            match (pattern, rgb.is_empty()) {
+                (Some(p), _) => {
+                    lane_colors(p, &f, rect, reference, colors);
+                    Some((std::mem::take(colors), true))
+                }
+                (None, false) => {
+                    lift_rgb(&f, rgb, colors);
+                    Some((std::mem::take(colors), true))
+                }
+                (None, true) => {
+                    from_rgba_into(&f, color, &mut native);
+                    Some((native[..f.mode.color_channels()].to_vec(), false))
+                }
+            }
+        };
+        let mut colors = Vec::new();
+        let pattern = b.pattern_enabled.then(|| b.sampled_pattern.as_ref()).flatten();
+        let rgb: &[f32] = if pattern.is_none() { &out.color } else { &[] };
+        let col = lane_col(pattern, frame.lane.union, first, rgb, &mut colors);
+        // The backend hands back what the frame's dabs leave over an empty pixel, `ceil·V`;
+        // dividing by the ceiling gives the `v` the map's own `c + v·(ceil − c)` wants.
+        let divide = |coverage: Vec<f32>, ceil: f32| {
+            let mut vals = coverage;
+            if ceil > 0.0 {
+                for v in &mut vals {
+                    *v = (*v / ceil).clamp(0.0, 1.0);
+                }
+            } else {
+                vals.iter_mut().for_each(|v| *v = 0.0);
+            }
+            vals
+        };
+        let vals = divide(out.coverage, frame.lane.ceil);
+        let material = if wet {
+            b.wet_edge.as_ref().map(|w| (first.wet_edge, (w.outline == WetOutline::Single).then(|| w.color_strength(first.wet_edge.strength))))
+        } else {
+            None
+        };
+        self.cov.accumulate_wet(frame.lane.union, &vals, frame.lane.ceil, col.as_ref().map(|(c, p)| (c.as_slice(), *p)), wet.then_some(&out.depth[..]), material, None);
+        self.cov.bounds = self.cov.bounds.union(&frame.lane.union);
+        // The Dual Brush's lane, folded into its own map with its own ceiling.
+        if let (Some(lane2), Some(back), Some(dm)) = (&frame.dual, out.dual, self.dual.as_mut()) {
+            let vals2 = divide(back.coverage, lane2.ceil);
+            let ctx = self.ctx.secondary.as_deref();
+            let wet2 = ctx.is_some_and(|c| c.brush.wet_edges) && !b.erase;
+            let material2 = if wet2 {
+                ctx.and_then(|c| c.brush.wet_edge.as_ref()).map(|w| (first.wet_edge, (w.outline == WetOutline::Single).then(|| w.color_strength(first.wet_edge.strength))))
+            } else {
+                None
+            };
+            let mut colors2 = Vec::new();
+            let reference2 = duals.first().copied().unwrap_or(*first);
+            let col2 = ctx.and_then(|c| {
+                let pattern2 = c.brush.pattern_enabled.then(|| c.brush.sampled_pattern.as_ref()).flatten();
+                let rgb2: &[f32] = if pattern2.is_none() { &back.color } else { &[] };
+                lane_col(pattern2, lane2.union, &reference2, rgb2, &mut colors2)
+            });
+            dm.accumulate_wet(lane2.union, &vals2, lane2.ceil, col2.as_ref().map(|(c, p)| (c.as_slice(), *p)), wet2.then_some(&back.depth[..]), material2, None);
+            dm.bounds = dm.bounds.union(&lane2.union);
+        }
+        self.dabs_done += dabs.len();
+        if let Some(all) = self.all_dabs.as_mut() {
+            all.extend_from_slice(dabs);
+        }
+        if prof {
+            let total = t_start.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "[paint] {total:8.1} ms: one folded frame of {} dabs ({}×{}{}), masks {t_masks:8.1}, rest {:8.1}",
+                dabs.len(),
+                frame.lane.union.width(),
+                frame.lane.union.height(),
+                frame.dual.as_ref().map_or(String::new(), |l| format!(" + dual {}×{}", l.union.width(), l.union.height())),
+                total - t_masks
+            );
+        }
+        true
+    }
+
     fn raster_pending(&mut self) {
+        let prof = profiling();
+        let t_start = std::time::Instant::now();
+        let mut t_masks = 0.0f64;
+        let mut t_cpu_raster = 0.0f64;
         let mut dabs = std::mem::take(&mut self.dab_buf);
         let mut duals = std::mem::take(&mut self.dual_buf);
         let wet = self.ctx.brush.wet_edges && !self.ctx.brush.erase;
+        if self.aggregate_frame(&dabs, &duals, wet, prof, t_start) {
+            dabs.clear();
+            duals.clear();
+            self.dab_buf = dabs;
+            self.dual_buf = duals;
+            return;
+        }
+        let masks = if prof {
+            let t = std::time::Instant::now();
+            let m = self.batch_masks(&dabs, wet);
+            t_masks += t.elapsed().as_secs_f64() * 1000.0;
+            m
+        } else {
+            self.batch_masks(&dabs, wet)
+        };
+        let cpu_fallback = masks.iter().filter(|m| m.is_none()).count() as u64;
         let mut native = [0.0f32; 8];
         let mut colors = Vec::new();
         let mut base_pixels = Vec::new();
         let mut canvas_colors = Vec::new();
-        for d in &dabs {
-            self.ctx.texture_origin.get_or_insert(d.center);
-            self.ctx.texture_tip = Some(*d);
+        for (i, d) in dabs.iter().enumerate() {
             let rect = self.ctx.dab_rect(d, false);
-            // Wet Edges acts on the whole stroke (#2088): the dab records how deep it reaches each
-            // pixel and the stroke darkens its own rim when composited, not every dab's.
-            self.ctx.rasterize_into(d, false, rect, &mut self.scratch, wet.then_some(&mut self.depth_scratch));
+            if let Some(m) = masks.get(i).and_then(Option::as_ref) {
+                // The batch backend laid this dab's mask on the GPU: the tip maths and the
+                // pattern sample are done, and everything below reads it as the CPU would.
+                self.ctx.texture_tip = Some(*d);
+                self.scratch.clear();
+                self.scratch.extend_from_slice(&m.coverage);
+                if wet {
+                    self.depth_scratch.clear();
+                    self.depth_scratch.extend_from_slice(&m.depth);
+                }
+            } else {
+                let t = std::time::Instant::now();
+                self.ctx.texture_origin.get_or_insert(d.center);
+                self.ctx.texture_tip = Some(*d);
+                // Wet Edges acts on the whole stroke (#2088): the dab records how deep it reaches each
+                // pixel and the stroke darkens its own rim when composited, not every dab's.
+                self.ctx.rasterize_into(d, false, rect, &mut self.scratch, wet.then_some(&mut self.depth_scratch));
+                t_cpu_raster += t.elapsed().as_secs_f64() * 1000.0;
+            }
             let single =
                 self.ctx.brush.wet_edge.as_ref().filter(|w| wet && w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
             let pattern = self.ctx.brush.pattern_enabled.then_some(self.ctx.brush.sampled_pattern.as_ref()).flatten();
@@ -1753,6 +2184,14 @@ impl StrokeRenderer {
         duals.clear();
         self.dab_buf = dabs;
         self.dual_buf = duals;
+        if prof {
+            let total = t_start.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "[paint] {total:8.1} ms: masks {t_masks:8.1}, cpu raster {t_cpu_raster:8.1}, rest {:8.1} ({} dabs, {cpu_fallback} on the CPU)",
+                total - t_masks - t_cpu_raster,
+                self.dabs_done.min(usize::MAX)
+            );
+        }
     }
 
     /// See [`DabGenerator::wants_time`].

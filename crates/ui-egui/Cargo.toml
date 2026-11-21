@@ -69,6 +69,8 @@ photocraft-io = { workspace = true, features = ["testgen"] }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 # Synthetic raw files for the open-time Camera Raw dialog tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
+# `examples/pw4_bench.rs` times brushset strokes and makes its own wgpu device.
+pollster = "0.4"
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 # Benchmark helpers for the `--json` benches `cargo xtask perf` runs (in-process RSS, percentiles).
 photocraft-testkit = { workspace = true }

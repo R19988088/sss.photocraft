@@ -39,8 +39,18 @@ pub struct StampJob {
     pub triangle: bool,
     /// Single-dab Wet Edges: the coverage is shaped by the rim and the depth goes to `depth`.
     pub wet: bool,
+    /// The dab's own texture depth (Texture › Depth, jittered per tip): what
+    /// `texture.combine` takes, not the brush's nominal setting.
+    pub texture_depth: f32,
+    /// A sampled tip's level-0 scale (`tw / (2 r)`, see `rasterize_into`) and the mip level it
+    /// samples: zero when the brush's tip is computed, not a bitmap.
+    pub tip_inv_scale: f32,
+    pub tip_level: u32,
     /// The dab-invariant geometry (see the module comment).
     pub geometry: StampGeometry,
+    /// The dab's own straight colour: colour dynamics make every dab's its own, and the
+    /// backend's colour lane averages them over a folded frame.
+    pub color: [f32; 4],
 }
 
 /// The per-dab constants every pixel of a dab shares, evaluated with `rasterize_into`'s own
@@ -114,8 +124,16 @@ impl StampJob {
     /// (sampled tips, per-tip texture, Noise, Grain, single-dab Wet Edges outline, non-finite
     /// fields).
     pub(crate) fn of(d: &Dab, brush: &crate::render::BrushContext, with_depth: bool) -> Option<Self> {
+        Self::of_with(d, brush, with_depth, false, false)
+    }
+
+    /// As [`of`](Self::of), but `allow_texture` lets a per-tip textured dab through and
+    /// `allow_tip` a sampled-bitmap tip, for a backend that samples them itself (the GPU paint
+    /// surface does both).
+    pub(crate) fn of_with(d: &Dab, brush: &crate::render::BrushContext, with_depth: bool, allow_texture: bool, allow_tip: bool) -> Option<Self> {
         let b = &brush.brush;
-        if brush.sampled_tip() || b.noise || b.grain.is_some() || brush.per_tip_texture() {
+        let sampled = brush.sampled_tip();
+        if (sampled && !allow_tip) || b.noise || b.grain.is_some() || (brush.per_tip_texture() && !allow_texture) {
             return None;
         }
         if brush.single_wet_outline() {
@@ -140,15 +158,18 @@ impl StampJob {
         let rm = (r * ro).max(0.5);
         let reach = if b.c3_tip_math {
             rm + 1.0
-        } else if aliased {
+        } else if aliased || sampled {
             rm
         } else {
             crate::tip_reach(rm, hardness).max(rm)
         };
         let reach_squared = (reach + 0.5) * (reach + 0.5);
-        let small = !aliased && if b.c3_tip_math { r * 2.0 < 5.0 } else { rm < SMALL_TIP_RADIUS };
+        let small = !sampled && !aliased && if b.c3_tip_math { r * 2.0 < 5.0 } else { rm < SMALL_TIP_RADIUS };
         let small_reach_squared = (reach + 0.75) * (reach + 0.75);
         let wet = b.wet_edges && b.wet_edge.is_none() && !with_depth;
+        // A sampled tip draws its bitmap at `2 r` pixels across: level 0's scale and the mip
+        // level `rasterize_into` picks (`Mips::level_for`).
+        let (tip_inv_scale, tip_level) = if sampled { brush.tip_scale_and_level(r, 2.0 * r * ro.max(0.25)) } else { (0.0, 0) };
         Some(Self {
             center: [cx, cy],
             radius: r,
@@ -164,10 +185,171 @@ impl StampJob {
             square: b.square,
             triangle: b.triangle,
             wet,
+            texture_depth: d.depth.clamp(0.0, 1.0),
+            tip_inv_scale,
+            tip_level,
             geometry: StampGeometry { ro, rm, reach, reach_squared, small, small_reach_squared },
+            color: d.color,
         })
     }
 }
 
 /// Below this radius a computed tip is rasterised by area, not at pixel centres.
 use crate::render::SMALL_TIP_RADIUS;
+
+// ---------------------------------------------------------------------------
+// Batch masks: a whole frame of dabs laid down by one backend (the GPU)
+// ---------------------------------------------------------------------------
+
+/// The stroke's texture, as a mask backend takes it: the pattern image and the numbers
+/// `texture_at_point` / `Texture::combine` fold into every covered pixel.
+#[derive(Clone, Debug, Default)]
+pub struct MaskTexture {
+    /// The prepared, levelled pattern (`None` = the stroke has no texture).
+    pub image: Option<std::sync::Arc<crate::tile::PatternImage>>,
+    /// The combine mode, numbered as [`MaskMode::code`](crate::brush::MaskMode::code).
+    pub mode: u32,
+    /// 0 canvas-locked, 1 stroke-locked, 2 tip-local.
+    pub coordinate: u32,
+    pub scale: f32,
+    /// The brush's nominal depth; each dab carries its own (`StampJob::texture_depth`).
+    pub depth: f32,
+    pub c3_math: bool,
+    pub each_tip: bool,
+    /// The stroke-locked origin: the stroke's first dab centre.
+    pub origin: [f32; 2],
+}
+
+/// A stroke's tip bitmap as a mask backend takes it: level 0 of the prepared pyramid, 8-bit (the
+/// samples Procreate and Photoshop ship, so the round trip is exact).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaskTip {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major, one byte a texel.
+    pub data: Vec<u8>,
+}
+
+/// A batch of dabs a mask backend lays down in one submit, in submission order.
+#[derive(Clone, Debug, Default)]
+pub struct MaskBatch {
+    pub jobs: Vec<StampJob>,
+    /// Each job's rectangle in document pixels (the extent its mask must cover).
+    pub rects: Vec<Rect>,
+    pub texture: MaskTexture,
+    /// The brush's sampled tip, when its dabs carry one.
+    pub tip: Option<std::sync::Arc<MaskTip>>,
+}
+
+/// One dab's masks, row-major over its rectangle.
+#[derive(Clone, Debug, Default)]
+pub struct MaskDab {
+    /// `val · alpha`: exactly what `rasterize_into` leaves in its coverage buffer.
+    pub coverage: Vec<f32>,
+    /// `1 − rn`: the coverage map's depth lane (Wet Edges).
+    pub depth: Vec<f32>,
+}
+
+/// One lane's share of a [`MaskFrame`]: the primary brush, or the Dual Brush's secondary one.
+/// A dual brush lays both lanes in the same frame, each folded over its own union.
+#[derive(Clone, Debug, Default)]
+pub struct FrameLane {
+    pub jobs: Vec<StampJob>,
+    pub rects: Vec<Rect>,
+    /// The rectangle this lane covers (the union of `rects`); its result is this big.
+    pub union: Rect,
+    /// The coverage ceiling every dab of this lane shares (`Dab::opacity` × the lane's opacity).
+    pub ceil: f32,
+    pub texture: MaskTexture,
+    pub tip: Option<std::sync::Arc<MaskTip>>,
+    /// Ask for the lane's colour too: every dab brings its own (colour dynamics), so the folded
+    /// frame's per-pixel colour is the coverage-weighted average of them.
+    pub want_color: bool,
+}
+
+/// A frame of dabs a backend folds **as one**, so the engine's per-dab readback disappears: the
+/// backend accumulates them on the GPU and hands back the rectangle they cover, already folded.
+#[derive(Clone, Debug, Default)]
+pub struct MaskFrame {
+    /// The primary lane, always present.
+    pub lane: FrameLane,
+    /// The Dual Brush's lane, when the stroke has one.
+    pub dual: Option<FrameLane>,
+}
+
+/// One lane's folded coverage and depth, row-major over that lane's union.
+#[derive(Clone, Debug, Default)]
+pub struct LaneMasks {
+    /// `ceil × (1 − Π(1 − v))`: what the lane's dabs leave over an empty pixel, so the engine can
+    /// fold it into its own map with the same `c + v·(ceil − c)` law.
+    pub coverage: Vec<f32>,
+    /// `max(1 − rn)` over the lane's dabs.
+    pub depth: Vec<f32>,
+    /// Straight rgb per pixel when the lane asked for it ([`FrameLane::want_color`]): the
+    /// coverage-weighted average of every dab's own colour.
+    pub color: Vec<f32>,
+}
+
+/// One frame's folded lanes.
+#[derive(Clone, Debug, Default)]
+pub struct MaskFrameOut {
+    pub coverage: Vec<f32>,
+    pub depth: Vec<f32>,
+    /// Straight rgb per pixel, when [`FrameLane::want_color`] asked for it; empty otherwise.
+    pub color: Vec<f32>,
+    /// The Dual Brush's lane, when the frame carried one.
+    pub dual: Option<LaneMasks>,
+}
+
+/// A backend that lays a whole batch of dabs' masks down at once (on the GPU), so the engine's
+/// per-dab pixel loops — the tip maths and the pattern sampling — never run on the CPU.
+///
+/// `None` from [`masks`](DabMaskBatch::masks) means "keep to the CPU", never "nothing painted":
+/// the stroke then falls back to `rasterize_into` for that batch.
+pub trait DabMaskBatch: Send + Sync {
+    fn masks(&self, batch: &MaskBatch) -> Option<Vec<MaskDab>>;
+
+    /// The frame folded as one rectangle, for a brush whose dabs share one ceiling and carry
+    /// nothing per-dab (no pigment, mixing, pattern, per-pixel colour). Default: not supported.
+    fn frame(&self, _frame: &MaskFrame) -> Option<MaskFrameOut> {
+        None
+    }
+}
+
+/// Where a [`BrushContext`](crate::render::BrushContext) keeps its batch mask backend.
+#[derive(Clone, Default)]
+pub struct MaskBatchSlot(Option<std::sync::Arc<dyn DabMaskBatch>>);
+
+impl MaskBatchSlot {
+    pub fn new(batch: std::sync::Arc<dyn DabMaskBatch>) -> Self {
+        Self(Some(batch))
+    }
+
+    pub fn batch(&self) -> Option<&dyn DabMaskBatch> {
+        self.0.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl fmt::Debug for MaskBatchSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() { "MaskBatchSlot(gpu)" } else { "MaskBatchSlot(none)" })
+    }
+}
+
+/// The batch backend every new context starts with (empty: paint alone is all-CPU).
+static PROCESS_MASK_BATCH: std::sync::RwLock<MaskBatchSlot> = std::sync::RwLock::new(MaskBatchSlot(None));
+
+/// Installs (or clears, with an empty slot) the process-wide batch mask backend. Contexts made
+/// before this keep the one they were given.
+pub fn set_process_mask_batch(slot: MaskBatchSlot) {
+    *PROCESS_MASK_BATCH.write().unwrap_or_else(std::sync::PoisonError::into_inner) = slot;
+}
+
+/// The process-wide batch backend, cloned for a new context.
+pub fn process_mask_batch() -> MaskBatchSlot {
+    PROCESS_MASK_BATCH.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}

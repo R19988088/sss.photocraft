@@ -10,6 +10,8 @@ mod camera_raw;
 mod compose_shader;
 mod device_loss;
 mod parity;
+mod paint_mask;
+mod paint_surface;
 mod pipeline_errors;
 mod timing;
 mod uniform_limits;

@@ -46,6 +46,10 @@ mod brush_stamp;
 mod camera_raw;
 mod fx;
 pub mod health;
+#[cfg(not(target_arch = "wasm32"))]
+mod paint_mask;
+#[cfg(not(target_arch = "wasm32"))]
+mod paint_surface;
 pub mod plan;
 mod prefix;
 pub mod timing;
@@ -63,6 +67,9 @@ use photocraft_raster::{Surface, Tile};
 #[cfg(not(target_arch = "wasm32"))]
 pub use brush_stamp::{install_process_stamper, BRUSH_STAMP_SHADER, BrushStamp, GpuStamper, StampOutput};
 pub use camera_raw::{CAMERA_RAW_SHADER, CameraRawDevelop};
+#[cfg(not(target_arch = "wasm32"))]
+pub use paint_mask::{masker_slot, GpuMasker};
+pub use paint_surface::{DabStamp, PaintSurface, TextureOptions, COV_FORMAT, DEPTH_FORMAT, MAX_INSTANCES, PAINT_FORMAT, PAINT_SURFACE_SHADER};
 pub use health::{DeviceHealth, Fault};
 pub use plan::{Kernel, Plan, Role, Unsupported, plan, plan_region};
 pub use timing::{GpuTimer, GpuTiming};

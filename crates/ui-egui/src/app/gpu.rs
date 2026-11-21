@@ -24,11 +24,18 @@ impl PhotocraftApp {
                 self.perf.gpu_info.fallback = Some(detail.clone());
                 gpu_status::queue_fallback_notice(self, detail);
                 self.watch_window_device(&rs.device);
+                // The masks fall back with the canvas: a batch backend on a driver that just
+                // refused the canvas is no use to a stroke.
+                photocraft_paint::stamp::set_process_mask_batch(Default::default());
                 return;
             }
         };
         self.perf.gpu_info.canvas = "gpu".into();
         self.window_device = Some((rs.device.clone(), gpu.health().clone()));
+        // A stroke's masks (the tip maths, the pattern and its sampling) go to the same device:
+        // the brush engine then only runs its pigment / transport stage over them (see
+        // `docs/custom/PAINT-GPU.md`). Without a canvas masker, the tiny batches stay on the CPU.
+        photocraft_paint::stamp::set_process_mask_batch(photocraft_gpu::masker_slot(rs.device.clone(), rs.queue.clone()));
         self.gpu = Some(gpu);
         self.prefs_rt.gpu_style = None;
     }

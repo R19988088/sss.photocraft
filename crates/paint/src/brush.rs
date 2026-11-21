@@ -277,6 +277,29 @@ pub enum MaskMode {
     Height,
 }
 
+impl MaskMode {
+    /// The mode's number for the GPU shaders (`mask_combine` branches on it): a fixed mapping,
+    /// independent of the enum's own order, so adding a variant never renumbers existing ones.
+    pub fn code(self) -> u32 {
+        match self {
+            MaskMode::Normal => 0,
+            MaskMode::Multiply => 1,
+            MaskMode::Subtract => 2,
+            MaskMode::Lighten => 3,
+            MaskMode::Difference => 4,
+            MaskMode::Divide => 5,
+            MaskMode::Darken => 6,
+            MaskMode::Overlay => 7,
+            MaskMode::ColorDodge => 8,
+            MaskMode::ColorBurn => 9,
+            MaskMode::LinearBurn => 10,
+            MaskMode::HardMix => 11,
+            MaskMode::LinearHeight => 12,
+            MaskMode::Height => 13,
+        }
+    }
+}
+
 /// Procedural pattern styles (generated deterministically; no bundled pattern files).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -355,6 +378,17 @@ pub enum TextureCoordinateMode {
     CanvasLocked,
     StrokeLocked,
     TipLocal,
+}
+
+impl TextureCoordinateMode {
+    /// The mode's number for the GPU shaders: 0 canvas-locked, 1 stroke-locked, 2 tip-local.
+    pub fn code(self) -> u32 {
+        match self {
+            TextureCoordinateMode::CanvasLocked => 0,
+            TextureCoordinateMode::StrokeLocked => 1,
+            TextureCoordinateMode::TipLocal => 2,
+        }
+    }
 }
 
 /// Texture.
