@@ -172,6 +172,8 @@ impl Transport {
             (c, scale)
         });
         let side_u = side as usize;
+        let dbg = debug_transport();
+        let t0 = dbg.then(std::time::Instant::now);
         // Both loops below write one pixel from one pixel's own inputs, so their rows are
         // independent: big dabs build their carrier and lay it down on the thread pool, and the
         // pixels come out bit-for-bit the same as on one thread.
@@ -220,6 +222,8 @@ impl Transport {
         let rect = fp.rect.intersect(&work.rect);
         let work_rect = work.rect;
         let work_width = work_rect.width() as usize;
+        let t1 = dbg.then(std::time::Instant::now);
+        let build_ms = t1.map_or(0.0, |t| (t - t0.unwrap()).as_secs_f64() * 1000.0);
         let next_ref = &next;
         let (concentration, output_strength, pigment) = (self.settings.concentration, self.settings.output_strength, self.pigment);
         let lay_row = |row: usize, out: &mut [f32]| {
@@ -248,8 +252,22 @@ impl Transport {
                 lay_row(row, out);
             }
         }
-        self.carrier = Some(next);
+        // The carrier takes the buffer just built and hands back the one it replaced: the next dab
+        // overwrites every pixel of it, so a stroke recycles two buffers instead of allocating a
+        // brush-sized one (`radius²·4` floats) per dab.
+        if let Some(old) = self.carrier.replace(next) {
+            self.next = old;
+        }
         self.carrier_radius = radius;
+        let t2 = dbg.then(std::time::Instant::now);
+        let lay_ms = t2.map_or(0.0, |t| (t - t1.unwrap()).as_secs_f64() * 1000.0);
+        if let (Some(_), Some(_)) = (t0, t1) {
+            eprintln!(
+                "[transport] V1 side {side} ch {} build {build_ms:6.2} lay {lay_ms:6.2} ms (pooled {})",
+                work.ch,
+                dab_rows_parallel(work_width)
+            );
+        }
     }
 
     fn pickup_dab(&mut self, work: &mut Region, fp: &Footprint) {
@@ -380,7 +398,11 @@ impl Transport {
                 over_carried(work.px_mut(x, y), &carried[..n], alpha, coverage, self.pigment);
             }
         }
-        self.carrier = Some(next);
+        // As in `feedback_dab`: the carrier swaps buffers with the build scratch instead of
+        // allocating the brush's area every dab (every pixel is written below).
+        if let Some(old) = self.carrier.replace(next) {
+            self.next = old;
+        }
         self.carrier_radius = radius;
     }
 
@@ -575,8 +597,7 @@ const MAX_CH: usize = 8;
 
 /// Whether a dab of `width` × `width` pixels has enough independent rows for the thread pool.
 /// Below it the pool costs more than the rows it splits (the web has no pool at all).
-fn dab_rows_parallel(width: usize) -> bool {
-    const MIN_PIXELS: usize = 8 * 1024;
+fn dab_rows_parallel(width: usize) -> bool {    const MIN_PIXELS: usize = 8 * 1024;
     #[cfg(not(target_arch = "wasm32"))]
     {
         width * width >= MIN_PIXELS
@@ -586,6 +607,12 @@ fn dab_rows_parallel(width: usize) -> bool {
         let _ = (width, MIN_PIXELS);
         false
     }
+}
+
+/// Per-dab transport timings, off unless `PC_TRANSPORT_DEBUG` is set.
+fn debug_transport() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PC_TRANSPORT_DEBUG").is_some())
 }
 
 /// Bilinear sample of `region` at (`x`, `y`) into `out`, no allocation.
