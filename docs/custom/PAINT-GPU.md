@@ -157,8 +157,42 @@ release、`masker_slot` 装上真实 GPU 描边面）：`paint_modes_bench <size
   （原来是每 dab 读一次、写一次），新增 `Region::grow_to` 只读新长出来的四条带；工作面超过
   4 M px 就借 `flush()` 后的新鲜像素重开一块，避免整幅文档存两份。
 
-剩下的账（分项，同一次运行）：涂抹 335 ms 里 transport 254–282、mask 回读 94、tr-weights 19–24、
-accumulate 25–30；图案 41 ms 里 mask 7.6、`lane_colors` 20.2、accumulate 8.1。
+### 2026-11-21：涂抹的载体反馈上 GPU，工作面不再每 dab 重读
+
+同一套 bench（900 px / 1% 间距，2520×1575，release）：
+
+| 笔（900 px / 1%） | 上一版 p50 | 现在 p50 |
+|---|---|---|
+| 单色 | 11.0 ms | 11.0 ms |
+| 图案 | 37.6 ms | 37.5 ms |
+| 涂抹 V1 | 319 ms | 147 ms |
+
+两块改动：
+
+- **工作面不再每 dab 重读**：原来 `needed = rect.inflate(halo)`，`halo = radius*(0.18+0.82*blur)
+  + 2*radius*spacing`（900 px 笔 ≈180 px），900 px 的一个 dab 并集就被推过 `MAX_PIXELS`（4 M），
+  于是每 dab 都 `flush()` + 清空 + 从层里重读一遍（≈75 MB），涂抹的 `transport` 分项因此高达
+  97 ms/帧。同一笔画的相邻 dab 只差一个间距步，上一笔的载体又落在这些方块内，所以只需要
+  `rect.inflate(2)`：并集落回预算内，`grow_to` 只读新长出来的条带。**这一项同时把 CPU 路径从
+  319 拉到 147 ms**（原来 CPU 路径也吃同一个浪费）。
+- **C3 载体反馈（V1）做成 compute pass**：`crates/gpu/src/paint_transport.{rs,wgsl}` 在一帧内
+  用一次 submit 跑完所有 dab 的 build/lay，层缓冲在 GPU 上跨 dab 连续，帧末只回读脏区域一次。
+  V2/V3、颜料混合、工作面超 64 MB 时回落 CPU 逐 dab 路径。
+
+分项（`PHOTOCRAFT_PAINT_PROFILE=1`，涂抹 147 ms/帧）：mask 回读 82、accumulate 22、tr-weights 12、
+transport 10（GPU 通道自报：upload 10 ms、record 0.4、submit 4、wait 0、copy 3 for ~9 dabs）、
+rest 40。**transport 从 97 掉到 10 ms，此后涂抹的账几乎全是 mask 回读与 CPU 累加。**
+
+### 试过、量过、没留下：图案色进 colour lane
+
+把 `ColorPattern::sample_pigment` 的五抽样搬进 `paint_surface.wgsl`（RGBA32Float 纹理 +
+`textureLoad` 手写双线性），图案色由 colour lane 直接产出：`lane_colors` 的 21 ms 消掉了，
+但多出的那一路颜色要么走 `read_masks_color`（多读一份 paint 纹理 + 逐像素除法），要么借用
+coverage lane 的空闲通道（g/b/a），两者的 CPU 解码/归一化都在 15–20 ms，正好抵掉省下的采样；
+另外 20 次不可过滤 `textureLoad`/像素让 mask 分项从 8 涨到 17–19 ms。净结果 37.5 → 34–43 ms，
+不稳定且改变像素算法，**已整段回退**，不留半成品。结论同涂抹：只要图案色还要回读一次到 CPU
+参与 `accumulate`，GPU 采样就赢不回来；要赢必须让 accumulate 也在 GPU 上。
+
 
 所以这两条路径都还停在 CPU 上：涂抹是 C3 输送（`transport.rs::feedback_dab` 每 dab 建 side² carrier
 再铺一遍）加每 dab 一次 mask 回读；图案是逐像素 5-tap 采样。CPU 侧再怎么修都下不到 13 ms 量级，
@@ -171,9 +205,10 @@ accumulate 25–30；图案 41 ms 里 mask 7.6、`lane_colors` 20.2、accumulate
    按 CPU 原算法（含颜料混合）落定。这是 p95 里 9–17 ms 的最后一截（并集越大 read 越贵，约 10 ns/px）。
 2. `MAX_ATLAS_PIXELS`（4096²）下大位移的帧仍回落逐 dab，可放宽或分块。
 3. 湿边 `edge` 分量、图案相位、颜色动态这三处帧级近似尚未与逐 dab 路径做过逐笔刷目视比对。
-4. **图案色与涂抹搬上 GPU**：图案色走 mask pass 的 colour lane（`texture_at` 补 rgb/alpha，
-   替掉 `lane_colors` 的 20 ms）；涂抹/模糊做成作用在层纹理上的 compute pass，先读后写的 hazard
-   用 ping-pong 或同一张读、另一张写。这两条不落地，图案 41 ms、涂抹 335 ms 就是 CPU 的天花板。
+4. **图案色与涂抹搬上 GPU**：涂抹的 V1 载体反馈已经上 GPU（上一节），图案色试过 colour lane
+   但被回读抵掉、已回退。下一步不再是"把采样搬过去"，而是把**覆盖折叠、权重、accumulate 一起
+   留在 GPU**（层纹理常驻 + 帧末只回读脏区），否则 mask 回读 82 ms 和大笔刷的 CPU 累加注定
+   让两条路径停在 30 ms 量级以上。
 
 
 ## 约定
