@@ -1,5 +1,26 @@
 use super::{Color32, PhotocraftApp, Rect, RichText, Sense, Stroke, StrokeKind, Tokens, c32, pos2, theme, vec2, widgets};
 
+/// The reference layout's palette strip: 54 (source chips) : 8 : 168 (the picker) : 8 : 25 (the
+/// hue strip) — 263 pt wide, with the picker a 168 pt square. Every face of the Color panel draws
+/// that same square, so switching faces never changes the colour area's size or shape.
+pub(crate) const PALETTE_WIDTH: f32 = 263.0;
+
+/// The palette's square, the reference layout's 168 pt picker.
+pub(crate) const PALETTE_PICKER: f32 = 168.0;
+
+/// The one scale every face draws its palette at: the dock's width over the reference strip,
+/// capped at 1 so a wider dock centres the strip instead of enlarging it. The dock's height plays
+/// no part — a short Color group scrolls its content rather than reshaping the colour area.
+pub(crate) fn palette_scale(width: f32) -> f32 {
+    (width.max(1.0) / PALETTE_WIDTH).min(1.0)
+}
+
+/// Side of the palette's square at a dock `width`: 168 pt in a dock at least as wide as the
+/// reference strip, the same fraction of the width below that.
+pub(crate) fn palette_picker_side(width: f32) -> f32 {
+    PALETTE_PICKER * palette_scale(width)
+}
+
 /// The Color panel's foreground and background chips. A click picks the colour the field edits,
 /// framed; a double-click opens the Color Picker on it.
 pub(crate) fn field_chips(app: &mut PhotocraftApp, ui: &mut egui::Ui, chips: Rect) {
@@ -43,15 +64,6 @@ pub(crate) fn offer_color_field_fill(ui: &egui::Ui, pro: bool, group: crate::doc
     }
 }
 
-/// Height of the Color field: the group body's height (when docked) less the hex/RGB readout,
-/// which folds onto a second line in a narrow dock. 120 pt when nothing sets a height.
-pub(super) fn color_field_height(avail: Option<f32>, width: f32) -> f32 {
-    let reserve = 32.0 + if width < 280.0 { 26.0 } else { 0.0 };
-    // When docked, shrink the field so the hex/RGB readout stays in view (#6885). A 120 pt floor
-    // here pushed the readout below the scroll area in a compact Color group.
-    avail.filter(|a| a.is_finite()).map_or(120.0, |a| (a - reserve).clamp(0.0, 2000.0))
-}
-
 /// The colour the SV field draws for `hsva`, with what the field showed last (`hue`, `saturation`)
 /// filling in what the colour itself cannot carry: a grey has no hue of its own, and black has
 /// neither hue nor saturation — so a drag that bottoms out into black would otherwise round-trip
@@ -81,15 +93,16 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     hsva = field_hsva(hsva, remembered);
     let w = ui.available_width();
     let strip_w = 14.0;
-    // Photoshop's Color panel field fills the panel in every theme (#6000): take the height the
-    // dock offers, less the hex/RGB readout (which folds onto a second line in a narrow dock) and
-    // the theme's spacing between the rows. Without a dock, 120 pt.
-    let gaps = 2.0 * ui.spacing().item_spacing.y;
-    let fill = ui.data(|d| d.get_temp::<f32>(color_field_fill_id())).map(|a| a - gaps);
-    let h = color_field_height(fill, w);
+    // Every face draws the same square: the reference layout's picker at the dock's width alone
+    // (`palette_picker_side`), never the group's height — the hue and brightness cubes match the
+    // C2 layout and the color wheel, so switching faces keeps the colour area's size and shape.
+    let side = palette_picker_side(w);
+    let block = 38.0 + 8.0 + side + 8.0 + strip_w;
+    let pad = ((w - block) / 2.0).max(0.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (chips, _) = ui.allocate_exact_size(vec2(38.0, h), Sense::hover());
+        ui.add_space(pad);
+        let (chips, _) = ui.allocate_exact_size(vec2(38.0, side), Sense::hover());
         field_chips(app, ui, chips);
         // Photoshop's ⚠ under the chips when the colour can't print, as in the slider modes
         // (#8672); a compact field too short to hold it below the chips leaves it out.
@@ -100,8 +113,7 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // Hue Cube: saturation across and brightness up, hue on the strip. Brightness Cube (the
         // Color Picker's B mode): hue across and saturation up, brightness on the strip.
         let brightness = app.ui.color_panel.mode == crate::state::ColorPanelMode::BrightnessCube;
-        let field_w = w - 38.0 - strip_w - 16.0;
-        let (field, fresp) = ui.allocate_exact_size(vec2(field_w, h), Sense::click_and_drag());
+        let (field, fresp) = ui.allocate_exact_size(vec2(side, side), Sense::click_and_drag());
         let at = |x: f32, y: f32| {
             if brightness { egui::ecolor::Hsva::new(x.min(0.9999), 1.0 - y, hsva.v, 1.0) } else { egui::ecolor::Hsva::new(hsva.h, x, 1.0 - y, 1.0) }
         };
@@ -126,7 +138,7 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         painter.circle_stroke(knob, 5.0, Stroke::new(1.5, Color32::WHITE));
         painter.circle_stroke(knob, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
         // The strip: hue (red at both ends, as Photoshop's) or brightness (the colour down to black).
-        let (strip, sresp) = ui.allocate_exact_size(vec2(strip_w, h), Sense::click_and_drag());
+        let (strip, sresp) = ui.allocate_exact_size(vec2(strip_w, side), Sense::click_and_drag());
         let strip_at = |f: f32| {
             if brightness { egui::ecolor::Hsva::new(hsva.h, hsva.s, 1.0 - f, 1.0) } else { egui::ecolor::Hsva::new(1.0 - f, 1.0, 1.0, 1.0) }
         };

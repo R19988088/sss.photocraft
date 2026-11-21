@@ -3173,6 +3173,7 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	HSB Sliders	HSB 滑块
 	CMYK Sliders	CMYK 滑块
 	Lab Sliders	Lab 滑块
+	Show Color Values	显示颜色数值
 	Web Color Sliders	Web 颜色滑块
 	Copy Color as HTML	将颜色复制为 HTML
 	Copy Color's Hex Code	复制颜色的十六进制代码

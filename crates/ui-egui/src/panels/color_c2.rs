@@ -13,11 +13,8 @@ use serde_json::json;
 
 use crate::PhotocraftApp;
 use crate::panels::c32;
-use crate::panels::color::{hsva_color32, hsva_srgb, srgb_bytes, srgb_hsva};
+use crate::panels::color::{PALETTE_PICKER, PALETTE_WIDTH, hsva_color32, hsva_srgb, palette_scale, srgb_bytes, srgb_hsva};
 use crate::theme::Tokens;
-
-/// The C2 layout's proportions, at the reference's 263-point panel width.
-const C2_WIDTH: f32 = 263.0;
 
 /// Foreground and background chips, complementary colour, and the recent swatches: the column at
 /// the field's left.
@@ -217,12 +214,12 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // whatever the dock's width, so the panel's height never follows the dock; a narrower dock
     // shrinks the strip evenly instead of clipping, and a wider one centres it.
     let width = ui.available_width().max(1.);
-    let scale = (width / C2_WIDTH).min(1.);
+    let scale = palette_scale(width);
     let left = 54. * scale;
-    let side = 168. * scale;
-    let pad = ((width - C2_WIDTH * scale) / 2.).max(0.);
+    let side = PALETTE_PICKER * scale;
+    let pad = ((width - PALETTE_WIDTH * scale) / 2.).max(0.);
     // The hue strip's right edge: where the colour value above it ends.
-    let strip_right = ui.max_rect().left() + pad + C2_WIDTH * scale;
+    let strip_right = ui.max_rect().left() + pad + PALETTE_WIDTH * scale;
     let mut c = if background { app.session.tools.background } else { app.session.tools.foreground };
     let mut changed = color_source(app, ui, scale, strip_right, &mut c);
     let key = egui::Id::new(("c2-hue", background));
@@ -262,6 +259,15 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     image_palette(app, ui, scale);
+    // 颜色数值: the R, G, B sliders appended under the panel's own content — the reference
+    // application puts its value controls below the palette — never in place of it, so the
+    // swatches and the field above stay exactly as they are.
+    if app.ui.color_panel.show_values {
+        ui.add_space(4. * scale);
+        ui.separator();
+        ui.add_space(2.);
+        super::color_panel_ui::color_values(app, ui, background);
+    }
     // The panel menu, from a right-click anywhere on the panel.
     let popup = egui::Popup::context_menu(&response);
     let open = ui.input(|i| {

@@ -375,39 +375,45 @@ fn color_field_hex_field_takes_a_typed_hex() {
     assert_eq!(srgb_bytes(h.state().session.tools.foreground), [0x00, 0x33, 0x00]);
 }
 
-/// The Color field fills the dock group, shrinks to leave room for the readout in a short group, and ignores a bad height.
+/// 色板区域固定比例: the Hue and Brightness cubes draw the palette's square — the reference
+/// layout's 168 pt picker at the dock's width — instead of stretching with the group's height, so
+/// they match the C2 layout and the color wheel whatever height the dock gives them.
 #[test]
-fn color_field_height_fills_the_group() {
-    assert_eq!(color_field_height(None, 300.0), 120.0);
-    assert_eq!(color_field_height(Some(500.0), 300.0), 468.0);
-    assert_eq!(color_field_height(Some(500.0), 200.0), 442.0);
-    assert_eq!(color_field_height(Some(60.0), 300.0), 28.0);
-    assert_eq!(color_field_height(Some(f32::NAN), 300.0), 120.0);
-    assert_eq!(color_field_height(Some(1.0e9), 300.0), 2000.0);
+fn the_cube_field_keeps_the_palette_square_at_any_size() {
+    // A tall panel, a short one (taller content scrolls, it must not squash the square), and a
+    // panel narrower than the reference strip.
+    for (width, height) in [(300.0, 500.0), (300.0, 100.0), (200.0, 300.0)] {
+        let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(width, height)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("cube-probe"), ui.available_width()));
+                    color_field(app, ui);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Pro);
+        h.run_steps(2);
+        let avail = h.ctx.data(|d| d.get_temp::<f32>(egui::Id::new("cube-probe"))).expect("the panel's width");
+        let side = palette_picker_side(avail);
+        let (mut field, mut strip) = (None, None);
+        for clipped in &h.output().shapes {
+            match &clipped.shape {
+                // The field is the 17 x 17 mesh; the hue strip is a 25 x 25 grid.
+                egui::Shape::Mesh(m) if m.vertices.len() == 17 * 17 => field = Some(m.calc_bounds()),
+                egui::Shape::Mesh(m) if m.vertices.len() == 25 * 25 => strip = Some(m.calc_bounds()),
+                _ => {}
+            }
+        }
+        let field = field.unwrap_or_else(|| panic!("{width}x{height}: no colour field"));
+        let strip = strip.unwrap_or_else(|| panic!("{width}x{height}: no strip"));
+        assert!((field.width() - side).abs() < 0.5 && (field.height() - side).abs() < 0.5, "{width}x{height}: field {field:?}, palette square {side}");
+        assert_eq!((field.width().round(), field.height().round()), (field.width().round(), field.width().round()), "{width}x{height}: not square");
+        assert!((strip.height() - side).abs() < 0.5, "{width}x{height}: strip {strip:?} is not the palette square's height");
+    }
 }
 
-/// A squeezed Color group still shows the hex/RGB readout, not only the spectrum field (#6885).
-#[test]
-fn docked_color_field_keeps_rgb_readout_at_compact_height() {
-    use egui_kittest::kittest::Queryable;
-    let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    // Body height after tab strip and margins in a Color group at `compact_height` (130 pt).
-    let inner = 86.0;
-    let mut h = egui_kittest::Harness::builder().with_size(vec2(240.0, inner)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
-            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
-                ui.set_height(inner);
-                ui.data_mut(|d| d.insert_temp(color_field_fill_id(), inner));
-                color_field(app, ui);
-            }
-        },
-        app,
-    );
-    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Pro);
-    h.run_steps(2);
-    assert!(h.query_by_label("R").is_some(), "RGB readout stays visible when the group is short");
-    assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_some(), "hex field stays visible");
-}
 
 /// #8968: the round cursor sits on the field's edge at the extremes and must not paint past it
 /// (over the hue strip or the chips).
