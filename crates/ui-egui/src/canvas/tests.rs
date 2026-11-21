@@ -3372,3 +3372,87 @@ fn free_transform_redraws_only_the_moving_layer_when_the_box_opens_and_closes() 
     assert!(committed.contains(20, 20) && committed.contains(139, 49), "{committed:?}");
     assert!(damage_since(&app, 0, (rev, key ^ dk), (rev + 2, 0), dk, (rev + 1, Some(moved))).is_none(), "a later revision isn't ours");
 }
+
+#[test]
+fn a_fingers_touch_paints_no_stroke_tool() {
+    // A finger on a touch screen is no pen: no stroke tool paints with it (the brush family, the
+    // erasers, the smudge/blur family, the retouching strokes), so a finger's press starts nothing
+    // and its release paints nothing (also where the finger has already lifted by the release
+    // frame). The pen's contact, and a palm resting beside it, keep their stroke.
+    let ctx = egui::Context::default();
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("view.actualPixels", json!({})).unwrap();
+    app.sync_views();
+    let mut view = app.ui.views[0].clone();
+    view.zoom = 1.0;
+    view.center = [200.0, 150.0];
+    view.fit_pending = false;
+    view.fill_pending = false;
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+    let start = Pos2::new(200.0, 150.0);
+    let touch = |phase, force| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(0), phase, pos: start, force };
+    let press = |pos: Pos2, pressed: bool| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    // `platform` is the OS's own pointer type for the contacts, as `raw_input_hook` reads it.
+    let frame = |app: &mut PhotocraftApp, events: Vec<egui::Event>, platform: Option<(bool, bool)>| {
+        app.stylus.observe_touches(&events, platform);
+        let input = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            canvas_view(app, ui, 0, rect, view.clone(), true);
+        });
+        out.textures_delta.clear();
+    };
+    let pen_in_contact = Some((false, true));
+    let no_contacts = Some((false, false));
+    let tools = [
+        Tool::Brush,
+        Tool::Pencil,
+        Tool::MixerBrush,
+        Tool::ColorReplacement,
+        Tool::Eraser,
+        Tool::BackgroundEraser,
+        Tool::Smudge,
+        Tool::Blur,
+        Tool::Sharpen,
+        Tool::Dodge,
+        Tool::Burn,
+        Tool::Sponge,
+    ];
+    for tool in tools {
+        app.ui.tool = tool;
+        let rev = app.session.active().unwrap().revision;
+        // A finger's touch: no stroke on the press...
+        let finger = Some((true, false));
+        frame(&mut app, vec![egui::Event::PointerMoved(start), touch(egui::TouchPhase::Start, None), press(start, true)], finger);
+        assert!(app.drag.is_none() && !app.press_stroke, "{tool:?}: a finger's press starts no stroke");
+        // ...nor on the moves...
+        frame(&mut app, vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0)), touch(egui::TouchPhase::Move, None)], finger);
+        assert!(app.drag.is_none(), "{tool:?}: and its drag paints nothing");
+        // ...nor on the release, in the frame the finger has already lifted by.
+        frame(&mut app, vec![press(start + vec2(20.0, 0.0), false), touch(egui::TouchPhase::End, None)], no_contacts);
+        frame(&mut app, vec![], no_contacts);
+        assert_eq!(app.session.active().unwrap().revision, rev, "{tool:?}: a finger's tap paints nothing");
+
+        // The pen with the same gesture strokes.
+        frame(&mut app, vec![egui::Event::PointerMoved(start), touch(egui::TouchPhase::Start, Some(0.3)), press(start, true)], pen_in_contact);
+        assert!(app.drag.is_some() && app.press_stroke, "{tool:?}: a pen's press starts the stroke");
+        frame(&mut app, vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0)), touch(egui::TouchPhase::Move, Some(0.3))], pen_in_contact);
+        frame(&mut app, vec![press(start + vec2(20.0, 0.0), false), touch(egui::TouchPhase::End, None)], no_contacts);
+        assert!(app.drag.is_none() && !app.press_stroke, "{tool:?}: the pen's stroke ends");
+
+        // A palm resting beside the pen is no finger's gesture: the pen still starts its stroke.
+        app.ui.tool = tool;
+        frame(&mut app, vec![egui::Event::PointerMoved(start), touch(egui::TouchPhase::Start, Some(0.3)), press(start, true)], Some((true, true)));
+        assert!(app.drag.is_some() && app.press_stroke, "{tool:?}: a palm beside the pen keeps the stroke");
+        frame(&mut app, vec![press(start, false), touch(egui::TouchPhase::End, None)], no_contacts);
+        assert!(app.drag.is_none() && !app.press_stroke);
+        // The mouse's own gesture paints as before (no touch contacts at all).
+        frame(&mut app, vec![egui::Event::PointerMoved(start)], no_contacts);
+        frame(&mut app, vec![press(start, true)], no_contacts);
+        assert!(app.drag.is_some(), "{tool:?}: a mouse press starts the stroke");
+        frame(&mut app, vec![egui::Event::PointerMoved(start + vec2(20.0, 0.0))], no_contacts);
+        frame(&mut app, vec![press(start + vec2(20.0, 0.0), false)], no_contacts);
+        assert!(app.drag.is_none());
+    }
+}

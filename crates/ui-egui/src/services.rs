@@ -425,6 +425,12 @@ pub type RightButtonDownFn = Box<dyn Fn() -> bool + Send + Sync>;
 /// Which end of the pen is in use, `Some(true)` = eraser, `None` = no pen ([`Services::pen_end`]).
 pub type PenEndFn = Box<dyn Fn() -> Option<bool> + Send + Sync>;
 
+/// Touch contacts down over the app's windows, as `(finger, pen)`. A finger and the pen arrive
+/// alike as touch events with a force (winit on Windows), so where the platform knows the pointer
+/// type it says which is which here (`photocraft_tablet::windows::contacts_down`); `None` leaves
+/// the app to tell them apart itself (stylus.rs).
+pub type TouchContactsFn = Box<dyn Fn() -> (bool, bool) + Send + Sync>;
+
 /// Polls the platform's optional WinTab packet queue into the app's stylus feed (Windows), with
 /// whether the app window is focused (to re-assert WinTab overlap priority on activation).
 pub type TabletPollFn = Box<dyn FnMut(bool)>;
@@ -568,6 +574,10 @@ pub struct Services {
     /// Which end of the pen is in use, where the platform reports it outside the stylus feed
     /// (Windows: the feed carries no pen samples there). Read for the eraser-end tool switch.
     pub pen_end: Option<PenEndFn>,
+    /// Touch contacts down, as `(finger, pen)`, where the platform knows the pointer type
+    /// (Windows: `WM_POINTER`; see `photocraft_tablet::windows::contacts_down`). A finger's touch
+    /// paints no stroke at all — no Brush, Pencil, Eraser, Smudge, Blur, Clone Stamp… (stylus.rs).
+    pub touch_contacts: Option<TouchContactsFn>,
     /// WinTab packet poll (Windows with Windows Ink disabled; see `photocraft_tablet::wintab`).
     pub tablet_poll: Option<TabletPollFn>,
     /// The persistent brush preset store, loading in the background (desktop; see

@@ -293,8 +293,12 @@ impl eframe::App for PhotocraftApp {
         // After the control channel's own events (`ui.type`) join the OS's, before any widget.
         widgets::cap_text_events(&mut raw_input.events);
         self.control_click.normalize(&mut raw_input.events, cfg!(target_os = "macos"));
-        // A pen held still is no touch screen's press-and-hold right click (stylus.rs).
-        let pen_down = self.stylus.pen_contacts.observe(&raw_input.events);
+        // A pen held still is no touch screen's press-and-hold right click, and a finger's touch
+        // is no pen's: which contacts are down, and whether any of them is a finger (stylus.rs).
+        // Windows says which pointer type each contact is (`Services::touch_contacts`); elsewhere
+        // the events tell (a contact with no force that never hovered is a finger).
+        let platform = self.services.touch_contacts.as_ref().map(|contacts| contacts());
+        let pen_down = self.stylus.observe_touches(&raw_input.events, platform);
         stylus::pen_hold_is_no_right_click(ctx, pen_down);
         if self.custom_titlebar {
             titlebar::release_after_os_resize(ctx, raw_input);

@@ -11,6 +11,7 @@
 
 #![allow(unsafe_code, clippy::upper_case_acronyms)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 static BARREL_DOWN: AtomicBool = AtomicBool::new(false);
@@ -109,6 +110,7 @@ unsafe extern "system" {
     fn CallNextHookEx(hhk: *mut std::ffi::c_void, n_code: i32, w_param: usize, l_param: isize) -> isize;
     fn GetCurrentThreadId() -> u32;
     fn GetPointerPenInfo(pointer_id: u32, pen_info: *mut POINTER_PEN_INFO) -> i32;
+    fn GetPointerType(pointer_id: u32, pointer_type: *mut u32) -> i32;
     fn PostMessageW(hwnd: isize, msg: u32, w_param: usize, l_param: isize) -> i32;
     fn ReleaseCapture() -> i32;
 }
@@ -254,6 +256,84 @@ fn read_pen_flags(pointer_id: u32) -> Option<u32> {
     }
 }
 
+/// `PT_TOUCH` (winuser.h): the pointer is a finger (or a palm) on a touch screen.
+const PT_TOUCH: u32 = 0x00000002;
+
+/// `PT_PEN` (winuser.h): the pointer is the stylus.
+const PT_PEN: u32 = 0x00000003;
+
+/// What a pointer that is in contact is. A finger on a touch screen and the pen both arrive as
+/// `WindowEvent::Touch` with a force in winit 0.30, so the events alone cannot tell them apart:
+/// only `WM_POINTER` knows the pointer type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerKind {
+    /// A finger or a palm on a touch screen.
+    Touch,
+    /// The stylus (either end).
+    Pen,
+    /// Anything else (a mouse in pointer mode, a device Windows does not name here).
+    Other,
+}
+
+/// The pointers in contact over this thread's windows, as the `WM_POINTER*` messages last said.
+/// The hooks run and the UI reads on the same thread, so this only guards the short push/remove.
+static DOWN_POINTERS: Mutex<Vec<(u32, PointerKind)>> = Mutex::new(Vec::new());
+
+/// Most contacts [`DOWN_POINTERS`] remembers (Windows reports ten fingers at most).
+const CONTACTS: usize = 16;
+
+/// [`PointerKind`] of a pointer id, from `GetPointerType`.
+fn read_pointer_kind(pointer_id: u32) -> PointerKind {
+    // SAFETY: `kind` is a stack-allocated buffer that outlives the call, and `pointer_id` comes
+    // from a WM_POINTER message; an unknown id makes the call fail, not crash.
+    unsafe {
+        let mut kind = 0u32;
+        if GetPointerType(pointer_id, &mut kind) == 0 {
+            return PointerKind::Other;
+        }
+        match kind {
+            PT_TOUCH => PointerKind::Touch,
+            PT_PEN => PointerKind::Pen,
+            _ => PointerKind::Other,
+        }
+    }
+}
+
+fn with_pointers(f: impl FnOnce(&mut Vec<(u32, PointerKind)>)) {
+    let mut down = DOWN_POINTERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut down);
+}
+
+/// Follow a pointer message's contact: a down joins [`DOWN_POINTERS`] with its kind, an up or a
+/// leave drops it. `kind` reads `GetPointerType` for the pointer id; the hooks pass the Win32
+/// reader, tests a fake one.
+fn track_contact(message: u32, w_param: usize, kind: impl FnOnce(u32) -> PointerKind) {
+    let pointer_id = (w_param & 0xFFFF) as u32;
+    match message {
+        WM_POINTERDOWN => with_pointers(|down| {
+            down.retain(|(id, _)| *id != pointer_id);
+            if down.len() >= CONTACTS {
+                down.remove(0);
+            }
+            down.push((pointer_id, kind(pointer_id)));
+        }),
+        // A finger or a pen lifted; a hovered pen leaving range was never in contact.
+        WM_POINTERUP | WM_POINTERLEAVE => with_pointers(|down| down.retain(|(id, _)| *id != pointer_id)),
+        _ => {}
+    }
+}
+
+/// Touch contacts down over the app's windows, as `(finger, pen)`. The windowing layer reports a
+/// finger and the pen alike as touch events, so only the pointer type tells them apart (stylus.rs
+/// uses this to keep a finger from painting). A palm counts as a finger, as Windows reports it.
+pub fn contacts_down() -> (bool, bool) {
+    let down = DOWN_POINTERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    (
+        down.iter().any(|(_, kind)| *kind == PointerKind::Touch),
+        down.iter().any(|(_, kind)| *kind == PointerKind::Pen),
+    )
+}
+
 /// `WH_GETMESSAGE`: the posted pointer messages, as the UI thread takes them from its queue.
 unsafe extern "system" fn get_msg_proc(code: i32, w_param: usize, l_param: isize) -> isize {
     if code >= 0 && l_param != 0 {
@@ -264,6 +344,7 @@ unsafe extern "system" fn get_msg_proc(code: i32, w_param: usize, l_param: isize
         // messages (and ignores everything else) to clear a pen that left the tablet.
         crate::wintab::on_message(msg.message, msg.w_param, msg.l_param);
         handle_pointer_message(msg.message, msg.w_param, read_pen_flags);
+        track_contact(msg.message, msg.w_param, read_pointer_kind);
     }
     // SAFETY: CallNextHookEx passes the parameters down the hook chain. MSDN notes the first
     // parameter is ignored and can be null.
@@ -279,7 +360,11 @@ unsafe extern "system" fn call_wnd_proc(code: i32, w_param: usize, l_param: isiz
         let msg = unsafe { &*(l_param as *const CWPSTRUCT) };
         match msg.message {
             WM_POINTERENTER => handle_pointer_message(msg.message, msg.w_param, read_pen_flags),
-            WM_POINTERLEAVE => handle_pointer_message(msg.message, msg.w_param, |_| None),
+            // A finger or a pen that leaves range is no contact (a hovered pen never was one).
+            WM_POINTERLEAVE => {
+                handle_pointer_message(msg.message, msg.w_param, |_| None);
+                track_contact(msg.message, msg.w_param, read_pointer_kind);
+            }
             _ => {}
         }
     }
@@ -341,6 +426,7 @@ impl Drop for Monitor {
         PEN_END.store(encode_end(None), Ordering::Relaxed);
         PEN_ID.store(NO_PEN, Ordering::Relaxed);
         CONTACT_END.store(encode_end(None), Ordering::Relaxed);
+        with_pointers(Vec::clear);
     }
 }
 
@@ -513,5 +599,34 @@ mod tests {
         });
         assert!(matches!(r, Err(crate::Error::Platform(why)) if why.contains("WH_GETMESSAGE")));
         assert_eq!(installed, [WH_GETMESSAGE], "no leave hook without the message hook");
+    }
+
+    /// Two fingers and a pen in contact: the contacts down are tracked by pointer type, so the
+    /// app can tell a finger from the pen, and an up or a leave drops exactly that pointer.
+    #[test]
+    fn contacts_are_known_by_pointer_type() {
+        let _globals = GLOBALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        with_pointers(Vec::clear);
+        let kind = |id: u32| match id {
+            3 | 5 => PointerKind::Touch,
+            7 => PointerKind::Pen,
+            _ => PointerKind::Other,
+        };
+        let id = |id: u32| id as usize | ((POINTER_FLAG_INCONTACT as usize) << 16);
+        track_contact(WM_POINTERDOWN, id(3), kind);
+        assert_eq!(contacts_down(), (true, false), "a finger alone");
+        track_contact(WM_POINTERDOWN, id(7), kind);
+        assert_eq!(contacts_down(), (true, true), "a finger and the pen");
+        track_contact(WM_POINTERDOWN, id(5), kind);
+        track_contact(WM_POINTERUP, id(3), kind);
+        assert_eq!(contacts_down(), (true, true), "a second finger, the first lifted");
+        track_contact(WM_POINTERLEAVE, id(5), kind);
+        assert_eq!(contacts_down(), (false, true), "the fingers left, the pen did not");
+        track_contact(WM_POINTERUP, id(7), kind);
+        assert_eq!(contacts_down(), (false, false), "the pen lifted");
+        // A hovering pen (enter and updates) was never in contact.
+        track_contact(WM_POINTERENTER, id(7), kind);
+        track_contact(WM_POINTERUPDATE, id(7), kind);
+        assert_eq!(contacts_down(), (false, false));
     }
 }

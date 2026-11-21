@@ -119,6 +119,19 @@ pub fn pen_end_service() -> Option<photocraft_ui_egui::PenEndFn> {
     None
 }
 
+/// Touch contacts currently down (Windows), as `(finger, pen)`. winit gives a finger on a touch
+/// screen and the pen the same kind of event with a force, so only `WM_POINTER`'s pointer type
+/// tells them apart; the app needs that to keep a finger from painting at all (stylus.rs).
+#[cfg(target_os = "windows")]
+pub fn touch_contacts_service() -> Option<photocraft_ui_egui::TouchContactsFn> {
+    Some(Box::new(photocraft_tablet::windows::contacts_down))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn touch_contacts_service() -> Option<photocraft_ui_egui::TouchContactsFn> {
+    None
+}
+
 /// Install the AppKit tablet monitor (main thread, once winit created the shared application:
 /// from eframe's app creation, not before the event loop). Keep the result until the event loop
 /// returns. On failure this logs why: pens then paint like a mouse.

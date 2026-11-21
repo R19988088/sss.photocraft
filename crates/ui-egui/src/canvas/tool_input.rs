@@ -3,7 +3,7 @@ use super::cursors::{alt_eyedropper, sample_eyedropper};
 use super::drag::Drag;
 use super::gesture::{finish_release, polygon_click, selection_mode};
 use super::selection::finish_selection_drag;
-use super::strokes::{HOLD_REPEAT_MS, begin_live_stroke, feed_live_stroke, paint_target, snap_aliased_tip, stroke_params, strokes_live};
+use super::strokes::{HOLD_REPEAT_MS, begin_live_stroke, feed_live_stroke, finger_paints, paint_target, snap_aliased_tip, stroke_params, strokes_live};
 use super::{PhotocraftApp, Tool, json, multiple_color_target};
 
 /// Abstract tool event, produced by the mouse or by automation (`ui.pointer`).
@@ -443,6 +443,16 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
         _ => {}
     }
     if handle_move_pointer(app, ev, tool, mods) {
+        return;
+    }
+    // A finger's contact on a touch screen lays no stroke down with any stroke tool (Brush, Pencil,
+    // Mixer Brush, Eraser, Smudge, Blur, Dodge, Clone Stamp…): those follow a mouse or a pen, as in
+    // Photoshop. The press is swallowed whole — no stroke, no ⌘-move of the layer, no "locked layer"
+    // prompt — and the release it ends with paints nothing either, even where the finger has lifted
+    // by then (`Stylus::finger_stroke`).
+    if matches!(ev, ToolEvent::Down { .. }) && finger_paints(tool) && app.stylus.finger_paints() {
+        app.stylus.finger_stroke = true;
+        app.secondary_erase = false;
         return;
     }
 

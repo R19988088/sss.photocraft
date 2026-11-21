@@ -248,6 +248,17 @@ pub struct Stylus {
     peak: f32,
     /// The pen's touch contacts in the raw input, so a held pen is no press-and-hold right click.
     pub(crate) pen_contacts: PenContacts,
+    /// A finger's contact was down over this frame's input (see [`Self::observe_touches`]): a
+    /// finger is no pen, so no stroke tool paints with it (Brush, Pencil, Eraser, Smudge, Blur,
+    /// Dodge, Clone Stamp…).
+    pub(crate) finger_contact: bool,
+    /// The pointer gesture in progress pressed with a finger and painted nothing (the painting
+    /// tools swallowed its press): its release paints nothing either, whatever the frame says.
+    pub(crate) finger_stroke: bool,
+    /// A finger's contact was down in the previous frame (see [`Self::observe_touches`]): the
+    /// frame a finger lifts in still counts as its contact, so the release it makes paints
+    /// nothing.
+    finger_last: bool,
     /// The egui frame [`Self::update_for_frame`] last ran in.
     updated_frame: Option<u64>,
     /// A native input backend (WinTab) currently owns pressure: winit's touch force for the
@@ -299,6 +310,9 @@ impl Default for Stylus {
             stroke_active: false,
             peak: 0.0,
             pen_contacts: PenContacts::default(),
+            finger_contact: false,
+            finger_stroke: false,
+            finger_last: false,
             updated_frame: None,
             external_pen: false,
             tablet_response: None,
@@ -315,6 +329,38 @@ impl Default for Stylus {
 }
 
 impl Stylus {
+    /// Follow one frame's touch contacts, before the UI runs (the app's `raw_input_hook`):
+    /// whether a pen contact is down (returned; a held pen is no press-and-hold right click), and
+    /// whether a finger's contact is ([`Self::finger_paints`]).
+    ///
+    /// `platform` is the OS's own answer where it knows the pointer type, `(finger, pen)`:
+    /// Windows reads `WM_POINTER`'s pointer type through `Services::touch_contacts`, because winit
+    /// reports a finger and the pen alike as touch events with a force. Without it, a contact that
+    /// reported no force and never hovered is a finger: a pen reports a force (or is left at
+    /// pressure 0 by [`Self::update`]) and hovers before it touches.
+    pub(crate) fn observe_touches(&mut self, events: &[egui::Event], platform: Option<(bool, bool)>) -> bool {
+        let pen = self.pen_contacts.observe(events);
+        let finger = match platform {
+            Some((fingers, pen_contact)) => (fingers || self.finger_last) && !pen_contact,
+            None => self.pen_contacts.finger() && !pen,
+        };
+        self.finger_contact = finger;
+        // The frame a finger lifts in is still its frame (its release is handled in it); the
+        // platform's own read has the contact gone by then, hence the frame after.
+        self.finger_last = platform.is_some_and(|(fingers, pen_contact)| fingers && !pen_contact);
+        pen
+    }
+
+    /// A finger's contact is down, or its press started the gesture in progress: no stroke tool
+    /// (Brush, Pencil, Eraser, Smudge, Blur, Dodge, Clone Stamp…) paints — a finger on a touch
+    /// screen is no pen. A pen a native backend feeds (WinTab, macOS, X11) in contact is the
+    /// gesture instead: a palm resting beside it is no finger's, and the pen paints as it always
+    /// did.
+    pub(crate) fn finger_paints(&self) -> bool {
+        let pen_contact = self.feed.get().is_some_and(|s| s.pressure > 0.0);
+        (self.finger_contact || self.finger_stroke) && !pen_contact
+    }
+
     /// [`Self::update`] once per egui frame: the canvas runs once per view, and egui can run a
     /// frame in several passes; a second update would drain an empty queue and lose the frame's
     /// pen samples.
@@ -423,6 +469,9 @@ impl Stylus {
         }
         // Every sample of the frame goes through the tablet response, in order.
         self.advance_pressure_filter();
+        // A finger's press paints nothing, and neither does the release that ends it — even in
+        // a frame the contact has already left by (`finger_contact` counts the lift frame).
+        self.finger_stroke = self.finger_stroke && self.finger_contact;
     }
 
     /// The pen's current sample. When the pen touched during this frame but has lifted since
@@ -780,6 +829,9 @@ pub(crate) struct PenContacts {
     hovering: Vec<egui::TouchId>,
     /// The contacts down, and whether each is a pen.
     down: Vec<(egui::TouchId, bool)>,
+    /// A contact that is no pen (a finger or a palm) was down at any point of the last frame
+    /// observed: the frame it lifts in still counts.
+    finger: bool,
 }
 
 /// Most touch ids [`PenContacts`] remembers (the oldest go first).
@@ -790,6 +842,7 @@ impl PenContacts {
     pub(crate) fn observe(&mut self, events: &[egui::Event]) -> bool {
         let pressed = |f: &Option<f32>| f.is_some_and(|f| f > 0.0);
         let mut pen = self.down.iter().any(|(_, p)| *p);
+        let mut finger = self.down.iter().any(|(_, p)| !*p);
         for e in events {
             let egui::Event::Touch { id, phase, force, .. } = e else { continue };
             match phase {
@@ -801,6 +854,7 @@ impl PenContacts {
                     }
                     self.down.push((*id, is_pen));
                     pen |= is_pen;
+                    finger |= !is_pen;
                 }
                 egui::TouchPhase::Move => match self.down.iter_mut().find(|(c, _)| c == id) {
                     Some(c) if pressed(force) => {
@@ -819,7 +873,14 @@ impl PenContacts {
                 egui::TouchPhase::End | egui::TouchPhase::Cancel => self.down.retain(|(c, _)| c != id),
             }
         }
+        self.finger = finger;
         pen
+    }
+
+    /// A contact that is no pen was down at any point of the last observed frame
+    /// ([`Self::observe`]): a finger or a palm on a touch screen, not the stylus.
+    pub(crate) fn finger(&self) -> bool {
+        self.finger
     }
 }
 

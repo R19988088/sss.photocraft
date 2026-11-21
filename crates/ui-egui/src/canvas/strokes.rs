@@ -339,6 +339,16 @@ pub(crate) fn strokes_live(tool: Tool) -> bool {
     ) || live_retouch_command(tool).is_some()
 }
 
+/// Tools a finger's touch must not paint with: every tool that lays a stroke down — the brush
+/// family (Brush, Pencil, Mixer Brush, Color Replacement), the eraser family (Eraser, Background
+/// Eraser), the smudge/blur family (Smudge, Blur, Sharpen, Dodge, Burn, Sponge) and the retouching
+/// strokes (Clone Stamp, Healing, Spot Healing, History Brush, Pattern Stamp, Art History Brush).
+/// A touch screen's finger is no pen, as in Photoshop: only a mouse or a pen strokes
+/// (`Stylus::finger_paints`).
+pub(crate) fn finger_paints(tool: Tool) -> bool {
+    strokes_live(tool)
+}
+
 /// The Spot Healing Brush's stroke while dragging: Photoshop shows the area it will heal as a
 /// semi-opaque dark overlay (an image overlay, the same in every UI theme) and heals on release.
 pub(crate) const SPOT_HEALING_TRAIL: Color32 = Color32::from_black_alpha(128);

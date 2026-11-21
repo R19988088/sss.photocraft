@@ -67,6 +67,57 @@ fn touch(phase: egui::TouchPhase, force: Option<f32>) -> egui::Event {
     egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(0), phase, pos: egui::pos2(1.0, 1.0), force }
 }
 
+/// A finger on a touch screen is no pen. Without the platform's pointer type, a contact with no
+/// force that never hovered is a finger; with it (Windows' `WM_POINTER`), the type decides, also
+/// where the finger reports a force, and a pen in contact exempts a palm beside it.
+#[test]
+fn a_finger_contact_is_no_pen_contact() {
+    use egui::TouchPhase::{End, Move, Start};
+    let t = |id, phase, force| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(id), phase, pos: egui::pos2(1.0, 1.0), force };
+
+    // The events alone.
+    let mut s = Stylus::default();
+    s.observe_touches(&[t(1, Move, None)], None);
+    assert!(!s.finger_paints(), "a hover is no contact");
+    s.observe_touches(&[t(1, Start, None)], None);
+    assert!(s.finger_paints(), "a touch that never hovered and reports no force is a finger");
+    s.observe_touches(&[t(1, End, None)], None);
+    assert!(s.finger_paints(), "the frame a finger lifts in still counts");
+    s.observe_touches(&[], None);
+    assert!(!s.finger_paints());
+    s.observe_touches(&[t(4, Move, None), t(4, Start, Some(0.6))], None);
+    assert!(!s.finger_paints(), "a contact that reports a force is the pen");
+
+    // The platform's pointer type, a finger that reports a force included.
+    let mut s = Stylus::default();
+    s.observe_touches(&[t(5, Start, Some(0.6))], Some((true, false)));
+    assert!(s.finger_paints(), "the pointer type says a finger, whatever the force");
+    s.observe_touches(&[t(5, End, None)], Some((false, false)));
+    assert!(s.finger_paints(), "the platform has it gone by the lift frame; the frame still counts");
+    s.observe_touches(&[], Some((false, false)));
+    assert!(!s.finger_paints());
+    s.observe_touches(&[t(6, Start, None)], Some((true, true)));
+    assert!(!s.finger_paints(), "a palm resting beside a pen in contact is no finger's gesture");
+    s.observe_touches(&[t(7, Move, None), t(7, Start, Some(0.2))], Some((false, true)));
+    assert!(!s.finger_paints(), "the pen alone");
+    // A mouse on a touch screen, a finger resting elsewhere: still no stroke.
+    s.observe_touches(&[], Some((true, false)));
+    assert!(s.finger_paints(), "a resting finger while the mouse presses paints nothing");
+
+    // The press a finger made paints nothing through its release, then the next gesture is its own.
+    let mut s = Stylus::default();
+    s.observe_touches(&[t(1, Start, None)], Some((true, false)));
+    s.finger_stroke = true;
+    s.update_for_frame(1, &[]);
+    assert!(s.finger_paints());
+    s.observe_touches(&[t(1, End, None)], Some((false, false)));
+    s.update_for_frame(2, &[]);
+    assert!(s.finger_paints(), "the release frame still paints nothing");
+    s.observe_touches(&[], Some((false, false)));
+    s.update_for_frame(3, &[]);
+    assert!(!s.finger_paints(), "the gesture is over");
+}
+
 fn pen(pressure: f32) -> PenSample {
     PenSample { pressure, ..Default::default() }
 }
