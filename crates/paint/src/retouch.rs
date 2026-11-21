@@ -56,6 +56,55 @@ impl Region {
         self.data.resize(len, 0.0);
         s.read_region_into(rect, &mut self.data);
     }
+    /// Grow this buffer to cover `rect`, keeping the pixels it already has, and read from the
+    /// surface only what it did not have yet. A long dab sequence drags paint over nearly the same
+    /// pixels dab after dab: going back to the surface for them each time is the transport's
+    /// whole cost (see `LaneTransport`).
+    pub fn grow_to(&mut self, s: &Surface, rect: Rect) {
+        let ch = s.channels();
+        let covers = self.ch == ch && self.rect.x0 <= rect.x0 && self.rect.y0 <= rect.y0 && self.rect.x1 >= rect.x1 && self.rect.y1 >= rect.y1;
+        if covers || rect.is_empty() {
+            return;
+        }
+        if self.ch != ch || self.rect.is_empty() {
+            self.rect = rect;
+            self.ch = ch;
+            self.data = s.read_region(rect);
+            return;
+        }
+        let kept = self.rect;
+        let grown = kept.union(&rect);
+        let w = grown.width() as usize;
+        let mut data = vec![0.0f32; w * grown.height() as usize * ch];
+        let kept_w = kept.width() as usize;
+        for y in kept.y0..kept.y1 {
+            let src = ((y - kept.y0) as usize * kept_w) * ch;
+            let dst = (((y - grown.y0) as usize * w) + (kept.x0 - grown.x0) as usize) * ch;
+            data[dst..dst + kept_w * ch].copy_from_slice(&self.data[src..src + kept_w * ch]);
+        }
+        // The new pixels: the strips the old rectangle did not reach.
+        let bands = [
+            Rect::new(grown.x0, grown.y0, kept.x0, grown.y1),
+            Rect::new(kept.x1, grown.y0, grown.x1, grown.y1),
+            Rect::new(kept.x0, grown.y0, kept.x1, kept.y0),
+            Rect::new(kept.x0, kept.y1, kept.x1, grown.y1),
+        ];
+        for band in bands {
+            if band.is_empty() {
+                continue;
+            }
+            let pixels = s.read_region(band);
+            let bw = band.width() as usize;
+            for (k, y) in (band.y0..band.y1).enumerate() {
+                let src = k * bw * ch;
+                let dst = (((y - grown.y0) as usize * w) + (band.x0 - grown.x0) as usize) * ch;
+                data[dst..dst + bw * ch].copy_from_slice(&pixels[src..src + bw * ch]);
+            }
+        }
+        self.rect = grown;
+        self.ch = ch;
+        self.data = data;
+    }
     /// Copy of the sub-rectangle `r` (clipped to `src`) into this buffer.
     pub fn crop_into(&mut self, src: &Region, r: Rect) {
         let r = r.intersect(&src.rect);

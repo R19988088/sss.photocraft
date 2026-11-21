@@ -843,28 +843,46 @@ impl CoverageMap {
         }
         let width = rect.width() as usize;
         let len = (COV_TILE * COV_TILE) as usize;
-        for y in rect.y0..rect.y1 {
-            for x in rect.x0..rect.x1 {
-                let v = vals[(y - rect.y0) as usize * width + (x - rect.x0) as usize] / alpha.max(1e-6);
-                if v <= 0.0 {
+        let inv_alpha = 1.0 / alpha.max(1e-6);
+        let (t0x, t0y) = (rect.x0.div_euclid(COV_TILE), rect.y0.div_euclid(COV_TILE));
+        let (t1x, t1y) = ((rect.x1 - 1).div_euclid(COV_TILE), (rect.y1 - 1).div_euclid(COV_TILE));
+        // Tile by tile, one map lookup a tile: a 900 px dab covers ~250 tiles, not 810k pixels, and
+        // the pixels of a tile are contiguous in both buffers.
+        for ty in t0y..=t1y {
+            for tx in t0x..=t1x {
+                let tr = Rect::new(tx * COV_TILE, ty * COV_TILE, (tx + 1) * COV_TILE, (ty + 1) * COV_TILE).intersect(&rect);
+                if tr.is_empty() {
                     continue;
                 }
-                let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
-                let Some(tile) = self.tiles.get_mut(&(tx, ty)) else { continue };
-                let i = ((y - ty * COV_TILE) * COV_TILE + x - tx * COV_TILE) as usize;
-                if mix > 0.0 {
-                    if tile.mix_weight.is_empty() {
-                        tile.mix_weight = vec![0.0; len];
-                    }
-                    // The drag follows the tip's real shape: its strength is the dab's own coverage
-                    // (the same alpha the tip rasterises), never a flat ratio.
-                    tile.mix_weight[i] = tile.mix_weight[i].max((mix * v).min(1.0));
+                let any = (tr.y0..tr.y1).any(|y| {
+                    let row = (y - rect.y0) as usize * width;
+                    vals[row + (tr.x0 - rect.x0) as usize..row + (tr.x1 - rect.x0) as usize].iter().any(|&v| v > 0.0)
+                });
+                let Some(tile) = self.tiles.get_mut(&(tx, ty)).filter(|_| any) else { continue };
+                if mix > 0.0 && tile.mix_weight.is_empty() {
+                    tile.mix_weight = vec![0.0; len];
                 }
-                if blur > 0.0 {
-                    if tile.blur_weight.is_empty() {
-                        tile.blur_weight = vec![0.0; len];
+                if blur > 0.0 && tile.blur_weight.is_empty() {
+                    tile.blur_weight = vec![0.0; len];
+                }
+                for y in tr.y0..tr.y1 {
+                    let row = (y - rect.y0) as usize * width;
+                    let trow = ((y - ty * COV_TILE) * COV_TILE) as usize;
+                    for x in tr.x0..tr.x1 {
+                        let v = vals[row + (x - rect.x0) as usize] * inv_alpha;
+                        if v <= 0.0 {
+                            continue;
+                        }
+                        let i = trow + (x - tx * COV_TILE) as usize;
+                        // The drag follows the tip's real shape: its strength is the dab's own
+                        // coverage (the same alpha the tip rasterises), never a flat ratio.
+                        if mix > 0.0 {
+                            tile.mix_weight[i] = tile.mix_weight[i].max((mix * v).min(1.0));
+                        }
+                        if blur > 0.0 {
+                            tile.blur_weight[i] = tile.blur_weight[i].max(blur * v);
+                        }
                     }
-                    tile.blur_weight[i] = tile.blur_weight[i].max(blur * v);
                 }
             }
         }
@@ -1217,9 +1235,15 @@ struct LaneTransport {
     blur: Option<Surface>,
     mix_state: crate::transport::Transport,
     blur_state: crate::transport::Transport,
-    /// Per-dab working region and its write-back buffer, reused across dabs (a dab must not
-    /// allocate a region as large as the brush every time it is stamped).
+    /// The lane's working pixels, grown to cover the stroke as it moves: the surface is read only
+    /// for the strips the buffer does not have yet, so a stroke of overlapping dabs reads each
+    /// pixel of its area once instead of once per dab.
     region: crate::retouch::Region,
+    /// The blur pipeline's working pixels (the pixels it reads differ from the mixing ones).
+    blur_region: crate::retouch::Region,
+    /// Pixels of `region` / `blur_region` changed since they were written back to their surfaces.
+    changed: Rect,
+    blur_changed: Rect,
     out: Vec<f32>,
 }
 impl LaneTransport {
@@ -1234,6 +1258,9 @@ impl LaneTransport {
             mix_state: crate::transport::Transport::new(brush, alpha_index(&pre.format())),
             blur_state: crate::transport::Transport::new(brush, alpha_index(&pre.format())),
             region: crate::retouch::Region::empty(),
+            blur_region: crate::retouch::Region::empty(),
+            changed: Rect::EMPTY,
+            blur_changed: Rect::EMPTY,
             out: Vec::new(),
         })
     }
@@ -1243,15 +1270,52 @@ impl LaneTransport {
         }
         let halo = ((d.radius * (0.18 + d.blur_strength * 0.82)).clamp(1.5, 127.0) + d.radius * 2.0 * ctx.brush.spacing).ceil() as i32;
         let footprint = Footprint { dab: *d, index: 0, rect, cov: mask.to_vec() };
+        let needed = rect.inflate(halo);
         if d.mix_strength > 0.0 {
-            self.region.read_into(&self.mix, rect.inflate(halo));
+            self.fit(&needed);
+            self.region.grow_to(&self.mix, needed);
             self.mix_state.smudge_dab(&mut self.region, &footprint);
-            self.region.write_sub_into(&mut self.mix, rect, &mut self.out);
+            self.changed = self.changed.union(&rect);
         }
-        if d.blur_strength > 0.0 && let Some(blur) = self.blur.as_mut() {
-            self.region.read_into(blur, rect.inflate(halo));
-            self.blur_state.blur_dab(&mut self.region, &footprint);
-            self.region.write_sub_into(blur, rect, &mut self.out);
+        if d.blur_strength > 0.0 && self.blur.is_some() {
+            self.fit(&needed);
+            if let Some(blur) = self.blur.as_ref() {
+                self.blur_region.grow_to(blur, needed);
+                self.blur_state.blur_dab(&mut self.blur_region, &footprint);
+                self.blur_changed = self.blur_changed.union(&rect);
+            }
+        }
+    }
+
+    /// Drop the working pixels when a stroke's area outgrows the budget: the write-back has left
+    /// the surfaces current, so re-reading the next dab's rectangle is exact, and a stroke across a
+    /// huge document must not hold the whole of it twice at 4 bytes a channel.
+    fn fit(&mut self, needed: &Rect) {
+        const MAX_PIXELS: i64 = 4_000_000;
+        let grown = self.region.rect.union(needed);
+        if i64::from(grown.width()) * i64::from(grown.height()) > MAX_PIXELS {
+            self.flush();
+            self.region = crate::retouch::Region::empty();
+            self.blur_region = crate::retouch::Region::empty();
+        }
+    }
+
+    /// Write this frame's changed pixels back into the lane's surfaces, once: the composite reads
+    /// them, and the next frame must see the layer this frame left.
+    fn flush(&mut self) {
+        if !self.changed.is_empty() {
+            let r = self.changed;
+            let region = &self.region;
+            region.write_sub_into(&mut self.mix, r, &mut self.out);
+            self.changed = Rect::EMPTY;
+        }
+        if !self.blur_changed.is_empty() {
+            let r = self.blur_changed;
+            let region = &self.blur_region;
+            if let Some(blur) = self.blur.as_mut() {
+                region.write_sub_into(blur, r, &mut self.out);
+            }
+            self.blur_changed = Rect::EMPTY;
         }
     }
 }
@@ -1827,7 +1891,9 @@ impl StrokeRenderer {
         let mut colors = Vec::new();
         let pattern = b.pattern_enabled.then(|| b.sampled_pattern.as_ref()).flatten();
         let rgb: &[f32] = if pattern.is_none() { &out.color } else { &[] };
+        let t_col = profiling().then(std::time::Instant::now);
         let col = lane_col(pattern, frame.lane.union, first, rgb, &mut colors);
+        let t_col = t_col.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
         // The backend hands back what the frame's dabs leave over an empty pixel, `ceil·V`;
         // dividing by the ceiling gives the `v` the map's own `c + v·(ceil − c)` wants.
         let divide = |coverage: Vec<f32>, ceil: f32| {
@@ -1847,7 +1913,9 @@ impl StrokeRenderer {
         } else {
             None
         };
+        let t_acc = profiling().then(std::time::Instant::now);
         self.cov.accumulate_wet(frame.lane.union, &vals, frame.lane.ceil, col.as_ref().map(|(c, p)| (c.as_slice(), *p)), wet.then_some(&out.depth[..]), material, None);
+        let t_acc = t_acc.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
         self.cov.bounds = self.cov.bounds.union(&frame.lane.union);
         // The Dual Brush's lane, folded into its own map with its own ceiling.
         if let (Some(lane2), Some(back), Some(dm)) = (&frame.dual, out.dual, self.dual.as_mut()) {
@@ -1876,7 +1944,7 @@ impl StrokeRenderer {
         if prof {
             let total = t_start.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
-                "[paint] {total:8.1} ms: one folded frame of {} dabs ({}×{}{}), masks {t_masks:8.1}, rest {:8.1}",
+                "[paint] {total:8.1} ms: one folded frame of {} dabs ({}×{}{}), masks {t_masks:8.1}, colour {t_col:8.1}, accumulate {t_acc:8.1}, rest {:8.1}",
                 dabs.len(),
                 frame.lane.union.width(),
                 frame.lane.union.height(),
@@ -1892,6 +1960,10 @@ impl StrokeRenderer {
         let t_start = std::time::Instant::now();
         let mut t_masks = 0.0f64;
         let mut t_cpu_raster = 0.0f64;
+        let mut t_col = 0.0f64;
+        let mut t_transport = 0.0f64;
+        let mut t_acc = 0.0f64;
+        let mut t_atr = 0.0f64;
         let mut dabs = std::mem::take(&mut self.dab_buf);
         let mut duals = std::mem::take(&mut self.dual_buf);
         let wet = self.ctx.brush.wet_edges && !self.ctx.brush.erase;
@@ -1939,6 +2011,7 @@ impl StrokeRenderer {
             let single =
                 self.ctx.brush.wet_edge.as_ref().filter(|w| wet && w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
             let pattern = self.ctx.brush.pattern_enabled.then_some(self.ctx.brush.sampled_pattern.as_ref()).flatten();
+            let t_c = profiling().then(std::time::Instant::now);
             let col = if let (Some(pattern), Some(f)) = (pattern, self.fmt) {
                 let width = rect.width() as usize;
                 let height = rect.height() as usize;
@@ -2064,15 +2137,21 @@ impl StrokeRenderer {
             } else {
                 col
             };
+            t_col += t_c.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
             let material = if wet {
                 self.ctx.brush.wet_edge.as_ref().map(|w| (d.wet_edge, (w.outline == WetOutline::Single).then(|| w.color_strength(d.wet_edge.strength))))
             } else {
                 None
             };
+            let t = profiling().then(std::time::Instant::now);
             if let Some(transport) = self.transports[0].as_mut() {
                 transport.dab(&self.ctx, d, rect, &self.scratch, col);
             }
+            t_transport += t.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+            let t = profiling().then(std::time::Instant::now);
             self.cov.accumulate_transport(rect, &self.scratch, d.mix_strength, d.blur_strength, d.alpha);
+            t_atr += t.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+            let t = profiling().then(std::time::Instant::now);
             self.cov.accumulate_wet(
                 rect,
                 &self.scratch,
@@ -2086,6 +2165,7 @@ impl StrokeRenderer {
             );
             let motion = dab_motion(&mut self.previous_centers[0], d);
             self.cov.accumulate_pigment(&self.ctx, d, rect, &self.scratch, motion);
+            t_acc += t.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
             // Bounds track the full dab rectangle (even fully transparent parts), like the damage.
             self.cov.bounds = self.cov.bounds.union(&rect);
         }
@@ -2180,6 +2260,10 @@ impl StrokeRenderer {
         if let Some(all) = self.all_dabs.as_mut() {
             all.extend_from_slice(&dabs);
         }
+        // The lanes' smeared pixels go back into their own surfaces once a frame, not once a dab.
+        for t in self.transports.iter_mut().flatten() {
+            t.flush();
+        }
         dabs.clear();
         duals.clear();
         self.dab_buf = dabs;
@@ -2187,8 +2271,8 @@ impl StrokeRenderer {
         if prof {
             let total = t_start.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
-                "[paint] {total:8.1} ms: masks {t_masks:8.1}, cpu raster {t_cpu_raster:8.1}, rest {:8.1} ({} dabs, {cpu_fallback} on the CPU)",
-                total - t_masks - t_cpu_raster,
+                "[paint] {total:8.1} ms: masks {t_masks:8.1}, cpu raster {t_cpu_raster:8.1}, colour {t_col:8.1}, transport {t_transport:8.1}, tr-weights {t_atr:8.1}, accumulate {t_acc:8.1}, rest {:8.1} ({} dabs, {cpu_fallback} on the CPU)",
+                total - t_masks - t_cpu_raster - t_col - t_transport - t_acc - t_atr,
                 self.dabs_done.min(usize::MAX)
             );
         }

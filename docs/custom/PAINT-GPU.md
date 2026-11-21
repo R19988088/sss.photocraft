@@ -134,12 +134,46 @@ material 的 EMA 权重可乘故也精确，只有 `edge` 取本帧最终 depth�
 30 个 PW4 水彩 `live` 模式 p50（1600×1000，每帧一个输入点、9 px 间距）从 130–212 ms 降到
 0.5–7.7 ms；最重的白夜梦 / 昼梦里 / 绿松木 7.5–7.7 ms（≈130 fps），其余多在 1–4 ms。
 
+## 量到的账：图案模式与混色/涂抹（2026-11-21）
+
+探针 `crates/ui-egui/examples/paint_modes_bench.rs`（2520×1575、48 帧、每帧一个输入点、9 px 间距、
+release、`masker_slot` 装上真实 GPU 描边面）：`paint_modes_bench <size> <spacing%> [solid|pattern|smudge|smudge+pattern]`，
+`PHOTOCRAFT_PAINT_PROFILE=1` 出分项，`PC_FOLD_DEBUG=1` 出折叠拒绝理由。
+
+| 笔（900 px / 1% 间距，≈50 dab 一帧） | 改前 p50 | 现在 p50 |
+|---|---|---|
+| 单色 | 14.3 ms | 11.9–14.7 ms |
+| 图案 | 41.3 ms | 41.4 ms |
+| 涂抹 V1 | 459 ms | 335 ms |
+| 涂抹 + 图案 | 585 ms | 469 ms |
+
+900 px / 5% 间距：涂抹 83 → 62 ms，涂抹+图案 147 → 82 ms。图案在这一档 41 → 39 ms。
+
+两处改动：
+
+- `CoverageMap::accumulate_transport` 按 tile 遍历，一 tile 一次 `tiles.get_mut`（原来一像素一次
+  HashMap 查找）：该分项 183 ms → 19–24 ms/帧；
+- `LaneTransport` 的工作面按笔画共享：`mix`/`blur` 的像素一整个笔画只读一次、每帧只写回一次
+  （原来是每 dab 读一次、写一次），新增 `Region::grow_to` 只读新长出来的四条带；工作面超过
+  4 M px 就借 `flush()` 后的新鲜像素重开一块，避免整幅文档存两份。
+
+剩下的账（分项，同一次运行）：涂抹 335 ms 里 transport 254–282、mask 回读 94、tr-weights 19–24、
+accumulate 25–30；图案 41 ms 里 mask 7.6、`lane_colors` 20.2、accumulate 8.1。
+
+所以这两条路径都还停在 CPU 上：涂抹是 C3 输送（`transport.rs::feedback_dab` 每 dab 建 side² carrier
+再铺一遍）加每 dab 一次 mask 回读；图案是逐像素 5-tap 采样。CPU 侧再怎么修都下不到 13 ms 量级，
+要"对齐主画笔"必须落到 GPU：图案色进 `paint_surface.wgsl` 的 colour lane（`texture_at` 已有采样，
+补 rgb 与 alpha），涂抹/模糊做成作用在层纹理上的 compute pass（下面「剩下的事」第 1、4 条）。
+
 ## 剩下的事
 
 1. **零回读预览**：把描边面常驻在 `gpu_canvas` 的层纹理上，预览帧不回读，收笔时读脏 tile 一次，
    按 CPU 原算法（含颜料混合）落定。这是 p95 里 9–17 ms 的最后一截（并集越大 read 越贵，约 10 ns/px）。
 2. `MAX_ATLAS_PIXELS`（4096²）下大位移的帧仍回落逐 dab，可放宽或分块。
 3. 湿边 `edge` 分量、图案相位、颜色动态这三处帧级近似尚未与逐 dab 路径做过逐笔刷目视比对。
+4. **图案色与涂抹搬上 GPU**：图案色走 mask pass 的 colour lane（`texture_at` 补 rgb/alpha，
+   替掉 `lane_colors` 的 20 ms）；涂抹/模糊做成作用在层纹理上的 compute pass，先读后写的 hazard
+   用 ping-pong 或同一张读、另一张写。这两条不落地，图案 41 ms、涂抹 335 ms 就是 CPU 的天花板。
 
 
 ## 约定
