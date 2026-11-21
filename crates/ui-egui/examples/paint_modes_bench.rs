@@ -11,7 +11,7 @@ use std::time::Instant;
 use photocraft_color::PixelFormat;
 use photocraft_geom::Rect;
 use photocraft_paint::brush::{ColorPattern, Taper};
-use photocraft_paint::stamp::set_process_mask_batch;
+use photocraft_paint::stamp::{set_process_mask_batch, set_process_transport};
 use photocraft_paint::transport::BrushMixSettings;
 use photocraft_paint::{BrushSettings, StrokePoint};
 use photocraft_raster::Surface;
@@ -69,6 +69,9 @@ fn main() {
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&eframe::wgpu::DeviceDescriptor::default())).expect("device");
     set_process_mask_batch(photocraft_gpu::masker_slot(device.clone(), queue.clone()));
+    if std::env::var_os("PC_TRANSPORT_GPU").is_some() {
+        set_process_transport(photocraft_gpu::transport_slot(device.clone(), queue.clone()));
+    }
     println!("{} — size {size}, spacing {:.0}%, {w}x{h}", adapter.get_info().name, spacing * 100.0);
     let only = std::env::args().nth(3).unwrap_or_default();
     for (name, b) in brushes(size, spacing).into_iter().filter(|(n, _)| only.is_empty() || *n == only) {

@@ -36,6 +36,9 @@ impl PhotocraftApp {
         // the brush engine then only runs its pigment / transport stage over them (see
         // `docs/custom/PAINT-GPU.md`). Without a canvas masker, the tiny batches stay on the CPU.
         photocraft_paint::stamp::set_process_mask_batch(photocraft_gpu::masker_slot(rs.device.clone(), rs.queue.clone()));
+        // The same device takes a smudge stroke's carrier feedback too: two compute passes per dab
+        // over the lane's pixels instead of two full-resolution resamples on the CPU.
+        photocraft_paint::stamp::set_process_transport(photocraft_gpu::transport_slot(rs.device.clone(), rs.queue.clone()));
         self.gpu = Some(gpu);
         self.prefs_rt.gpu_style = None;
     }

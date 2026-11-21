@@ -316,10 +316,89 @@ pub trait DabMaskBatch: Send + Sync {
     }
 }
 
+/// The pixels a smudge stroke works on, and the dabs that move them.
+pub struct TransportFrame<'a> {
+    /// The document rectangle `pixels` covers.
+    pub region: Rect,
+    /// Native channels per pixel; `pixels` is row-major over `region`.
+    pub channels: usize,
+    /// Index of the alpha channel in a pixel, when the lane's format has one.
+    pub alpha: Option<usize>,
+    /// The lane's working pixels, which the backend rewrites in place.
+    pub pixels: &'a mut Vec<f32>,
+    /// This frame's dabs, in submission order.
+    pub dabs: &'a [TransportDab],
+}
+
+/// One dab's transport work: the carrier the reference builds and lays, plus its coverage.
+#[derive(Clone, Debug)]
+pub struct TransportDab {
+    /// The dab's rectangle in document pixels; `coverage` is row-major over it.
+    pub rect: Rect,
+    pub center: [f64; 2],
+    pub radius: f32,
+    pub mix_strength: f32,
+    pub concentration: f32,
+    pub output_strength: f32,
+    /// How much of the previous carrier this dab keeps (`keep` in the reference).
+    pub keep: f32,
+    /// The previous carrier's radius as a fraction of this dab's (1 when it was the same).
+    pub scale: f32,
+    /// Whether a previous carrier exists at all (false on a stroke's first dab).
+    pub has_previous: bool,
+    /// `val · alpha`, as `rasterize_into` leaves it.
+    pub coverage: Vec<f32>,
+}
+
+/// A backend that moves a lane's pixels through a whole frame's dabs at once (on the GPU), so the
+/// per-dab resampling never runs on the CPU.
+///
+/// `false` from [`transport`](DabTransport::transport) means "keep to the CPU": the caller has not
+/// given up its own pixels and does the dabs itself.
+pub trait DabTransport: Send + Sync {
+    fn transport(&self, frame: &mut TransportFrame) -> bool;
+}
+
+/// Where a [`BrushContext`](crate::render::BrushContext) keeps its transport backend.
+#[derive(Clone, Default)]
+pub struct TransportSlot(Option<std::sync::Arc<dyn DabTransport>>);
+
+impl TransportSlot {
+    pub fn new(transport: std::sync::Arc<dyn DabTransport>) -> Self {
+        Self(Some(transport))
+    }
+
+    pub fn transport(&self) -> Option<&dyn DabTransport> {
+        self.0.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl fmt::Debug for TransportSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() { "TransportSlot(gpu)" } else { "TransportSlot(none)" })
+    }
+}
+
+/// The transport backend every new context starts with (empty: paint alone is all-CPU).
+static PROCESS_TRANSPORT: std::sync::RwLock<TransportSlot> = std::sync::RwLock::new(TransportSlot(None));
+
+/// Installs (or clears, with an empty slot) the process-wide transport backend.
+pub fn set_process_transport(slot: TransportSlot) {
+    *PROCESS_TRANSPORT.write().unwrap_or_else(std::sync::PoisonError::into_inner) = slot;
+}
+
+/// The process-wide transport backend a new context takes.
+pub fn process_transport() -> TransportSlot {
+    PROCESS_TRANSPORT.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 /// Where a [`BrushContext`](crate::render::BrushContext) keeps its batch mask backend.
 #[derive(Clone, Default)]
 pub struct MaskBatchSlot(Option<std::sync::Arc<dyn DabMaskBatch>>);
-
 impl MaskBatchSlot {
     pub fn new(batch: std::sync::Arc<dyn DabMaskBatch>) -> Self {
         Self(Some(batch))

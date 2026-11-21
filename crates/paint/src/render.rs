@@ -275,6 +275,8 @@ pub struct BrushContext {
     /// The injected batch mask backend (the GPU paint surface); empty = rasterise every dab's
     /// mask on the CPU, as paint alone does.
     pub(crate) masker: crate::stamp::MaskBatchSlot,
+    /// The injected transport backend (the GPU compute pass); empty = smear on the CPU.
+    pub(crate) transport: crate::stamp::TransportSlot,
 }
 
 /// The tip's level 0 as an 8-bit bitmap, for a backend that samples the pyramid itself. The
@@ -339,6 +341,20 @@ impl BrushContext {
     /// The batch mask backend this context was given, if any.
     pub fn masker(&self) -> Option<&dyn crate::stamp::DabMaskBatch> {
         self.masker.batch()
+    }
+
+    /// Route a stroke's colour transport through `transport` when it handles it (the GPU compute
+    /// pass), and through the CPU's own per-dab carrier otherwise.
+    pub fn set_transport(&mut self, transport: crate::stamp::TransportSlot) {
+        if let Some(secondary) = self.secondary.as_deref_mut() {
+            secondary.set_transport(transport.clone());
+        }
+        self.transport = transport;
+    }
+
+    /// The transport backend this context was given, if any.
+    pub fn transport(&self) -> Option<&dyn crate::stamp::DabTransport> {
+        self.transport.transport()
     }
 
     /// The stroke's texture as a batch backend takes it.
@@ -414,6 +430,7 @@ impl BrushContext {
             texture_tip: None,
             stamper: crate::stamp::process_stamper(),
             masker: crate::stamp::process_mask_batch(),
+            transport: crate::stamp::process_transport(),
             tip_mask,
             tip,
             dual_tip: if brush.dual_brush.enabled { mips(&brush.dual_brush.tip) } else { None },
@@ -1244,7 +1261,17 @@ struct LaneTransport {
     /// Pixels of `region` / `blur_region` changed since they were written back to their surfaces.
     changed: Rect,
     blur_changed: Rect,
+    /// Dabs this frame queued for the transport backend, with the footprints the CPU falls back to
+    /// if the backend refuses them.
+    pending: Vec<Pending>,
     out: Vec<f32>,
+}
+
+/// One dab waiting for the transport backend, with the dab the CPU falls back to if it refuses.
+#[derive(Clone, Debug)]
+struct Pending {
+    dab: Dab,
+    td: crate::stamp::TransportDab,
 }
 impl LaneTransport {
     fn new(brush: &BrushSettings, pre: &Surface) -> Option<Self> {
@@ -1261,6 +1288,7 @@ impl LaneTransport {
             blur_region: crate::retouch::Region::empty(),
             changed: Rect::EMPTY,
             blur_changed: Rect::EMPTY,
+            pending: Vec::new(),
             out: Vec::new(),
         })
     }
@@ -1268,17 +1296,43 @@ impl LaneTransport {
         if rect.is_empty() || mask.is_empty() {
             return;
         }
-        let halo = ((d.radius * (0.18 + d.blur_strength * 0.82)).clamp(1.5, 127.0) + d.radius * 2.0 * ctx.brush.spacing).ceil() as i32;
+        // Both pipelines read only their own dab's square plus where the previous carrier landed,
+        // which is inside the neighbouring dabs' squares: a stroke's dabs sit a spacing step apart,
+        // so the union of their rectangles is the whole area the working pixels ever need. A
+        // generous halo here used to push a 900 px dab's union past the region budget, which
+        // re-read the layer on every dab.
+        let needed = rect.inflate(2);
         let footprint = Footprint { dab: *d, index: 0, rect, cov: mask.to_vec() };
-        let needed = rect.inflate(halo);
         if d.mix_strength > 0.0 {
-            self.fit(&needed);
-            self.region.grow_to(&self.mix, needed);
-            self.mix_state.smudge_dab(&mut self.region, &footprint);
+            if self.takes_backend(ctx) {
+                let (keep, scale, has_previous) = self.mix_state.feedback_plan(&footprint);
+                let m = &ctx.brush.mix_settings;
+                self.pending.push(Pending {
+                    dab: *d,
+                    td: crate::stamp::TransportDab {
+                        rect,
+                        center: [d.center.x, d.center.y],
+                        radius: d.radius,
+                        mix_strength: d.mix_strength,
+                        concentration: m.concentration,
+                        output_strength: m.output_strength,
+                        keep,
+                        scale,
+                        has_previous,
+                        coverage: mask.to_vec(),
+                    },
+                });
+            } else {
+                // A CPU dab has to see what the dabs before it left: the backend's frame runs first.
+                self.flush_pending(ctx);
+                self.fit(ctx, &needed);
+                self.region.grow_to(&self.mix, needed);
+                self.mix_state.smudge_dab(&mut self.region, &footprint);
+            }
             self.changed = self.changed.union(&rect);
         }
         if d.blur_strength > 0.0 && self.blur.is_some() {
-            self.fit(&needed);
+            self.fit(ctx, &needed);
             if let Some(blur) = self.blur.as_ref() {
                 self.blur_region.grow_to(blur, needed);
                 self.blur_state.blur_dab(&mut self.blur_region, &footprint);
@@ -1287,14 +1341,79 @@ impl LaneTransport {
         }
     }
 
+    /// Whether the transport backend can take this lane's dabs at all: V1 only (the backend
+    /// reproduces the reference's carrier feedback), no pigment branch, and pixels wide enough.
+    fn takes_backend(&self, ctx: &BrushContext) -> bool {
+        if ctx.transport().is_none() {
+            return false;
+        }
+        let m = &ctx.brush.mix_settings;
+        if !(m.smudge_enabled && m.algorithm == crate::transport::MixAlgorithm::V1) || m.blur_color_target.is_some() {
+            return false;
+        }
+        // `over_carried`'s pigment branch and the premultiplied-alpha maths are CPU-only for now.
+        if ctx.brush.pigment_mix_strength > 0.0 || self.region.ch != 4 || alpha_index(&self.mix.format()) != Some(3) {
+            return false;
+        }
+        // 64 MB of working pixels each way is the most a frame may pin on the GPU.
+        let px = i64::from(self.region.rect.width()) * i64::from(self.region.rect.height());
+        px * 4 * 4 <= 64 * 1024 * 1024
+    }
+
+    /// Run this frame's queued dabs on the transport backend (or, when it refuses, on the CPU),
+    /// rewriting `region` in place. Nothing is written back to the surfaces yet.
+    fn flush_pending(&mut self, ctx: &BrushContext) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let Some(backend) = ctx.transport() else {
+            for p in std::mem::take(&mut self.pending) {
+                let mut td = p.td;
+                let cov = std::mem::take(&mut td.coverage);
+                let footprint = Footprint { dab: p.dab, index: 0, rect: td.rect, cov };
+                self.fit(ctx, &td.rect.inflate(2));
+                self.region.grow_to(&self.mix, td.rect.inflate(2));
+                self.mix_state.feedback_dab_planned(&mut self.region, &footprint, td.keep, td.scale, td.has_previous);
+            }
+            return;
+        };
+        let pending = std::mem::take(&mut self.pending);
+        // The backend reads the whole frame's area at once: the working pixels must hold every dab's
+        // square (and the previous carrier's, which sits inside them).
+        let mut area = Rect::EMPTY;
+        for p in &pending {
+            area = area.union(&p.td.rect.inflate(2));
+        }
+        self.fit(ctx, &area);
+        self.region.grow_to(&self.mix, area);
+        let region = self.region.rect;
+        let channels = self.region.ch;
+        let alpha = alpha_index(&self.mix.format());
+        let dabs: Vec<crate::stamp::TransportDab> = pending.iter().map(|p| p.td.clone()).collect();
+        let mut pixels = std::mem::take(&mut self.region.data);
+        let done = {
+            let mut frame = crate::stamp::TransportFrame { region, channels, alpha, pixels: &mut pixels, dabs: &dabs };
+            backend.transport(&mut frame)
+        };
+        self.region.data = pixels;
+        if !done {
+            for p in pending {
+                let mut td = p.td;
+                let cov = std::mem::take(&mut td.coverage);
+                let footprint = Footprint { dab: p.dab, index: 0, rect: td.rect, cov };
+                self.mix_state.feedback_dab_planned(&mut self.region, &footprint, td.keep, td.scale, td.has_previous);
+            }
+        }
+    }
+
     /// Drop the working pixels when a stroke's area outgrows the budget: the write-back has left
     /// the surfaces current, so re-reading the next dab's rectangle is exact, and a stroke across a
     /// huge document must not hold the whole of it twice at 4 bytes a channel.
-    fn fit(&mut self, needed: &Rect) {
+    fn fit(&mut self, ctx: &BrushContext, needed: &Rect) {
         const MAX_PIXELS: i64 = 4_000_000;
         let grown = self.region.rect.union(needed);
         if i64::from(grown.width()) * i64::from(grown.height()) > MAX_PIXELS {
-            self.flush();
+            self.flush(ctx);
             self.region = crate::retouch::Region::empty();
             self.blur_region = crate::retouch::Region::empty();
         }
@@ -1302,7 +1421,8 @@ impl LaneTransport {
 
     /// Write this frame's changed pixels back into the lane's surfaces, once: the composite reads
     /// them, and the next frame must see the layer this frame left.
-    fn flush(&mut self) {
+    fn flush(&mut self, ctx: &BrushContext) {
+        self.flush_pending(ctx);
         if !self.changed.is_empty() {
             let r = self.changed;
             let region = &self.region;
@@ -2261,8 +2381,9 @@ impl StrokeRenderer {
             all.extend_from_slice(&dabs);
         }
         // The lanes' smeared pixels go back into their own surfaces once a frame, not once a dab.
-        for t in self.transports.iter_mut().flatten() {
-            t.flush();
+        let Self { transports, ctx, .. } = self;
+        for t in transports.iter_mut().flatten() {
+            t.flush(ctx);
         }
         dabs.clear();
         duals.clear();

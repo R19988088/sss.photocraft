@@ -49,6 +49,8 @@ pub mod health;
 #[cfg(not(target_arch = "wasm32"))]
 mod paint_mask;
 #[cfg(not(target_arch = "wasm32"))]
+mod paint_transport;
+#[cfg(not(target_arch = "wasm32"))]
 mod paint_surface;
 pub mod plan;
 mod prefix;
@@ -69,6 +71,8 @@ pub use brush_stamp::{install_process_stamper, BRUSH_STAMP_SHADER, BrushStamp, G
 pub use camera_raw::{CAMERA_RAW_SHADER, CameraRawDevelop};
 #[cfg(not(target_arch = "wasm32"))]
 pub use paint_mask::{masker_slot, GpuMasker};
+#[cfg(not(target_arch = "wasm32"))]
+pub use paint_transport::{transport_slot, GpuTransport, TRANSPORT_SHADER};
 pub use paint_surface::{DabStamp, PaintSurface, TextureOptions, COV_FORMAT, DEPTH_FORMAT, MAX_INSTANCES, PAINT_FORMAT, PAINT_SURFACE_SHADER};
 pub use health::{DeviceHealth, Fault};
 pub use plan::{Kernel, Plan, Role, Unsupported, plan, plan_region};

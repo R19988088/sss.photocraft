@@ -145,10 +145,34 @@ impl Transport {
         }
     }
 
+    /// V1's `keep` and carrier scale for this dab, advancing the bookkeeping a per-dab transport
+    /// would (the previous centre and the carrier's radius) without touching any pixels: what a
+    /// backend that owns the pixels itself needs to reproduce the reference's retention.
+    pub(crate) fn feedback_plan(&mut self, fp: &Footprint) -> (f32, f32, bool) {
+        let radius = fp.dab.radius.max(0.5);
+        let center = fp.dab.center;
+        let spatial_step = self.previous.map_or(0.0, |p| (center.x - p.x).hypot(center.y - p.y) as f32 / (radius * 2.0).max(1.0));
+        let keep = (0.2 + 0.75 * fp.dab.mix_length).powf((spatial_step * 4.0).max(0.08));
+        let keep = keep.clamp(0.0, 1.0);
+        let has_previous = self.previous.is_some();
+        let scale = if self.carrier_radius > 0.0 { self.carrier_radius / radius } else { 1.0 };
+        self.previous = Some(center);
+        self.carrier_radius = radius;
+        (keep, scale, has_previous)
+    }
+
     /// V1: the reference's carrier feedback. Each dab refreshes the carrier from the layer
     /// under it, keeping `keep` of the previous carrier (so paint trails as the stroke moves),
     /// then lays that carrier over the destination through the dab's coverage.
     fn feedback_dab(&mut self, work: &mut Region, fp: &Footprint) {
+        let (keep, scale, has_previous) = self.feedback_plan(fp);
+        self.feedback_dab_planned(work, fp, keep, scale, has_previous);
+    }
+
+    /// [`feedback_dab`](Self::feedback_dab) with the retention already planned, for a caller that
+    /// ran [`feedback_plan`](Self::feedback_plan) itself (a GPU frame that has to fall back to the
+    /// CPU here).
+    pub(crate) fn feedback_dab_planned(&mut self, work: &mut Region, fp: &Footprint, keep: f32, scale: f32, has_previous: bool) {
         let radius = fp.dab.radius.max(0.5);
         let side = ((radius * 2.0).ceil() as i32).max(1);
         let local = photocraft_geom::Rect::new(0, 0, side, side);
@@ -159,18 +183,10 @@ impl Transport {
         }
         let alpha = self.alpha.filter(|a| *a < work.ch);
         let center = fp.dab.center;
-        let spatial_step = self.previous.map_or(0.0, |p| (center.x - p.x).hypot(center.y - p.y) as f32 / (radius * 2.0).max(1.0));
         // The reference's retention grows with the mixing length and the distance travelled
-        // (`pow(0.2 + 0.75*length, max(0.08, spatialStep*4))`), so a longer length drags more.
-        // Reference (ContentView.swift:9413): pow(0.2 + 0.75 * mixLength, max(0.08, spatialStep * 4)).
-        // The 0.08 floor matters: with a zero step the old form gave keep = 1 and the first dab
-        // never refreshed its carrier at all.
-        let keep = (0.2 + 0.75 * fp.dab.mix_length).powf((spatial_step * 4.0).max(0.08));
-        let keep = keep.clamp(0.0, 1.0);
-        let previous_carrier = self.carrier.as_ref().map(|c| {
-            let scale = self.carrier_radius / radius;
-            (c, scale)
-        });
+        // (`pow(0.2 + 0.75*length, max(0.08, spatialStep*4))`), so a longer length drags more; it
+        // and the carrier's scale are planned by the caller now (`feedback_plan`).
+        let previous_carrier = if has_previous { self.carrier.as_ref().map(|c| (c, scale)) } else { None };
         let side_u = side as usize;
         let dbg = debug_transport();
         let t0 = dbg.then(std::time::Instant::now);
@@ -194,12 +210,12 @@ impl Transport {
                     }
                 }
                 let mut previous = [0.0f32; MAX_CH];
-                let has_previous = previous_carrier.is_some_and(|(c, scale)| {
+                let retains = previous_carrier.is_some_and(|(c, scale)| {
                     sample_into(c, dx * f64::from(scale) + f64::from(c.rect.width()) * 0.5 - 0.5, dy * f64::from(scale) + f64::from(c.rect.height()) * 0.5 - 0.5, &mut previous);
                     alpha.map_or(1.0, |a| previous[a]) > 0.0001
                 });
                 let pixel = &mut out[x * n..(x + 1) * n];
-                if has_previous {
+                if retains {
                     for (out, (f, p)) in pixel.iter_mut().zip(fresh[..n].iter().zip(&previous[..n])) {
                         *out = f + (*p - *f) * keep;
                     }
@@ -258,7 +274,6 @@ impl Transport {
         if let Some(old) = self.carrier.replace(next) {
             self.next = old;
         }
-        self.carrier_radius = radius;
         let t2 = dbg.then(std::time::Instant::now);
         let lay_ms = t2.map_or(0.0, |t| (t - t1.unwrap()).as_secs_f64() * 1000.0);
         if let (Some(_), Some(_)) = (t0, t1) {
