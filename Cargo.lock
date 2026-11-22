@@ -6198,6 +6198,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "procraft-engine"
+version = "0.24.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "procraft-gpu"
+version = "0.24.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "pollster 0.4.0",
+ "procraft-engine",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
