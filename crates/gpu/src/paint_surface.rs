@@ -137,6 +137,25 @@ pub struct PaintSurface {
     tip_flags: [u32; 4],
     tip_view: wgpu::TextureView,
     tip_sampler: wgpu::Sampler,
+    /// The mappable readback buffers, kept from one call to the next: a mask readback can ask for
+    /// 26 MB, and allocating that several times a frame costs more than the copy.
+    staging: std::sync::Mutex<Staging>,
+}
+
+/// The three readback buffers a surface reuses (see [`PaintSurface::stage`]).
+#[derive(Default)]
+struct Staging {
+    cov: Option<(wgpu::Buffer, u64)>,
+    depth: Option<(wgpu::Buffer, u64)>,
+    paint: Option<(wgpu::Buffer, u64)>,
+}
+
+/// Which readback buffer a copy targets.
+#[derive(Clone, Copy)]
+enum Stage {
+    Cov,
+    Depth,
+    Paint,
 }
 
 impl PaintSurface {
@@ -335,6 +354,7 @@ impl PaintSurface {
             tip_flags: [0, 0, 0, 0],
             tip_view,
             tip_sampler,
+            staging: std::sync::Mutex::new(Staging::default()),
         })
     }
 
@@ -525,16 +545,12 @@ impl PaintSurface {
         let (w, h) = (used.0.clamp(1, self.width), used.1.clamp(1, self.height));
         let cov_row = align_256(u64::from(w) * 8);
         let depth_row = align_256(u64::from(w) * 2);
-        let staging = |label: &str, size: u64| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
+        let mut staging = self.staging.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_stage(&mut staging, device, Stage::Cov, cov_row * u64::from(h));
+        ensure_stage(&mut staging, device, Stage::Depth, depth_row * u64::from(h));
+        let Staging { cov: Some((cov_out, _)), depth: Some((depth_out, _)), .. } = &*staging else {
+            return Err(Unsupported("no staging buffer".into()));
         };
-        let cov_out = staging("pc_paint_surface_cov_masks", cov_row * u64::from(h));
-        let depth_out = staging("pc_paint_surface_depth_masks", depth_row * u64::from(h));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pc_paint_surface_read_masks") });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &self.cov, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -548,7 +564,7 @@ impl PaintSurface {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo { texture: &self.depth, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &depth_out,
+                    buffer: depth_out,
                     layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(depth_row as u32), rows_per_image: Some(h) },
                 },
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -560,8 +576,8 @@ impl PaintSurface {
             depth_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         }
         device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).map_err(|e| Unsupported(format!("GPU wait failed: {e}")))?;
-        let cov = decode_rgba_r(&cov_out, cov_row, w, h, 8)?;
-        let depth = if depth { decode(&depth_out, depth_row, w, h, 2)? } else { Vec::new() };
+        let cov = decode_rgba_r(cov_out, cov_row, w, h, 8)?;
+        let depth = if depth { decode(depth_out, depth_row, w, h, 2)? } else { Vec::new() };
         Ok((cov, depth))
     }
 
@@ -572,19 +588,15 @@ impl PaintSurface {
         let (w, h) = (used.0.clamp(1, self.width), used.1.clamp(1, self.height));
         let cov_row = align_256(u64::from(w) * 8);
         let depth_row = align_256(u64::from(w) * 2);
-        let staging = |label: &str, size: u64| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
+        let mut staging = self.staging.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_stage(&mut staging, device, Stage::Cov, cov_row * u64::from(h));
+        ensure_stage(&mut staging, device, Stage::Depth, depth_row * u64::from(h));
+        ensure_stage(&mut staging, device, Stage::Paint, cov_row * u64::from(h));
+        let Staging { cov: Some((cov_out, _)), depth: Some((depth_out, _)), paint: Some((paint_out, _)) } = &*staging else {
+            return Err(Unsupported("no staging buffer".into()));
         };
-        let cov_out = staging("pc_paint_surface_cov_masks", cov_row * u64::from(h));
-        let depth_out = staging("pc_paint_surface_depth_masks", depth_row * u64::from(h));
-        let paint_out = staging("pc_paint_surface_paint_masks", cov_row * u64::from(h));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pc_paint_surface_read_masks_color") });
-        for (texture, buffer, row) in [(&self.cov, &cov_out, cov_row), (&self.depth, &depth_out, depth_row), (&self.paint, &paint_out, cov_row)] {
+        for (texture, buffer, row) in [(&self.cov, cov_out, cov_row), (&self.depth, depth_out, depth_row), (&self.paint, paint_out, cov_row)] {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 wgpu::TexelCopyBufferInfo {
@@ -599,9 +611,9 @@ impl PaintSurface {
         depth_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         paint_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).map_err(|e| Unsupported(format!("GPU wait failed: {e}")))?;
-        let cov = decode_rgba_r(&cov_out, cov_row, w, h, 8)?;
-        let depth = decode(&depth_out, depth_row, w, h, 2)?;
-        let paint = decode_rgba(&paint_out, cov_row, w, h)?;
+        let cov = decode_rgba_r(cov_out, cov_row, w, h, 8)?;
+        let depth = decode(depth_out, depth_row, w, h, 2)?;
+        let paint = decode_rgba(paint_out, cov_row, w, h)?;
         let mut color = Vec::with_capacity(cov.len() * 3);
         for (coverage, [r, g, b, _]) in cov.iter().zip(&paint) {
             let c = coverage.clamp(0.0, 1.0);
@@ -645,22 +657,18 @@ impl PaintSurface {
         let cov_row = align_256(u64::from(w) * 8);
         let paint_row = align_256(u64::from(w) * 8);
         let depth_row = align_256(u64::from(w) * 2);
-        let staging = |label: &str, size: u64| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
+        let mut staging = self.staging.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ensure_stage(&mut staging, device, Stage::Cov, cov_row * u64::from(h));
+        ensure_stage(&mut staging, device, Stage::Paint, paint_row * u64::from(h));
+        ensure_stage(&mut staging, device, Stage::Depth, depth_row * u64::from(h));
+        let Staging { cov: Some((cov_out, _)), paint: Some((paint_out, _)), depth: Some((depth_out, _)) } = &*staging else {
+            return Err(Unsupported("no staging buffer".into()));
         };
-        let cov_out = staging("pc_paint_surface_cov_staging", cov_row * u64::from(h));
-        let paint_out = staging("pc_paint_surface_paint_staging", paint_row * u64::from(h));
-        let depth_out = staging("pc_paint_surface_depth_staging", depth_row * u64::from(h));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pc_paint_surface_read") });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &self.cov, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo {
-                buffer: &cov_out,
+                buffer: cov_out,
                 layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(cov_row as u32), rows_per_image: Some(h) },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -668,7 +676,7 @@ impl PaintSurface {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &self.paint, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo {
-                buffer: &paint_out,
+                buffer: paint_out,
                 layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(paint_row as u32), rows_per_image: Some(h) },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -676,7 +684,7 @@ impl PaintSurface {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &self.depth, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo {
-                buffer: &depth_out,
+                buffer: depth_out,
                 layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(depth_row as u32), rows_per_image: Some(h) },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -686,9 +694,9 @@ impl PaintSurface {
         paint_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         depth_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).map_err(|e| Unsupported(format!("GPU wait failed: {e}")))?;
-        let cov = decode_rgba_r(&cov_out, cov_row, w, h, 8)?;
-        let paint = decode_rgba(&paint_out, paint_row, w, h)?;
-        let depth = decode(&depth_out, depth_row, w, h, 2)?;
+        let cov = decode_rgba_r(cov_out, cov_row, w, h, 8)?;
+        let paint = decode_rgba(paint_out, paint_row, w, h)?;
+        let depth = decode(depth_out, depth_row, w, h, 2)?;
         let mut out = SurfaceRead { coverage: Vec::with_capacity(cov.len()), depth, color: Vec::with_capacity(cov.len()) };
         for (coverage, [r, g, b, _]) in cov.iter().zip(&paint) {
             let coverage = coverage.clamp(0.0, 1.0);
@@ -745,6 +753,25 @@ const ZERO_ALPHA_BLEND: wgpu::BlendComponent = wgpu::BlendComponent {
     dst_factor: wgpu::BlendFactor::One,
     operation: wgpu::BlendOperation::Add,
 };
+
+/// Make sure one readback slot holds a buffer of `want` bytes, growing it when asked for more.
+fn ensure_stage(staging: &mut Staging, device: &wgpu::Device, which: Stage, want: u64) {
+    let (label, slot) = match which {
+        Stage::Cov => ("pc_paint_surface_cov_staging", &mut staging.cov),
+        Stage::Depth => ("pc_paint_surface_depth_staging", &mut staging.depth),
+        Stage::Paint => ("pc_paint_surface_paint_staging", &mut staging.paint),
+    };
+    if slot.as_ref().is_some_and(|(_, size)| *size >= want) {
+        return;
+    }
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: want,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    *slot = Some((buffer, want));
+}
 
 fn instance_buffer(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {

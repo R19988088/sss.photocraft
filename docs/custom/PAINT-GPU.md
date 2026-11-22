@@ -200,6 +200,46 @@ rest 40。**transport 从 97 掉到 10 ms，此后涂抹的账几乎全是 mask 
 
 分项：涂抹 115 ms/帧里 masks 55、accumulate 22–24、tr-weights 12、transport 4.3、rest 44。
 
+### 画笔参数的账（2026-11-22 逐项查过）
+
+先按「参数 → 落在哪条路径 → 大笔刷一帧的代价（900 px / 1%，2520×1575）」排一遍，慢的都在下面三档：
+
+**A. 留在折叠帧（GPU 一次画完、一次小回读，10–37 ms/帧）**
+`size`、`hardness(+dynamic)`、`spacing`、`flow`、`opacity`、`pressure_*`、`tip`（含采样位图）、
+`angle`、`roundness`、`flip_x/y`、`aliased`、`triangle`、`c3_tip_math`、`square`、`texture`（含
+`each_tip`）、`scattering`、`shape_dynamics`、`pose`、`transfer`、`color_dynamics`（走 colour lane，
+多读一份 paint）、`wet_edges`（多读一份 depth）。
+
+**B. 落回逐 dab 回读（mask 46–55 ms/帧 + CPU 累加 21–24）**
+`mix_settings.enabled`（V1 涂抹）、`saturation_record_strength`/`saturation_preserve_output` > 0、
+`erase`（直接拒绝折叠）、`pigment`/`canvas_material`、单 dab 湿边描边（`wet_edge.outline=Single`）。
+
+**C. 掉到逐 dab CPU 光栅（约 15 ms/dab，一帧 9 dab ≈ 140 ms，最贵）**
+`noise`、`grain`（`StampJob::of_with` 直接返回 None）、单个 dab 超过图集（>16.7 M px，直径约 >4100 px）。
+
+**D. 掉到逐 dab CPU 涂抹（约 17 ms/dab，即 273 ms 那一档）**
+`algorithm=V2/V3`、`blur_color_target`、`pigment_mix_strength>0`、`blur_strength>0`（模糊那条 lane 只有 CPU 实现）。
+
+这一轮顺手落地的一刀（对所有 A/B 两档都有效）：**回读缓冲不再每帧新分配**。
+`read_masks`/`read_masks_color`/`read` 原来每次 `device.create_buffer` 一块 26 MB 的 MAP_READ 缓冲
+（一帧 3 个 chunk 就是 9 块），页错误 + 清零比拷贝还贵；现在 `PaintSurface` 持有 `Staging`
+（cov / depth / paint 三槽），够大就复用。masks 55 → 46，涂抹 115 → 103，单色 11.0 → 10.0。
+
+| 笔（900 px / 1%） | 最初 | 现在 |
+|---|---|---|
+| 单色 | 14.3 ms | 10.0 ms |
+| 图案 | 41.3 ms | 37.0 ms |
+| 涂抹 V1 | 459 ms（更早）/ 319 ms | 103 ms |
+
+下一个杠杆（按「一刀能影响多少参数」排序，尚未做）：
+1. cov/depth 回读改成 compute 打包成 f32 storage buffer：8 B/px → 4 B/px，A/B 两档都受益，
+   masks 46 → 约 28；
+2. `noise`/`grain` 搬进 `paint_surface.wgsl`：C 档的 140 ms/帧直接变 A 档，粒度按呼吸感最强的
+   一组参数（`grain` 的 4 张灰度图 + `noise` 的哈希）；
+3. `erase` 解除折叠拒绝（累加定律 `c←c+ v(ceil−c)` 与顺序无关，折叠应与逐 dab 等价）；
+4. V2/V3 与 `blur_strength` 的 compute pass（D 档，273 ms）。
+
+
 
 ### 试过、量过、没留下：图案色进 colour lane
 
