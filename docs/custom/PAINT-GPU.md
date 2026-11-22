@@ -212,7 +212,8 @@ rest 40。**transport 从 97 掉到 10 ms，此后涂抹的账几乎全是 mask 
 
 **B. 落回逐 dab 回读（mask 46–55 ms/帧 + CPU 累加 21–24）**
 `mix_settings.enabled`（V1 涂抹）、`saturation_record_strength`/`saturation_preserve_output` > 0、
-`erase`（直接拒绝折叠）、`pigment`/`canvas_material`、单 dab 湿边描边（`wet_edge.outline=Single`）。
+`pigment`/`canvas_material`、单 dab 湿边描边（`wet_edge.outline=Single`）、开了混色的橡皮
+（`erase && mix_settings.enabled`——那条 lane 要读每个 dab 下面的画布色）。橡皮本身已经不拒绝了。
 
 **C. 掉到逐 dab CPU 光栅（约 15 ms/dab，一帧 9 dab ≈ 140 ms，最贵）**
 `noise`、`grain`（`StampJob::of_with` 直接返回 None）、单个 dab 超过图集（>16.7 M px，直径约 >4100 px）。
@@ -228,21 +229,30 @@ rest 40。**transport 从 97 掉到 10 ms，此后涂抹的账几乎全是 mask 
 | 笔（900 px / 1%） | 最初 | 现在 |
 |---|---|---|
 | 单色 | 14.3 ms | 10.0 ms |
-| 图案 | 41.3 ms | 35.9 ms |
-| 涂抹 V1 | 459 ms（更早）/ 319 ms | 103 ms |
+| 图案 | 41.3 ms | 34.2 ms |
+| 涂抹 V1 | 459 ms（更早）/ 319 ms | 105.7 ms |
+| 橡皮 | ~150 ms（逐 dab） | 10.2 ms |
 
 图案这一档的分项（913×986 的并集，一帧 9–10 dab）：masks ≈ 7、**colour ≈ 19–20**、accumulate ≈ 8。
 colour 就是 `lane_colors` 的逐像素五抽样，单线程实测 140 ms / 89 万 px ≈ 157 ns/px；
 把 4×4 邻域沿行携带（`PigmentWalk`）只省 8 %，因为并行那一档已经被内存/调度吃掉。
 所以图案再往下走不是换更快的采样器，而是让合成也在 GPU 上做、CPU 完全不碰逐像素色板。
 
+橡皮这一刀：`aggregate_frame` 原来对 `b.erase` 直接拒绝，其实折叠 lane 只往 cov map 累加、
+擦除方向是在合成时读的，所以拒绝是多余的。去掉后 `PC_COMPARE=1` 在 900 px / 1% 上比折叠与
+逐 dab 两条路径的结果：**max 0.00000、mean 0、超过 1/255 的通道 0 个**——逐位相同。帧 10.2 ms。
+
 下一个杠杆（按「一刀能影响多少参数」排序，尚未做）：
-1. cov/depth 回读改成 compute 打包成 f32 storage buffer：8 B/px → 4 B/px，A/B 两档都受益，
-   masks 46 → 约 28；
-2. `noise`/`grain` 搬进 `paint_surface.wgsl`：C 档的 140 ms/帧直接变 A 档，粒度按呼吸感最强的
+1. `noise`/`grain` 搬进 `paint_surface.wgsl`：C 档的 140 ms/帧直接变 A 档，粒度按呼吸感最强的
    一组参数（`grain` 的 4 张灰度图 + `noise` 的哈希）；
-3. `erase` 解除折叠拒绝（累加定律 `c←c+ v(ceil−c)` 与顺序无关，折叠应与逐 dab 等价）；
-4. V2/V3 与 `blur_strength` 的 compute pass（D 档，273 ms）。
+2. V2/V3 与 `blur_strength` 的 compute pass（D 档，273 ms）；
+3. 图案逐像素色板搬到 GPU —— 前提是合成也不在 CPU 上（见上）。
+
+已试过、量过、没留下：**cov/depth 打包回读**。做法是一个 compute pass 把两条 16 位 lane
+`pack2x16float` 进一个 `R32Uint`（10 B/px → 4 B/px），再只拷这一张纹理。在 RTX 3080 Ti 上
+实测反而更慢：涂抹 103 → 261 ms（transport 分项 4 → 221），图案 35 → 35 不变。原因是
+涂抹那条路径一帧要回读很多次，每次多一个 compute dispatch 加一次同步，比省下的 6 B/px
+带宽贵得多。结论：回读慢在「每帧调用次数 × 同步」，不在这几 MB 流量，打包方向作废。
 
 
 
