@@ -2569,3 +2569,36 @@ fn a_procraft_stroke_is_the_same_point_by_point_as_in_one_chunk() {
     }
     assert!(worst < 1.0 / 255.0, "chunking changed the stroke: {worst}");
 }
+
+#[test]
+fn a_dual_brush_can_have_a_smudge_of_its_own() {
+    use crate::transport::BrushMixSettings;
+
+    // Without mixing and without a whole brush of its own, the second half only adds coverage.
+    let mut parent = BrushSettings::default();
+    parent.size = 100.0;
+    let dual = DualBrush { enabled: true, secondary_strength: 0.5, ..DualBrush::default() };
+    parent.dual_brush = dual;
+    assert!(parent.dual_brush.resolved_brush(&parent).is_none());
+
+    // With mixing of its own it gets a brush: the first half's, shaped as the dual names, carrying
+    // its own mixing — so it smudges on its own while the first half keeps its rule.
+    let mut mix = BrushMixSettings::default();
+    mix.enabled = true;
+    mix.smudge_enabled = true;
+    mix.strength = 0.7;
+    parent.dual_brush.mix_settings = Some(Box::new(mix));
+    parent.dual_brush.size = 40.0;
+    parent.dual_brush.flow = 0.5;
+
+    let second = parent.dual_brush.resolved_brush(&parent).expect("a mixing second half has a brush");
+    assert_eq!(second.size, 40.0, "the dual's own size");
+    assert_eq!(second.flow, 0.5);
+    assert_eq!(second.mix_settings.strength, 0.7, "its smudge is its own");
+    assert!(second.mix_settings.smudge_enabled);
+    assert!(!second.dual_brush.enabled, "the second half is not itself a dual brush");
+    assert_eq!(second.color, parent.color);
+
+    // The first half keeps its own rule, untouched.
+    assert!(parent.mix_settings.strength <= 1.0);
+}

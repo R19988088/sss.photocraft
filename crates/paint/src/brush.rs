@@ -466,6 +466,10 @@ impl Default for Texture {
 #[serde(default, rename_all = "camelCase")]
 pub struct DualBrush {
     pub full_parameters: Option<Box<BrushSettings>>,
+    /// The second half's own mixing — smudge and blur — when it has one of its own. Set, the
+    /// second half carries colour along its own stamps (a smudge of its own) while the first half
+    /// keeps its own rule; unset, it only adds coverage.
+    pub mix_settings: Option<Box<crate::transport::BrushMixSettings>>,
     pub primary_strength: f32,
     pub secondary_strength: f32,
     pub grain: Option<GrainSettings>,
@@ -494,6 +498,7 @@ impl Default for DualBrush {
     fn default() -> Self {
         Self {
             full_parameters: None,
+            mix_settings: None,
             primary_strength: 1.0,
             secondary_strength: 0.0,
             grain: None,
@@ -1477,7 +1482,25 @@ impl PigmentWalk<'_> {
 
 impl DualBrush {
     pub fn resolved_brush(&self, parent: &BrushSettings) -> Option<BrushSettings> {
-        let mut b = self.full_parameters.as_deref()?.clone();
+        let mut b = match self.full_parameters.as_deref() {
+            Some(full) => full.clone(),
+            // A second half that mixes has no whole brush of its own *and* needs one: it starts as
+            // the first half, takes the shape the dual itself names, and its mixing is its own —
+            // so its smudge carries colour while the first half's rule stands.
+            None => {
+                let mix = self.mix_settings.as_deref()?.clone();
+                let mut b = parent.clone();
+                b.size = self.size;
+                b.hardness = self.hardness;
+                b.spacing = self.spacing;
+                b.opacity = self.opacity;
+                b.flow = self.flow;
+                b.roundness = self.roundness;
+                b.angle = self.angle;
+                b.mix_settings = mix;
+                b
+            }
+        };
         b.dual_brush = Self::default();
         b = b.bounded_for_render();
         b.color = parent.color;
