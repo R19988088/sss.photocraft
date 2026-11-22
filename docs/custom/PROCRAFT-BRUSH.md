@@ -62,6 +62,7 @@ taper, pressure_flow) are marked `Kind::Tool` instead: they are the app's, not t
 | solid | 10.1 ms | 10.18 | unchanged: the dabs' places were never the cost |
 | pattern (our colour lane) | 34.2 | 35.00 | unchanged, same reason |
 | pattern as grain (GPU coverage) | — | **9.86** | what a ProCraft brush does with a texture |
+| pattern, switched to grain | 34.2 | **9.67** | `procraft::effective`: the patch becomes a gray tile |
 | smudge | 105.7 | 44.55 | ProCraft's stamps come out thinner; the transport lane is still ours |
 | smudge + pattern | — | 156.48 | |
 | erase | 10.2 | 10.00 | |
@@ -73,8 +74,14 @@ Two conclusions come out of that table and both point at the same place:
    by nothing at all.
 2. **The pattern's 35 ms is the per-pixel colour lane, and only that.** The same pattern reaching
    the coverage in the shader (`mask_combine` — the GPU path this app already has) costs 9.86 ms,
-   the solid price. So the replacement should keep ProCraft's grain (a texture over the coverage) and
-   drop our sampled-pattern colour, which is exactly what the pink list says.
+   the solid price. So the replacement keeps ProCraft's grain (a texture over the coverage) and drops
+   our sampled-pattern colour; `procraft::effective` does it in one step: a sampled pattern's
+   weighted luma (with its own alpha, so a transparent corner stays a hole) becomes a `GrayTile` on
+   `texture.pattern`, `pattern_enabled` goes off, and the colour lane is never allocated. Measured
+   9.67 ms — the solid price, as predicted.
+
+   That is the whole of the "don't mix the pipelines" rule for the pattern: one lane, the shader's
+   coverage. Nothing else of the brush reaches into the colour lane under ProCraft's brush.
 
 A correction worth keeping: the 1.4 s pen-up in the first ProCraft run was the benchmark's error,
 not the stroke's — it called `add` throughout, so at pen-up `add_tipped` returned the whole stroke

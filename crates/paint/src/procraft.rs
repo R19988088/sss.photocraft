@@ -49,10 +49,8 @@ pub const UNMAPPED: &[Unmapped] = &[
     // --- wet edge: its no-build-up rule is `Rendering::Strongest`, the rim it draws is not there ---
     Unmapped { param: "wet_edges", kind: Kind::Partial },
     Unmapped { param: "wet_edge", kind: Kind::Pink },
-    // --- patterns: ours are procedural or sampled colour, ProCraft's grain is an image over the coverage ---
-    Unmapped { param: "pattern_enabled", kind: Kind::Pink },
-    Unmapped { param: "sampled_pattern", kind: Kind::Pink },
-    Unmapped { param: "texture", kind: Kind::Pink },
+    // --- patterns: carried as grain, not as a second colour lane (`effective` turns a sampled
+    // pattern into a gray tile on the texture lane; the procedural ones already live there) ---
     Unmapped { param: "protect_texture", kind: Kind::Pink },
     Unmapped { param: "noise", kind: Kind::Pink },
     Unmapped { param: "grain", kind: Kind::Pink },
@@ -117,6 +115,38 @@ pub fn enabled() -> bool {
         Ok(v) => v != "0",
         Err(_) => false,
     })
+}
+
+/// `settings` as this app should draw them under ProCraft's brush: one pipeline for the pattern.
+///
+/// Our sampled pattern is a per-pixel colour (a second lane beside the coverage, and the 35 ms a
+/// 900 px stroke costs). ProCraft's brush has grain instead — a texture over the coverage — which
+/// this app's shader already combines in one GPU pass. Under the ProCraft brush a pattern is
+/// therefore taken as grain: the patch's luminance becomes a gray tile on the texture lane and the
+/// colour lane is switched off, so a textured stroke costs what a solid one costs.
+pub fn effective(settings: &BrushSettings) -> BrushSettings {
+    let mut out = settings.clone();
+    if !settings.pattern_enabled {
+        return out;
+    }
+    let Some(pattern) = &settings.sampled_pattern else { return out };
+    if !pattern.is_valid() {
+        return out;
+    }
+    let was_textured = settings.texture.enabled;
+    out.texture.pattern = crate::brush::Pattern::Tile(crate::tile::GrayTile::from_fn(pattern.width, pattern.height, |x, y| {
+        let p = pattern.pixels[(y * pattern.width + x) as usize];
+        // Weighted luma, with the patch's own alpha: a transparent corner stays a hole in the grain.
+        (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * p[3].clamp(0.0, 1.0)
+    }));
+    out.texture.enabled = true;
+    if !was_textured {
+        out.texture.depth = 1.0;
+    }
+    out.texture.each_tip = false;
+    out.pattern_enabled = false;
+    out.sampled_pattern = None;
+    out
 }
 
 /// The stamp diameter a stroke of `settings` is drawn at, canvas pixels.
@@ -443,6 +473,38 @@ mod tests {
         // Off: no secondary at all.
         settings.dual_brush.enabled = false;
         assert!(brush(&settings).secondary.is_none());
+    }
+
+    #[test]
+    fn a_sampled_pattern_becomes_grain_under_the_procraft_brush() {
+        use crate::brush::{ColorPattern, Pattern};
+
+        let mut settings = BrushSettings::default();
+        settings.pattern_enabled = true;
+        settings.sampled_pattern = Some(ColorPattern {
+            width: 4,
+            height: 4,
+            pixels: std::sync::Arc::from(vec![[0.2, 0.2, 0.2, 1.0]; 16].into_boxed_slice()),
+        });
+
+        let e = effective(&settings);
+        assert!(!e.pattern_enabled, "the colour lane steps aside");
+        assert!(e.sampled_pattern.is_none());
+        assert!(e.texture.enabled, "the pattern is the texture lane's now");
+        assert_eq!(e.texture.depth, 1.0, "a pattern that was not textured gets the grain's whole depth");
+        match &e.texture.pattern {
+            Pattern::Tile(t) => {
+                assert_eq!((t.width, t.height), (4, 4));
+                assert_eq!(t.data.len(), 16);
+            }
+            _ => panic!("a sampled pattern becomes a gray tile"),
+        }
+
+        // No pattern: the brush is left exactly as it is.
+        let plain = BrushSettings::default();
+        let same = effective(&plain);
+        assert!(!same.pattern_enabled);
+        assert!(!same.texture.enabled);
     }
 
     #[test]

@@ -1793,6 +1793,10 @@ impl StrokeRenderer {
     }
     /// `fmt` = target pixel format (needed for per-dab colour); `zoom` for smoothing.
     pub fn new(brush: &BrushSettings, fmt: Option<PixelFormat>, zoom: f32) -> Self {
+        // Under ProCraft's brush the pattern is grain, not a second colour lane: one pipeline for
+        // it, and a textured stroke then costs what a solid one costs (see `procraft::effective`).
+        let effective = crate::procraft::enabled().then(|| crate::procraft::effective(brush));
+        let brush = effective.as_ref().unwrap_or(brush);
         let single = brush.wet_edges
             && brush.wet_edge.as_ref().is_some_and(|w| w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
         let per_dab_color = (brush.saturation_record_strength > 0.0
