@@ -56,7 +56,20 @@ fn brushes(size: f32, spacing: f32) -> Vec<(&'static str, BrushSettings)> {
         ..base.clone()
     };
     let erase = BrushSettings { erase: true, ..base.clone() };
-    vec![("solid", solid), ("pattern", patterned), ("smudge", smudge), ("smudge+pattern", smudge_pattern), ("erase", erase)]
+    // What a ProCraft brush does with a pattern: the texture reaches the coverage on the GPU (the
+    // shader's `mask_combine`), so there is no per-dab colour to sample.
+    let grain = BrushSettings {
+        texture: photocraft_paint::brush::Texture { enabled: true, depth: 1.0, scale: 1.0, ..Default::default() },
+        ..base.clone()
+    };
+    vec![
+        ("solid", solid),
+        ("pattern", patterned),
+        ("grain", grain),
+        ("smudge", smudge),
+        ("smudge+pattern", smudge_pattern),
+        ("erase", erase),
+    ]
 }
 
 struct Run {
