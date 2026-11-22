@@ -29,6 +29,7 @@ pub mod mixer;
 pub mod outline;
 mod pattern_cache;
 pub mod presets;
+pub mod procraft;
 pub mod procedural;
 pub mod render;
 pub mod replace;

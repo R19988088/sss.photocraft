@@ -67,8 +67,19 @@ own; done that way, pen-up is 0.19 ms.
 
 1. **The smudge lane**: ProCraft's `smudge.wgsl` (pigment lay/carry, the warped window) instead of
    this app's transport. That is the 44.55 ms.
-2. **The app switch**: `crates/ui-egui/src/canvas/strokes.rs`'s `EngineStroke` is what a live stroke
-   is; the switch has to carry ProCraft's `StrokeBuilder` there, including the pen-up tip layer,
-   the tail preview and the dual brush. Until that lands the app still paints with the old
-   generator and `PC_PROCRAFT=1` only affects the benchmark.
-3. **The pink panel**: `UNMAPPED` is the data for it; the panel has to read it.
+2. **The pink panel**: `UNMAPPED` is the data for it; the panel has to read it.
+3. **The default**: `PHOTOCRAFT_PROCRAFT_BRUSH=1` is how a stroke is drawn by ProCraft's brush today.
+   Flipping the default needs the paint suite's brush-behaviour tests re-based one brush at a time —
+   they assert this app's brush, and ProCraft's brush draws differently on purpose. Not a bug to fix:
+   a decision to take, brush by brush, with the pink list as the guide.
+
+## How to drive it
+
+```
+PHOTOCRAFT_PROCRAFT_BRUSH=1 photocraft.exe      # strokes drawn by ProCraft's brush
+PHOTOCRAFT_PROCRAFT_BRUSH=0 photocraft.exe      # this app's own generator (the default)
+```
+
+`cargo run --release -p photocraft-ui-egui --example paint_modes_bench -- 900 1` times the modes;
+add `PC_PROCRAFT=1` to drive the stroke through ProCraft's builder and `PC_TRANSPORT_GPU=1` for the
+GPU smudge.

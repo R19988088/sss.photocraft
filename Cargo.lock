@@ -5717,6 +5717,7 @@ dependencies = [
  "photocraft-color",
  "photocraft-geom",
  "photocraft-raster",
+ "procraft-engine",
  "rayon",
  "rustc-hash 2.1.3",
  "serde",

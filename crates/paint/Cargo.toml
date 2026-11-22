@@ -11,6 +11,9 @@ workspace = true
 photocraft-geom = { workspace = true }
 photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
+# The brush system is ProCraft's (vendored verbatim in `crates/procraft-engine`); `procraft.rs` is
+# the seam between its brush and this app's settings.
+procraft-engine = { path = "../procraft-engine" }
 serde = { workspace = true }
 rustc-hash = { workspace = true }
 

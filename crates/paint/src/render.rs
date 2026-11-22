@@ -1460,6 +1460,12 @@ impl LaneTransport {
 pub struct StrokeRenderer {
     pub ctx: BrushContext,
     generator: DabGenerator,
+    /// ProCraft's stroke, when this app draws with its brush system (see
+    /// [`crate::procraft::enabled`]): it turns the pointer into stamps, the generator steps aside.
+    /// Behind a lock because ProCraft's builder holds a slot for a plugin engine that is `Send` but
+    /// not `Sync`, and this renderer is shared by the parallel tile composite (`Sync`); nothing else
+    /// ever touches it, and a stroke's own dabs are laid under `&mut self`.
+    procraft: Option<std::sync::Arc<std::sync::Mutex<ProCraftStroke>>>,
     cov: CoverageMap,
     dual: Option<CoverageMap>,
     fmt: Option<PixelFormat>,
@@ -1488,6 +1494,32 @@ pub struct StrokeRenderer {
 /// one texture, so this is an upper bound rather than a target: past it, dabs are submitted in
 /// chunks.
 const MASK_CHUNK_PIXELS: u64 = 8_000_000;
+
+/// This app's stroke, drawn by ProCraft's brush: its builder turns pointer samples into stamps, and
+/// the stamps are laid as this renderer's own dabs.
+#[derive(Clone)]
+struct ProCraftStroke {
+    builder: procraft_engine::stroke::StrokeBuilder,
+    settings: BrushSettings,
+    color: [f32; 4],
+}
+
+impl std::fmt::Debug for ProCraftStroke {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProCraftStroke").field("size", &self.settings.size).field("spacing", &self.settings.spacing).finish_non_exhaustive()
+    }
+}
+
+impl ProCraftStroke {
+    fn new(brush: &BrushSettings) -> Self {
+        Self { builder: crate::procraft::stroke(brush), settings: brush.clone(), color: brush.color }
+    }
+
+    /// The dabs the stamps just made are drawn as.
+    fn dabs(&self, stamps: &[procraft_engine::stroke::Stamp]) -> Vec<Dab> {
+        crate::procraft::dabs(stamps, &self.settings, self.color)
+    }
+}
 
 /// `PHOTOCRAFT_PAINT_PROFILE=1` prints what a frame's dab batch costs, stage by stage.
 fn profiling() -> bool {
@@ -1697,6 +1729,8 @@ impl StrokeRenderer {
                     merged = Some(Self {
                         ctx: p.ctx.clone(),
                         generator: p.generator.clone(),
+                        // A merge draws what the passes already made; no stroke builder is needed.
+                        procraft: None,
                         cov,
                         dual,
                         fmt: p.fmt,
@@ -1774,6 +1808,7 @@ impl StrokeRenderer {
         Self {
             ctx: BrushContext::new(brush),
             generator: DabGenerator::new(brush, zoom),
+            procraft: crate::procraft::enabled().then(|| std::sync::Arc::new(std::sync::Mutex::new(ProCraftStroke::new(brush)))),
             cov: CoverageMap::new(nc),
             dual: brush
                 .dual_brush
@@ -2446,6 +2481,21 @@ impl StrokeRenderer {
 
     /// Feed input points (any chunking gives the same result).
     pub fn push(&mut self, pts: &[StrokePoint]) {
+        if let Some(shared) = &self.procraft {
+            let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
+            let mut dabs = Vec::new();
+            for pt in pts {
+                let sample = crate::procraft::sample(pt);
+                // ProCraft's canvas adds with the tip shown: what the tapers still hold back comes
+                // back as the tip (`add_tipped`), and the tip is the canvas's own to draw.
+                let stamps = p.builder.add_tipped(&[sample]).0;
+                dabs.extend(p.dabs(&stamps));
+            }
+            drop(p);
+            dabs.sort_by_key(|d| d.index);
+            self.push_dabs(&dabs);
+            return;
+        }
         self.generator.push(pts, &mut self.dab_buf, &mut self.dual_buf);
         self.raster_pending();
     }
@@ -2466,6 +2516,16 @@ impl StrokeRenderer {
 
     /// End of stroke (smoothing catch-up, a lone first point).
     pub fn finish(&mut self) {
+        if let Some(shared) = &self.procraft {
+            // Pen up: the tapers' held-back stretch, drawn for good.
+            let dabs = {
+                let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
+                let stamps = p.builder.add_tipped(&[]).0;
+                p.dabs(&stamps)
+            };
+            self.push_dabs(&dabs);
+            return;
+        }
         self.generator.finish(&mut self.dab_buf, &mut self.dual_buf);
         self.raster_pending();
     }
@@ -2510,6 +2570,8 @@ impl StrokeRenderer {
         let mut t = StrokeRenderer {
             ctx: self.ctx.clone(),
             generator,
+            // The tail preview draws its own dabs; a stroke builder of its own is not needed.
+            procraft: None,
             cov: subset(&self.cov),
             dual: self.dual.as_ref().map(subset),
             fmt: self.fmt,
