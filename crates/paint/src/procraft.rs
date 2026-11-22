@@ -256,10 +256,38 @@ pub fn brush(settings: &BrushSettings) -> Brush {
         };
         // One secondary each: the second stroke is not itself a dual brush.
         second.secondary = None;
+        // A wet edge is a rule of the stroke that carries it, so each half keeps its own: the
+        // second's stamps do not build up when its own wet edge is on, whatever the first's is.
+        second.rendering = if d.wet_edges {
+            procraft_engine::brush::Rendering::Strongest
+        } else {
+            brush.rendering
+        };
         brush.secondary = Some(Box::new(second));
     }
 
     brush
+}
+
+/// Which of the brush's three tools a stroke is drawn with.
+///
+/// The brush is one. Painting, smudging and erasing differ only in which of its own settings are let
+/// through — the smudge's `mix_settings`, the eraser's `erase` — not in what draws the stroke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tool {
+    Paint,
+    Smudge,
+    Erase,
+}
+
+pub fn tool(settings: &BrushSettings) -> Tool {
+    if settings.erase {
+        Tool::Erase
+    } else if settings.mix_settings.enabled && settings.mix_settings.smudge_enabled {
+        Tool::Smudge
+    } else {
+        Tool::Paint
+    }
 }
 
 /// A stroke's builder, as ProCraft makes it: the brush, the diameter, and the pointer that draws it.
@@ -469,10 +497,42 @@ mod tests {
         assert_eq!(second.shape.throw, 0.3, "a radius of throw is half a stamp diameter");
         assert_eq!(second.shape.count, 2);
         assert!(second.secondary.is_none(), "the second stroke is not itself a dual brush");
+        assert_eq!(
+            second.rendering,
+            procraft_engine::brush::Rendering::BuildUp,
+            "the second keeps its own rule, not the first's"
+        );
+
+        // The second half's own wet edge: its stamps stop building up, while the first's carry on.
+        settings.wet_edges = false;
+        settings.dual_brush.wet_edges = true;
+        let mapped = brush(&settings);
+        assert_eq!(mapped.rendering, procraft_engine::brush::Rendering::BuildUp);
+        assert_eq!(
+            mapped.secondary.expect("still a secondary").rendering,
+            procraft_engine::brush::Rendering::Strongest
+        );
 
         // Off: no secondary at all.
         settings.dual_brush.enabled = false;
         assert!(brush(&settings).secondary.is_none());
+    }
+
+    #[test]
+    fn the_three_tools_are_one_brush_with_different_limits() {
+        let mut settings = BrushSettings::default();
+        settings.mix_settings.enabled = true;
+        settings.mix_settings.smudge_enabled = false;
+        assert_eq!(tool(&settings), Tool::Paint);
+
+        // A smudge is the same brush with its mixing settings let through.
+        settings.mix_settings.smudge_enabled = true;
+        assert_eq!(tool(&settings), Tool::Smudge);
+        assert_eq!(brush(&settings).max_size, brush(&BrushSettings::default()).max_size);
+
+        // The eraser is the same brush again, and the stroke's pointer says so.
+        settings.erase = true;
+        assert_eq!(tool(&settings), Tool::Erase);
     }
 
     #[test]
