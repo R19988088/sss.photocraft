@@ -5,6 +5,7 @@
 //! every setting ProCraft's brush has no counterpart for, so the brush panel can show it in pink
 //! instead of implying it still acts.
 
+use crate::brush::Control;
 use crate::{BrushSettings, Dab, StrokePoint};
 use procraft_engine::brush::Brush;
 use procraft_engine::geom::Vec2;
@@ -16,6 +17,9 @@ use procraft_engine::stroke::Stamp;
 pub enum Kind {
     /// A brush parameter of ours with no ProCraft counterpart: **pink** in the brush panel.
     Pink,
+    /// A section carried in part: its main controls reach ProCraft's brush, its own extras do not —
+    /// shown pink too, with the part that is left out named in the panel's tooltip.
+    Partial,
     /// Not a brush parameter at all — the tool, the document or the app supplies it (colour, erase,
     /// the layer's blend mode…), so the panel keeps showing it as it always has.
     Tool,
@@ -42,8 +46,8 @@ pub const UNMAPPED: &[Unmapped] = &[
     Unmapped { param: "flow_algorithm_version", kind: Kind::Pink },
     Unmapped { param: "c3_preserved_parameters", kind: Kind::Pink },
     Unmapped { param: "mixer", kind: Kind::Pink },
-    // --- wet edge: no field at all ---
-    Unmapped { param: "wet_edges", kind: Kind::Pink },
+    // --- wet edge: its no-build-up rule is `Rendering::Strongest`, the rim it draws is not there ---
+    Unmapped { param: "wet_edges", kind: Kind::Partial },
     Unmapped { param: "wet_edge", kind: Kind::Pink },
     // --- patterns: ours are procedural or sampled colour, ProCraft's grain is an image over the coverage ---
     Unmapped { param: "pattern_enabled", kind: Kind::Pink },
@@ -54,11 +58,16 @@ pub const UNMAPPED: &[Unmapped] = &[
     Unmapped { param: "grain", kind: Kind::Pink },
     // --- dynamics with no counterpart (ProCraft's `Shape` has scatter and jitter only) ---
     Unmapped { param: "hardness_dynamic", kind: Kind::Pink },
-    Unmapped { param: "shape_dynamics", kind: Kind::Pink },
-    Unmapped { param: "scattering", kind: Kind::Pink },
+    // Tilt (angle/size/opacity), follow-azimuth, the angle jitter and the size jitter reach ProCraft;
+    // the roundness, stroke, flip and projection controls do not.
+    Unmapped { param: "shape_dynamics", kind: Kind::Partial },
+    // Its scatter and count reach ProCraft's throw and count: the range, spacing and count jitters,
+    // the radial option and the controls behind them do not.
+    Unmapped { param: "scattering", kind: Kind::Partial },
     Unmapped { param: "dual_brush", kind: Kind::Pink },
     Unmapped { param: "color_dynamics", kind: Kind::Pink },
-    Unmapped { param: "transfer", kind: Kind::Pink },
+    // Its opacity jitter reaches ProCraft's own; flow, wetness and mix jitter do not.
+    Unmapped { param: "transfer", kind: Kind::Partial },
     Unmapped { param: "pose", kind: Kind::Pink },
     Unmapped { param: "build_up", kind: Kind::Pink },
     Unmapped { param: "build_up_rate", kind: Kind::Pink },
@@ -84,7 +93,6 @@ pub const UNMAPPED: &[Unmapped] = &[
     Unmapped { param: "seed", kind: Kind::Tool },
     Unmapped { param: "locks", kind: Kind::Tool },
     Unmapped { param: "smoothing", kind: Kind::Tool },
-    Unmapped { param: "taper", kind: Kind::Tool },
     Unmapped { param: "pressure_flow", kind: Kind::Tool },
 ];
 
@@ -141,6 +149,54 @@ pub fn brush(settings: &BrushSettings) -> Brush {
 
     // Our string length (0..1 of 100 px) is ProCraft's streamline (0..1).
     brush.streamline = if settings.smoothing.enabled { settings.smoothing.amount.clamp(0.0, 1.0) } else { 0.0 };
+
+    // The stroke's tapers. Ours is the end taper alone — a share of the diameter, and how much of
+    // the pen's pressure it takes away — which is ProCraft's `size` on the same length.
+    brush.pen_taper = if settings.taper.enabled {
+        procraft_engine::brush::Taper {
+            start: 0.0,
+            end: settings.taper.end.clamp(0.0, 1.0),
+            size: settings.taper.size.clamp(0.0, 1.0),
+            opacity: 0.0,
+        }
+    } else {
+        procraft_engine::brush::Taper::NONE
+    };
+
+    // What leaning does: ProCraft's Tilt is the same three controls, and its dial is our tilt angle.
+    brush.tilt.angle = settings.shape_dynamics.tilt_angle.clamp(0.0, 1.0);
+    brush.tilt.size = settings.shape_dynamics.tilt_size.clamp(0.0, 2.0);
+    brush.tilt.opacity = settings.shape_dynamics.tilt_opacity.clamp(0.0, 1.0);
+    brush.shape.follow_azimuth = settings.shape_dynamics.follow_azimuth;
+
+    // Shape dynamics: a random turn (ours is a share of ±180°, ProCraft's a share of half turns),
+    // the stamp's size jitter, and a stamp that follows the stroke's direction.
+    if settings.shape_dynamics.enabled {
+        brush.shape.scatter = settings.shape_dynamics.angle.jitter.min(2.0);
+        brush.shape.size_jitter = settings.shape_dynamics.size.jitter.clamp(0.0, 1.0);
+        brush.shape.follow = match settings.shape_dynamics.angle.control {
+            Control::Direction => 1.0,
+            _ => 0.0,
+        };
+    }
+
+    // Scattering: ours throws dabs up to one radius at 100 %, ProCraft's `throw` counts in stamp
+    // diameters; both step the dab count the same way.
+    if settings.scattering.enabled {
+        brush.shape.throw = settings.scattering.scatter.jitter.min(2.0) * 0.5;
+        brush.shape.count = settings.scattering.count.clamp(1, 16);
+    }
+
+    // Transfer's opacity jitter is ProCraft's own.
+    if settings.transfer.enabled {
+        brush.shape.opacity_jitter = settings.transfer.opacity.jitter.clamp(0.0, 1.0);
+    }
+
+    // A wet edge's rule — overlapping dabs must not build up — is ProCraft's `Strongest`; the rim
+    // it draws is the part ProCraft's brush has no field for (pink).
+    if settings.wet_edges {
+        brush.rendering = procraft_engine::brush::Rendering::Strongest;
+    }
 
     brush
 }
@@ -228,6 +284,51 @@ mod tests {
         assert_eq!(brush.pressure_opacity, 0.0);
         assert_eq!(brush.shape.roundness, 0.5);
         assert!((brush.shape.rotation - 30f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_old_brushes_parameters_reach_procrafts_brush() {
+        use crate::brush::{Dynamic, Scattering, ShapeDynamics, Taper, Transfer};
+
+        let mut settings = BrushSettings::default();
+        settings.taper = Taper { enabled: true, end: 0.35, size: 0.6 };
+        settings.shape_dynamics = ShapeDynamics {
+            enabled: true,
+            tilt_angle: 0.4,
+            tilt_size: 1.2,
+            tilt_opacity: 0.5,
+            follow_azimuth: true,
+            angle: Dynamic { jitter: 0.25, ..Default::default() },
+            ..Default::default()
+        };
+        settings.scattering = Scattering { enabled: true, count: 3, ..Default::default() };
+        settings.scattering.scatter.jitter = 0.8;
+        settings.transfer = Transfer { enabled: true, ..Default::default() };
+        settings.transfer.opacity.jitter = 0.4;
+        settings.wet_edges = true;
+
+        let mapped = brush(&settings);
+        assert_eq!(mapped.pen_taper.end, 0.35);
+        assert_eq!(mapped.pen_taper.size, 0.6);
+        assert_eq!(mapped.pen_taper.start, 0.0);
+        assert_eq!(mapped.tilt.angle, 0.4);
+        assert_eq!(mapped.tilt.size, 1.2);
+        assert_eq!(mapped.tilt.opacity, 0.5);
+        assert!(mapped.shape.follow_azimuth);
+        assert_eq!(mapped.shape.scatter, 0.25, "our share of ±180° is a share of half turns");
+        assert_eq!(mapped.shape.size_jitter, 0.0);
+        assert_eq!(mapped.shape.throw, 0.4, "a radius of throw is half a stamp diameter");
+        assert_eq!(mapped.shape.count, 3);
+        assert_eq!(mapped.shape.opacity_jitter, 0.4);
+        assert_eq!(mapped.rendering, procraft_engine::brush::Rendering::Strongest, "wet edges must not build up");
+
+        // A brush with the taper off ends at the pen's lift, and nothing else is switched on.
+        let plain = BrushSettings { taper: crate::brush::Taper { enabled: false, ..crate::brush::Taper::default() }, ..BrushSettings::default() };
+        let quiet = brush(&plain);
+        assert_eq!(quiet.pen_taper, procraft_engine::brush::Taper::NONE);
+        assert_eq!(quiet.shape.count, 1);
+        assert_eq!(quiet.shape.throw, 0.0);
+        assert_eq!(quiet.rendering, procraft_engine::brush::Rendering::BuildUp);
     }
 
     #[test]
