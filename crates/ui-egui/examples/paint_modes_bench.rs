@@ -1,9 +1,12 @@
 //! Live-frame cost of the brush's colour sources and mixing modes on a big brush — the solid
-//! colour path against the sampled-pattern (图案) path and the C3 smudge (颜色涂抹) path — drawn
-//! the way the canvas draws them: one input point a frame on a kept `StrokeRenderer`, with the
-//! GPU mask backend installed.
+//! colour path against the sampled-pattern (图案) path, the C3 smudge (颜色涂抹) path and an
+//! eraser — drawn the way the canvas draws them: one input point a frame on a kept
+//! `StrokeRenderer`, with the GPU mask backend installed.
 //!
-//! `cargo run --release -p photocraft-ui-egui --example paint_modes_bench [size] [spacing%]`
+//! `cargo run --release -p photocraft-ui-egui --example paint_modes_bench [size] [spacing%] [mode]`
+//!
+//! `PC_COMPARE=1` draws each stroke twice, folded (the GPU backend) and per-dab (no backend) and
+//! reports how far apart the two results are.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -52,7 +55,37 @@ fn brushes(size: f32, spacing: f32) -> Vec<(&'static str, BrushSettings)> {
         sampled_pattern: Some(pattern(256)),
         ..base.clone()
     };
-    vec![("solid", solid), ("pattern", patterned), ("smudge", smudge), ("smudge+pattern", smudge_pattern)]
+    let erase = BrushSettings { erase: true, ..base.clone() };
+    vec![("solid", solid), ("pattern", patterned), ("smudge", smudge), ("smudge+pattern", smudge_pattern), ("erase", erase)]
+}
+
+struct Run {
+    target: Surface,
+    times: Vec<f64>,
+    finish: f64,
+}
+
+fn stroke(b: &BrushSettings, w: i32, h: i32) -> Run {
+    let mut target = Surface::new(PixelFormat::RGBA8);
+    // Something under the stroke for the smudge to drag, and an eraser to take away.
+    target.fill_rect(Rect::new(0, 0, w, h), &[0.2, 0.35, 0.6, 1.0]);
+    target.fill_rect(Rect::new(0, h / 2, w / 2, h), &[0.85, 0.6, 0.2, 1.0]);
+    let mut r = photocraft_paint::StrokeRenderer::on_surface(b, &target, 1.0);
+    let mut times = Vec::new();
+    for i in 0..48 {
+        let x = (220.0 + i as f64 * 9.0).min(w as f64 - 220.0);
+        let y = (h as f64) * 0.45 + (i as f64 * 0.28).sin() * (h as f64) * 0.2;
+        let p = StrokePoint::new(x, y, 0.72);
+        let t = Instant::now();
+        r.push(&[p]);
+        std::hint::black_box(&r);
+        times.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let t = Instant::now();
+    r.finish();
+    let finish = t.elapsed().as_secs_f64() * 1000.0;
+    times.sort_by(f64::total_cmp);
+    Run { target, times, finish }
 }
 
 fn main() {
@@ -74,35 +107,39 @@ fn main() {
     }
     println!("{} — size {size}, spacing {:.0}%, {w}x{h}", adapter.get_info().name, spacing * 100.0);
     let only = std::env::args().nth(3).unwrap_or_default();
+    let compare = std::env::var_os("PC_COMPARE").is_some();
     for (name, b) in brushes(size, spacing).into_iter().filter(|(n, _)| only.is_empty() || *n == only) {
-        let mut target = Surface::new(PixelFormat::RGBA8);
-        // Something under the stroke for the smudge to drag.
-        target.fill_rect(Rect::new(0, 0, w, h), &[0.2, 0.35, 0.6, 1.0]);
-        target.fill_rect(Rect::new(0, h / 2, w / 2, h), &[0.85, 0.6, 0.2, 1.0]);
-        let mut r = photocraft_paint::StrokeRenderer::on_surface(&b, &target, 1.0);
-        let mut times = Vec::new();
-        let mut dabs = 0usize;
-        for i in 0..48 {
-            let x = (220.0 + i as f64 * 9.0).min(w as f64 - 220.0);
-            let y = (h as f64) * 0.45 + (i as f64 * 0.28).sin() * (h as f64) * 0.2;
-            let p = StrokePoint::new(x, y, 0.72);
-            let t = Instant::now();
-            r.push(&[p]);
-            std::hint::black_box(&r);
-            times.push(t.elapsed().as_secs_f64() * 1000.0);
-            dabs += 1;
-        }
-        let t = Instant::now();
-        r.finish();
-        let finish = t.elapsed().as_secs_f64() * 1000.0;
-        times.sort_by(f64::total_cmp);
-        let p50 = times[times.len() / 2];
-        let p95 = times[(times.len() * 19).div_euclid(20).min(times.len() - 1)];
+        let gpu = stroke(&b, w, h);
+        let times = &gpu.times;
         println!(
-            "  {name:14} p50 {p50:7.2} ms  p95 {p95:7.2} ms  max {:7.2} ms  finish {finish:7.2} ms  ({dabs} frames)",
-            times[times.len() - 1]
+            "  {name:14} p50 {:7.2} ms  p95 {:7.2} ms  max {:7.2} ms  finish {:7.2} ms  ({} frames)",
+            times[times.len() / 2],
+            times[(times.len() * 19).div_euclid(20).min(times.len() - 1)],
+            times[times.len() - 1],
+            gpu.finish,
+            times.len()
         );
+        if compare {
+            set_process_mask_batch(Default::default());
+            let cpu = stroke(&b, w, h);
+            set_process_mask_batch(photocraft_gpu::masker_slot(device.clone(), queue.clone()));
+            let (a, c) = (gpu.target, cpu.target);
+            let full = Rect::new(0, 0, w, h);
+            let (x, y) = (a.try_read_region(full).unwrap(), c.try_read_region(full).unwrap());
+            let (mut max, mut sum, mut over) = (0.0f32, 0.0f64, 0usize);
+            for (p, q) in x.chunks(4).zip(y.chunks(4)) {
+                for (u, v) in p.iter().zip(q) {
+                    let d = (u - v).abs();
+                    max = max.max(d);
+                    sum += f64::from(d);
+                    if d > 1.0 / 255.0 {
+                        over += 1;
+                    }
+                }
+            }
+            let mean = sum / (x.len().max(1)) as f64;
+            println!("  {name:14} folded vs per-dab: max {max:.5}, mean {mean:.6}, {over} channels over 1/255");
+        }
     }
     set_process_mask_batch(Default::default());
 }
-

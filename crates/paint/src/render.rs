@@ -1897,8 +1897,10 @@ impl StrokeRenderer {
             return fold_debug("no dabs or no masker", dabs.len());
         }
         let b = &self.ctx.brush;
-        if b.erase {
-            return fold_debug("erase", dabs.len());
+        // An eraser folds like any other stroke: the frame accumulates coverage into the map, and
+        // the composite takes it away from the canvas (`erase` is read there, not here).
+        if b.erase && b.mix_settings.enabled {
+            return fold_debug("erase with mixing on", dabs.len());
         }
         if b.pigment.is_some() || b.canvas_material.is_some() {
             return fold_debug("pigment or material", dabs.len());
