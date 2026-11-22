@@ -1,0 +1,74 @@
+# The brush system, replaced with ProCraft's
+
+The decision (the user's, not a fallback): stop patching this app's brush a parameter at a time.
+Take ProCraft's brush system as it is, keep this app's UI, and let the two brushes' parameters
+differ — anything ProCraft's brush has no counterpart for is marked **pink** in the brush panel
+rather than quietly doing nothing.
+
+## What is in the tree
+
+| piece | where | state |
+|---|---|---|
+| ProCraft's document model, brushes, stroke geometry | `crates/procraft-engine` | verbatim, `0c85bc0c`, builds untouched |
+| ProCraft's wgpu renderer (its shaders) | `crates/procraft-gpu` | verbatim, same commit, builds untouched |
+| our settings read as ProCraft's `Brush` | `crates/brush-bridge` | done, tested |
+| ProCraft's stamps laid as this app's dabs | `StrokeRenderer::push_dabs` | done, bench drives it |
+
+The two vendored crates are **not** to be edited: a future upstream refresh is then a plain
+re-copy. Our side of the seam lives in `crates/brush-bridge` and in this app.
+
+`wgpu` is the reason this was cheap to try: `eframe 0.37` already pins `wgpu 30.0.1`, and ProCraft
+asks for `wgpu 30`, so its renderer can share this app's device. No version bridge, no copying
+textures across devices.
+
+## What the seam keeps and what it drops
+
+Kept: size, opacity, spacing, flow, hardness, the three pressure bleeds, roundness, angle,
+streamline, the stamp diameter, and ProCraft's own stroke geometry (spacing rule, taper, scatter,
+jitter).
+
+Dropped for now (`UNMAPPED` in `crates/brush-bridge`, `Kind::Pink`): the pigment/Kubelka-Munk
+machinery (`pigment_mix_strength`, `pigment`, `contour`, `canvas_material`, `saturation_*`,
+`mix_settings` with its V1/V2/V3, `mixer`), wet edge, our procedural patterns and sampled pattern
+colour (`pattern_enabled`, `sampled_pattern`, `texture`, `grain`, `noise`), the dynamics sections
+ProCraft's `Shape` has no field for (`shape_dynamics`, `scattering`, `dual_brush`,
+`color_dynamics`, `transfer`, `pose`, `hardness_dynamic`), build-up, motion/inertia, and the tip
+maths beyond a round tip with `hardness` (`tip`, `c3_tip_math`, `triangle`, `aliased`, `square`,
+`flip_x/y`). Tool-level settings (colour, erase, behind, blend mode, seed, locks, smoothing,
+taper, pressure_flow) are marked `Kind::Tool` instead: they are the app's, not the brush's.
+
+## The numbers (900 px, 1 %, 2520x1575, RTX 3080 Ti, folded frame, p50)
+
+| | before the replacement | with ProCraft's dabs | note |
+|---|---|---|---|
+| solid | 10.1 ms | 10.18 | unchanged: the dabs' places were never the cost |
+| pattern (our colour lane) | 34.2 | 35.00 | unchanged, same reason |
+| pattern as grain (GPU coverage) | — | **9.86** | what a ProCraft brush does with a texture |
+| smudge | 105.7 | 44.55 | ProCraft's stamps come out thinner; the transport lane is still ours |
+| smudge + pattern | — | 156.48 | |
+| erase | 10.2 | 10.00 | |
+| pen-up | 0.1 s class | 0.19 ms | after calling `add_tipped` as ProCraft's canvas does |
+
+Two conclusions come out of that table and both point at the same place:
+
+1. **The dabs' places were never the cost.** Replacing the dab source moved solid, erase and pattern
+   by nothing at all.
+2. **The pattern's 35 ms is the per-pixel colour lane, and only that.** The same pattern reaching
+   the coverage in the shader (`mask_combine` — the GPU path this app already has) costs 9.86 ms,
+   the solid price. So the replacement should keep ProCraft's grain (a texture over the coverage) and
+   drop our sampled-pattern colour, which is exactly what the pink list says.
+
+A correction worth keeping: the 1.4 s pen-up in the first ProCraft run was the benchmark's error,
+not the stroke's — it called `add` throughout, so at pen-up `add_tipped` returned the whole stroke
+as the tip. ProCraft's canvas calls `add_tipped` every frame and draws the tip on a layer of its
+own; done that way, pen-up is 0.19 ms.
+
+## What is left
+
+1. **The smudge lane**: ProCraft's `smudge.wgsl` (pigment lay/carry, the warped window) instead of
+   this app's transport. That is the 44.55 ms.
+2. **The app switch**: `crates/ui-egui/src/canvas/strokes.rs`'s `EngineStroke` is what a live stroke
+   is; the switch has to carry ProCraft's `StrokeBuilder` there, including the pen-up tip layer,
+   the tail preview and the dual brush. Until that lands the app still paints with the old
+   generator and `PC_PROCRAFT=1` only affects the benchmark.
+3. **The pink panel**: `UNMAPPED` is the data for it; the panel has to read it.
