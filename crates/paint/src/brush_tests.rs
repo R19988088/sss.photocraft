@@ -2465,3 +2465,31 @@ fn wet_paint_is_the_kind_of_stroke_laid_as_it_comes() {
         "a single-dab wet rim is tinted by the canvas beneath it"
     );
 }
+
+#[test]
+fn a_carried_pigment_walk_samples_what_each_tap_would() {
+    // A 64×64 patch with soft grains and a transparent comb through it, walked the way the
+    // folded frame walks a row of a big brush: well under one texel per pixel, so the 4×4
+    // neighbourhood is carried rather than rebuilt, and the walk has to agree to the bit.
+    let n = 64u32;
+    let pixels: Vec<[f32; 4]> = (0..n * n)
+        .map(|i| {
+            let (x, y) = (i % n, i / n);
+            let v = ((x * 7 + y * 13) % 11) as f32 / 11.0;
+            [v, 1.0 - v, v * 0.5 + 0.25, if (x + y) % 9 == 0 { 0.0 } else { 1.0 }]
+        })
+        .collect();
+    let p = ColorPattern { width: n, height: n, pixels: pixels.into() };
+    let bits = |a: [f32; 4]| a.map(f32::to_bits);
+    // Big brush (under a texel per pixel), small brush (several texels per pixel), the far edge
+    // of the patch (taps leave the block), and a walk that changes row halfway.
+    for (start, step, row) in [(-30.0f32, 0.284f32, -20.0f32), (-30.0, 0.9, 0.0), (20.0, 2.5, 12.0), (31.0, 0.02, 31.5)] {
+        let mut walk = p.pigment_walk();
+        let mut x = start;
+        for i in 0..600 {
+            let y = if i == 300 { row + 3.0 } else { row };
+            assert_eq!(bits(walk.sample(x, y)), bits(p.sample_pigment(x, y)), "x {x} y {y}");
+            x += step;
+        }
+    }
+}

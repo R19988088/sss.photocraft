@@ -1361,7 +1361,119 @@ impl ColorPattern {
         let d = at(ix + 1, iy + 1);
         std::array::from_fn(|i| (a[i] + (b[i] - a[i]) * x.fract()) * (1.0 - y.fract()) + (c[i] + (d[i] - c[i]) * x.fract()) * y.fract())
     }
+
+    /// A sampler that walks a run of taps in +x, as the folded frame's pattern colour does.
+    ///
+    /// [`ColorPattern::sample_pigment`] gathers a whole 4×4 texel neighbourhood per tap, and at a
+    /// big brush the taps advance well under one texel per pixel, so that gather is the same
+    /// neighbourhood almost every pixel. The walker keeps it and shifts it by the columns the
+    /// integer tap actually moved — same texels, same arithmetic, a quarter of the loads.
+    pub fn pigment_walk(&self) -> PigmentWalk<'_> {
+        PigmentWalk { pattern: self, ix: 0, iy: 0, ready: false, block: [[0.0; 4]; 16] }
+    }
 }
+
+/// See [`ColorPattern::pigment_walk`].
+pub struct PigmentWalk<'a> {
+    pattern: &'a ColorPattern,
+    ix: usize,
+    iy: usize,
+    ready: bool,
+    block: [[f32; 4]; 16],
+}
+
+impl PigmentWalk<'_> {
+    /// The neighbourhood `sample_pigment` would build at `(ix, iy)`, shifted from the last one
+    /// when the walk only moved right by a few texels.
+    fn block(&mut self, ix: usize, iy: usize) -> &[[f32; 4]; 16] {
+        let (w, h) = (self.pattern.width as usize, self.pattern.height as usize);
+        let pixels = &self.pattern.pixels;
+        if self.ready && self.iy == iy && ix >= self.ix && ix - self.ix < 4 {
+            let shift = ix - self.ix;
+            if shift > 0 {
+                // Cell (bx, by) is texel `(ix + bx - 1, iy + by - 1)` clamped; shifting the
+                // window right by `shift` moves the old cell `bx + shift` in and appends
+                // `shift` texels on the right.
+                for by in 0..4usize {
+                    let row = (iy + by).saturating_sub(1).min(h - 1);
+                    for bx in 0..4usize {
+                        let from = bx + shift;
+                        self.block[by * 4 + bx] = if from < 4 {
+                            self.block[by * 4 + from]
+                        } else {
+                            let col = (ix + bx - 1).min(w - 1);
+                            pixels[row * w + col]
+                        };
+                    }
+                }
+                self.ix = ix;
+            }
+            return &self.block;
+        }
+        for by in 0..4usize {
+            let row = (iy + by).saturating_sub(1).min(h - 1);
+            for bx in 0..4usize {
+                let col = (ix + bx).saturating_sub(1).min(w - 1);
+                self.block[by * 4 + bx] = pixels[row * w + col];
+            }
+        }
+        self.ix = ix;
+        self.iy = iy;
+        self.ready = true;
+        &self.block
+    }
+
+    /// [`ColorPattern::sample_pigment`], carrying the neighbourhood between taps.
+    pub fn sample(&mut self, x: f32, y: f32) -> [f32; 4] {
+        let pattern = self.pattern;
+        let center = pattern.sample(x, y);
+        if center[3] <= 0.0001 {
+            return center;
+        }
+        let (w, h) = (pattern.width as usize, pattern.height as usize);
+        if pattern.pixels.len() < w * h {
+            return center;
+        }
+        let (hx, hy) = (pattern.width as f32 * 0.5, pattern.height as f32 * 0.5);
+        let px = x + hx - 0.5;
+        let py = y + hy - 0.5;
+        let base_x = (px.max(0.0)).floor();
+        let base_y = (py.max(0.0)).floor();
+        let (ix, iy) = (base_x as usize, base_y as usize);
+        if ix >= w || iy >= h {
+            return center;
+        }
+        let block = self.block(ix, iy);
+        let mut sum = [center[0] * center[3] * 4.0, center[1] * center[3] * 4.0, center[2] * center[3] * 4.0];
+        let mut weight = center[3] * 4.0;
+        for (dx, dy) in [(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            let tx = (x + dx).clamp(-hx + 0.5, hx - 0.5) + hx - 0.5;
+            let ty = (y + dy).clamp(-hy + 0.5, hy - 0.5) + hy - 0.5;
+            if tx >= w as f32 - 0.5 || ty >= h as f32 - 0.5 {
+                continue;
+            }
+            let (tx0, ty0) = (tx.floor(), ty.floor());
+            let (fx0, fy0) = (tx - tx0, ty - ty0);
+            let (bx, by) = ((tx0 as usize) + 1 - ix, (ty0 as usize) + 1 - iy);
+            if bx > 2 || by > 2 {
+                continue;
+            }
+            // The four texels of the tap, channel by channel — no [f32; 4] value is copied.
+            let (r0, r1) = (by * 4 + bx, (by + 1) * 4 + bx);
+            let (a, b, c, d) = (block[r0], block[r0 + 1], block[r1], block[r1 + 1]);
+            let mut v = [0.0f32; 4];
+            for i in 0..4 {
+                v[i] = (a[i] + (b[i] - a[i]) * fx0) * (1.0 - fy0) + (c[i] + (d[i] - c[i]) * fx0) * fy0;
+            }
+            weight += v[3];
+            for i in 0..3 {
+                sum[i] += v[i] * v[3];
+            }
+        }
+        [sum[0] / weight.max(0.0001), sum[1] / weight.max(0.0001), sum[2] / weight.max(0.0001), center[3]]
+    }
+}
+
 
 impl DualBrush {
     pub fn resolved_brush(&self, parent: &BrushSettings) -> Option<BrushSettings> {

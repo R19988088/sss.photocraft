@@ -1475,6 +1475,8 @@ pub struct StrokeRenderer {
     /// Per-pixel pattern alpha of the dab being rastered, so the sampled-pattern loop can run its
     /// rows in parallel and still scale the coverage in one serial pass afterwards.
     pattern_alpha: Vec<f32>,
+    /// The folded frame's per-pixel lane colours, reused between frames.
+    colour_scratch: Vec<f32>,
     dab_buf: Vec<Dab>,
     dual_buf: Vec<Dab>,
     all_dabs: Option<Vec<Dab>>,
@@ -1544,9 +1546,12 @@ fn lane_colors(pattern: &crate::brush::ColorPattern, format: &PixelFormat, rect:
     let row_at = |row: usize, line: &mut [f32]| {
         let mut native = [0.0f32; 8];
         let sy = scale * (rect.y0 as f32 + row as f32 + 0.5 - reference.center.y as f32);
+        // A row walks +x, so the pattern's 4×4 texel neighbourhood is carried across pixels
+        // instead of being rebuilt for every one of them.
+        let mut walk = pattern.pigment_walk();
         for c in 0..width {
             let sx = scale * (rect.x0 as f32 + c as f32 + 0.5 - reference.center.x as f32);
-            let rgba = pattern.sample_pigment(sx, sy);
+            let rgba = walk.sample(sx, sy);
             from_rgba_into(format, rgba, &mut native);
             line[c * nc..(c + 1) * nc].copy_from_slice(&native[..nc]);
         }
@@ -1704,6 +1709,7 @@ impl StrokeRenderer {
                         scratch: Vec::new(),
                         depth_scratch: Vec::new(),
                         pattern_alpha: Vec::new(),
+                        colour_scratch: Vec::new(),
                         dab_buf: Vec::new(),
                         dual_buf: Vec::new(),
                         all_dabs: None,
@@ -1784,6 +1790,7 @@ impl StrokeRenderer {
 
             depth_scratch: Vec::new(),
             pattern_alpha: Vec::new(),
+            colour_scratch: Vec::new(),
             dab_buf: Vec::new(),
             dual_buf: Vec::new(),
             all_dabs: None,
@@ -2009,55 +2016,61 @@ impl StrokeRenderer {
         // The lane's per-pixel colour: the pattern's own sample (in the dab's own frame, so it is
         // recomputed once over the union from the frame's first dab), the backend's colour lane
         // when every dab brought its own, or else the stroke's one colour.
-        let mut lane_col = |pattern: Option<&crate::brush::ColorPattern>, rect: Rect, reference: &Dab, rgb: &[f32], colors: &mut Vec<f32>| -> Option<(Vec<f32>, bool)> {
+        let mut lane_col = |pattern: Option<&crate::brush::ColorPattern>, rect: Rect, reference: &Dab, rgb: &[f32], colors: &mut Vec<f32>| -> Option<bool> {
             let f = self.fmt?;
             match (pattern, rgb.is_empty()) {
                 (Some(p), _) => {
                     lane_colors(p, &f, rect, reference, colors);
-                    Some((std::mem::take(colors), true))
+                    Some(true)
                 }
                 (None, false) => {
                     lift_rgb(&f, rgb, colors);
-                    Some((std::mem::take(colors), true))
+                    Some(true)
                 }
                 (None, true) => {
                     from_rgba_into(&f, color, &mut native);
-                    Some((native[..f.mode.color_channels()].to_vec(), false))
+                    colors.clear();
+                    colors.extend_from_slice(&native[..f.mode.color_channels()]);
+                    Some(false)
                 }
             }
         };
-        let mut colors = Vec::new();
+        // One buffer for the lane's colours, kept between frames: a pattern frame writes 3–4
+        // channels per pixel (10 MB at this size), and reallocating + zeroing that every frame
+        // costs more than the sampling itself.
+        let mut colors = std::mem::take(&mut self.colour_scratch);
         let pattern = b.pattern_enabled.then(|| b.sampled_pattern.as_ref()).flatten();
         let rgb: &[f32] = if pattern.is_none() { &out.color } else { &[] };
         let t_col = profiling().then(std::time::Instant::now);
         let col = lane_col(pattern, frame.lane.union, first, rgb, &mut colors);
         let t_col = t_col.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
         // The backend hands back what the frame's dabs leave over an empty pixel, `ceil·V`;
-        // dividing by the ceiling gives the `v` the map's own `c + v·(ceil − c)` wants.
-        let divide = |coverage: Vec<f32>, ceil: f32| {
-            let mut vals = coverage;
+        // dividing by the ceiling gives the `v` the map's own `c + v·(ceil − c)` wants. Divides
+        // the buffer it was handed (the backend's own Vec) so no second copy is allocated.
+        fn divide(vals: &mut [f32], ceil: f32) {
             if ceil > 0.0 {
-                for v in &mut vals {
+                for v in vals {
                     *v = (*v / ceil).clamp(0.0, 1.0);
                 }
             } else {
                 vals.iter_mut().for_each(|v| *v = 0.0);
             }
-            vals
-        };
-        let vals = divide(out.coverage, frame.lane.ceil);
+        }
+        let mut vals = out.coverage;
+        divide(&mut vals, frame.lane.ceil);
         let material = if wet {
             b.wet_edge.as_ref().map(|w| (first.wet_edge, (w.outline == WetOutline::Single).then(|| w.color_strength(first.wet_edge.strength))))
         } else {
             None
         };
         let t_acc = profiling().then(std::time::Instant::now);
-        self.cov.accumulate_wet(frame.lane.union, &vals, frame.lane.ceil, col.as_ref().map(|(c, p)| (c.as_slice(), *p)), wet.then_some(&out.depth[..]), material, None);
+        self.cov.accumulate_wet(frame.lane.union, &vals, frame.lane.ceil, col.map(|p| (colors.as_slice(), p)), wet.then_some(&out.depth[..]), material, None);
         let t_acc = t_acc.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
         self.cov.bounds = self.cov.bounds.union(&frame.lane.union);
         // The Dual Brush's lane, folded into its own map with its own ceiling.
         if let (Some(lane2), Some(back), Some(dm)) = (&frame.dual, out.dual, self.dual.as_mut()) {
-            let vals2 = divide(back.coverage, lane2.ceil);
+            let mut vals2 = back.coverage;
+            divide(&mut vals2, lane2.ceil);
             let ctx = self.ctx.secondary.as_deref();
             let wet2 = ctx.is_some_and(|c| c.brush.wet_edges) && !b.erase;
             let material2 = if wet2 {
@@ -2072,9 +2085,10 @@ impl StrokeRenderer {
                 let rgb2: &[f32] = if pattern2.is_none() { &back.color } else { &[] };
                 lane_col(pattern2, lane2.union, &reference2, rgb2, &mut colors2)
             });
-            dm.accumulate_wet(lane2.union, &vals2, lane2.ceil, col2.as_ref().map(|(c, p)| (c.as_slice(), *p)), wet2.then_some(&back.depth[..]), material2, None);
+            dm.accumulate_wet(lane2.union, &vals2, lane2.ceil, col2.map(|p| (colors2.as_slice(), p)), wet2.then_some(&back.depth[..]), material2, None);
             dm.bounds = dm.bounds.union(&lane2.union);
         }
+        self.colour_scratch = colors;
         self.dabs_done += dabs.len();
         if let Some(all) = self.all_dabs.as_mut() {
             all.extend_from_slice(dabs);
@@ -2493,6 +2507,7 @@ impl StrokeRenderer {
 
             depth_scratch: Vec::new(),
             pattern_alpha: Vec::new(),
+            colour_scratch: Vec::new(),
             dab_buf: dabs,
             dual_buf: duals,
             all_dabs: None,
