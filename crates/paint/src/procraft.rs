@@ -117,6 +117,14 @@ pub fn enabled() -> bool {
     })
 }
 
+/// The finest spacing a smudge is drawn at, as a fraction of the stamp diameter.
+///
+/// A smudge carries colour instead of laying it: its stamps smear the same paint along, so it needs
+/// far fewer of them than a brush does, and the whole cost of the lane is the count. Measured
+/// 900 px, 900 px stamp, p50: 1 % 52.4 ms, 2 % 27.3, 4 % 11.9, 8 % 7.1 — a smudge at 1 % pays four
+/// times for a smear no finer than 4 %'s.
+pub const SMUDGE_SPACING: f32 = 0.04;
+
 /// `settings` as this app should draw them under ProCraft's brush: one pipeline for the pattern.
 ///
 /// Our sampled pattern is a per-pixel colour (a second lane beside the coverage, and the 35 ms a
@@ -126,6 +134,9 @@ pub fn enabled() -> bool {
 /// colour lane is switched off, so a textured stroke costs what a solid one costs.
 pub fn effective(settings: &BrushSettings) -> BrushSettings {
     let mut out = settings.clone();
+    if tool(settings) == Tool::Smudge {
+        out.spacing = out.spacing.max(SMUDGE_SPACING);
+    }
     if !settings.pattern_enabled {
         return out;
     }
@@ -533,6 +544,22 @@ mod tests {
         // The eraser is the same brush again, and the stroke's pointer says so.
         settings.erase = true;
         assert_eq!(tool(&settings), Tool::Erase);
+    }
+
+    #[test]
+    fn a_smudge_is_drawn_at_no_finer_than_four_percent() {
+        let mut settings = BrushSettings::default();
+        settings.spacing = 0.01;
+        settings.mix_settings.enabled = true;
+        settings.mix_settings.smudge_enabled = false;
+        assert_eq!(effective(&settings).spacing, 0.01, "a brush keeps the spacing it was given");
+
+        settings.mix_settings.smudge_enabled = true;
+        assert_eq!(effective(&settings).spacing, SMUDGE_SPACING, "a smudge's stamps smear the same paint");
+
+        // A brush that already asks for coarser stamps keeps them.
+        settings.spacing = 0.2;
+        assert_eq!(effective(&settings).spacing, 0.2);
     }
 
     #[test]

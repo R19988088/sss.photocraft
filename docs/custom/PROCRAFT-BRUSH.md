@@ -91,7 +91,13 @@ own; done that way, pen-up is 0.19 ms.
 ## What is left
 
 1. **The smudge lane**: ProCraft's `smudge.wgsl` (pigment lay/carry, the warped window) instead of
-   this app's transport. That is the 44.55 ms.
+   this app's transport. That is the 44.55 ms. Measured on its own canvas
+   (`cargo run --release -p procraft-gpu --example smudge_stroke`): the API drives, no GPU errors,
+   but a 900 px stroke with a 900 px stamp costs **53.6 ms at 100 stamps and 426.6 ms at 975**,
+   after **2.7 s** to make a canvas — it is slower than our lane at this brush size, so renting its
+   window is not a win. The lane's cost is the stamp count, and our own sweep says it plainly:
+   p50 at 1 % 52.4 ms, 2 % 27.3, 4 % 11.9, 8 % 7.1. A smudge carries colour, it does not lay it, so
+   `SMUDGE_SPACING` (4 %) is now its floor: **the 44.55 ms becomes 11.9 ms** without a new pipeline.
 2. **The pink panel**: `UNMAPPED` is the data for it; the panel has to read it.
 3. **The default**: `PHOTOCRAFT_PROCRAFT_BRUSH=1` is how a stroke is drawn by ProCraft's brush today.
    Flipping the default needs the paint suite's brush-behaviour tests re-based one brush at a time —
