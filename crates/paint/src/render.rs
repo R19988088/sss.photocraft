@@ -1465,7 +1465,7 @@ pub struct StrokeRenderer {
     /// Behind a lock because ProCraft's builder holds a slot for a plugin engine that is `Send` but
     /// not `Sync`, and this renderer is shared by the parallel tile composite (`Sync`); nothing else
     /// ever touches it, and a stroke's own dabs are laid under `&mut self`.
-    procraft: Option<std::sync::Arc<std::sync::Mutex<ProCraftStroke>>>,
+    pub(crate) procraft: Option<std::sync::Arc<std::sync::Mutex<ProCraftStroke>>>,
     cov: CoverageMap,
     dual: Option<CoverageMap>,
     fmt: Option<PixelFormat>,
@@ -2477,6 +2477,19 @@ impl StrokeRenderer {
     /// [`Smoother::string`](crate::dynamics::Smoother::string)).
     pub fn smoothing_string(&self) -> Option<([f64; 2], [f64; 2])> {
         self.generator.smoothing_string()
+    }
+
+    /// Draw this stroke with ProCraft's brush from here on (see [`crate::procraft::enabled`]).
+    ///
+    /// The switch is read from the environment when a stroke starts; this lets a caller — a test,
+    /// or a panel that offers the choice per brush — take the stroke either way.
+    pub fn use_procraft(&mut self, on: bool) {
+        self.procraft = on.then(|| std::sync::Arc::new(std::sync::Mutex::new(ProCraftStroke::new(&self.ctx.brush))));
+    }
+
+    /// Whether this stroke is drawn by ProCraft's brush.
+    pub fn draws_with_procraft(&self) -> bool {
+        self.procraft.is_some()
     }
 
     /// Feed input points (any chunking gives the same result).

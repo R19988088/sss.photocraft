@@ -2493,3 +2493,79 @@ fn a_carried_pigment_walk_samples_what_each_tap_would() {
         }
     }
 }
+
+// ---------- ProCraft's brush ----------
+
+/// A stroke drawn by ProCraft's brush reaches the canvas: the dabs the app's own generator would
+/// have made are replaced by its stamps, and the rest of the pipeline is untouched.
+#[test]
+fn a_stroke_drawn_by_procrafts_brush_paints_the_canvas() {
+    use crate::brush::Taper;
+
+    let b = BrushSettings {
+        size: 30.0,
+        spacing: 0.1,
+        opacity: 1.0,
+        flow: 1.0,
+        hardness: 0.9,
+        color: [0.0, 0.0, 0.0, 1.0],
+        taper: Taper::NONE,
+        ..Default::default()
+    };
+    let pre = Surface::new(PixelFormat::RGBA32F);
+    let mut target = pre.clone();
+    let mut r = StrokeRenderer::on_surface(&b, &pre, 1.0);
+    r.use_procraft(true);
+    assert!(r.draws_with_procraft(), "the switch takes the stroke");
+
+    let mut pts = Vec::new();
+    for i in 0..24 {
+        pts.push(StrokePoint::new(20.0 + f64::from(i) * 6.0, 100.0, 1.0));
+    }
+    r.push(&pts);
+    r.finish();
+    let rect = r.composite(&pre, &mut target, None, false, true);
+    assert!(!rect.is_empty(), "the stroke has extent");
+    let painted = alpha_sum(&target, rect);
+    assert!(painted > 100.0, "coverage {painted}");
+}
+
+/// The ProCraft stroke is the same pixels whether it comes in one chunk or one point a frame: the
+/// builder is fed the same samples either way.
+#[test]
+fn a_procraft_stroke_is_the_same_point_by_point_as_in_one_chunk() {
+    use crate::brush::Taper;
+
+    let b = BrushSettings { size: 26.0, spacing: 0.12, taper: Taper::NONE, ..brush() };
+    let pre = Surface::new(PixelFormat::RGBA32F);
+    let pts: Vec<_> = (0..30).map(|i| StrokePoint::new(20.0 + f64::from(i) * 5.0, 100.0 + (i as f64 * 0.4).sin() * 8.0, 1.0)).collect();
+
+    let draw = |chunked: bool| {
+        let mut target = pre.clone();
+        let mut r = StrokeRenderer::on_surface(&b, &pre, 1.0);
+        r.use_procraft(true);
+        if chunked {
+            for p in &pts {
+                r.push(&[*p]);
+            }
+        } else {
+            r.push(&pts);
+        }
+        r.finish();
+        r.composite(&pre, &mut target, None, false, true);
+        target
+    };
+
+    let together = draw(false);
+    let apart = draw(true);
+    let mut worst = 0.0f32;
+    for y in 90..110 {
+        for x in 20..180 {
+            for c in 0..4 {
+                let (a, b) = (together.rgba(x, y)[c], apart.rgba(x, y)[c]);
+                worst = worst.max((a - b).abs());
+            }
+        }
+    }
+    assert!(worst < 1.0 / 255.0, "chunking changed the stroke: {worst}");
+}
