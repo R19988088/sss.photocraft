@@ -5453,6 +5453,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "photocraft-brush-bridge"
+version = "0.24.0"
+dependencies = [
+ "photocraft-paint",
+ "procraft-engine",
+]
+
+[[package]]
 name = "photocraft-cli"
 version = "0.24.0"
 dependencies = [

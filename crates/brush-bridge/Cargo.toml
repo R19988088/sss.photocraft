@@ -1,0 +1,12 @@
+[package]
+name = "photocraft-brush-bridge"
+version = "0.24.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Our brush settings, read as ProCraft's Brush: the seam that lets the replaced brush system keep this app's presets"
+
+[dependencies]
+photocraft-paint = { path = "../paint" }
+procraft-engine = { path = "../procraft-engine" }
