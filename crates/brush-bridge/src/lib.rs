@@ -10,7 +10,9 @@
 //! `StrokeBuilder` only turns pointer samples into stamps, and the stamps are drawn by the GPU.
 
 use photocraft_paint::brush::BrushSettings;
+use photocraft_paint::Dab;
 use procraft_engine::brush::Brush;
+use procraft_engine::stroke::Stamp;
 
 /// Our settings that ProCraft's `Brush` has no field for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +145,36 @@ pub fn stroke_diameter(settings: &BrushSettings) -> f32 {
     diameter(settings)
 }
 
+/// ProCraft's stamps, as the dabs this app's painter draws.
+///
+/// The dab carries what ProCraft's stamp carries — where the stamp is, how big, how strong, how it
+/// turns and how squashed — and what the stroke says for all of them: the brush's hardness, the
+/// stroke's opacity ceiling and its colour. Everything our pigment/mixing/wet machinery would have
+/// put on a dab of its own is left at the plain values (`Dab::round`), which is what the pink
+/// controls' absence means: ProCraft's brush does not mix, it lays paint.
+pub fn dabs(stamps: &[Stamp], settings: &BrushSettings, color: [f32; 4]) -> Vec<Dab> {
+    let hardness = settings.hardness.clamp(0.0, 1.0);
+    let opacity = settings.opacity.clamp(0.0, 1.0);
+    stamps
+        .iter()
+        .enumerate()
+        .map(|(i, stamp)| {
+            let mut dab = Dab::round(
+                photocraft_geom::Point::new(f64::from(stamp.center.x), f64::from(stamp.center.y)),
+                stamp.radius,
+                stamp.alpha,
+            );
+            dab.hardness = hardness;
+            dab.angle = stamp.angle;
+            dab.roundness = stamp.roundness;
+            dab.opacity = opacity;
+            dab.color = color;
+            dab.index = i as u64;
+            dab
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +205,40 @@ mod tests {
         assert_eq!(brush.pressure_opacity, 0.0);
         assert_eq!(brush.shape.roundness, 0.5);
         assert!((brush.shape.rotation - 30f32.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stamp_becomes_a_dab_of_the_same_place_and_strength() {
+        use procraft_engine::geom::Vec2;
+        use procraft_engine::input::{Pointer, Sample};
+        use procraft_engine::stroke::StrokeBuilder;
+
+        let mut settings = BrushSettings::default();
+        settings.size = 100.0;
+        settings.spacing = 0.25;
+        settings.opacity = 0.5;
+        settings.flow = 1.0;
+        settings.hardness = 0.8;
+        settings.smoothing.amount = 0.0;
+
+        let brush = brush(&settings);
+        let mut builder = StrokeBuilder::new(brush, stroke_diameter(&settings), Pointer::Stylus);
+        let stamps = builder.add(&[Sample::at(Vec2::new(10.0, 10.0), 1.0, 0.0), Sample::at(Vec2::new(90.0, 10.0), 1.0, 8.0)]);
+        let dabs = dabs(&stamps, &settings, [0.2, 0.4, 0.6, 1.0]);
+
+        assert_eq!(dabs.len(), stamps.len());
+        for (dab, stamp) in dabs.iter().zip(&stamps) {
+            assert!((dab.center.x - f64::from(stamp.center.x)).abs() < 1e-9);
+            assert!((dab.center.y - f64::from(stamp.center.y)).abs() < 1e-9);
+            assert_eq!(dab.radius, stamp.radius);
+            assert_eq!(dab.alpha, stamp.alpha);
+            assert_eq!(dab.angle, stamp.angle);
+            assert_eq!(dab.roundness, stamp.roundness);
+            assert_eq!(dab.hardness, 0.8);
+            assert_eq!(dab.opacity, 0.5);
+            assert_eq!(dab.color, [0.2, 0.4, 0.6, 1.0]);
+        }
+        assert!(dabs.windows(2).all(|w| w[1].index == w[0].index + 1), "dab indices run from the stroke's start");
     }
 
     #[test]

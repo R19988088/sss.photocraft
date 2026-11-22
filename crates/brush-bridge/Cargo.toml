@@ -9,4 +9,5 @@ description = "Our brush settings, read as ProCraft's Brush: the seam that lets 
 
 [dependencies]
 photocraft-paint = { path = "../paint" }
+photocraft-geom = { path = "../geom" }
 procraft-engine = { path = "../procraft-engine" }

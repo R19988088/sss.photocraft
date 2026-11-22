@@ -2450,6 +2450,20 @@ impl StrokeRenderer {
         self.raster_pending();
     }
 
+    /// Lay dabs worked out elsewhere, as this stroke's own.
+    ///
+    /// The brush system is ProCraft's: its `StrokeBuilder` turns the pointer into `Stamp`s, and
+    /// those come here as dabs. Everything after the dab — coverage, the GPU frame, the composite
+    /// onto the layer — is unchanged, so only where the dabs fall and how they are shaped differs
+    /// from the generator's own (which stays for presets the replacement does not reach yet).
+    pub fn push_dabs(&mut self, dabs: &[Dab]) {
+        // A dab's index is its place in the stroke: the stroke's own count so far keeps them in
+        // order whatever produced them.
+        let first = self.dabs_done as u64;
+        self.dab_buf.extend(dabs.iter().enumerate().map(|(i, d)| Dab { index: first + i as u64, ..*d }));
+        self.raster_pending();
+    }
+
     /// End of stroke (smoothing catch-up, a lone first point).
     pub fn finish(&mut self) {
         self.generator.finish(&mut self.dab_buf, &mut self.dual_buf);

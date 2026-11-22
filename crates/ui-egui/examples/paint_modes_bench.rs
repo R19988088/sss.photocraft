@@ -71,18 +71,45 @@ fn stroke(b: &BrushSettings, w: i32, h: i32) -> Run {
     target.fill_rect(Rect::new(0, 0, w, h), &[0.2, 0.35, 0.6, 1.0]);
     target.fill_rect(Rect::new(0, h / 2, w / 2, h), &[0.85, 0.6, 0.2, 1.0]);
     let mut r = photocraft_paint::StrokeRenderer::on_surface(b, &target, 1.0);
+    // `PC_PROCRAFT=1`: the dabs come from ProCraft's brush (its `StrokeBuilder`) instead of this
+    // renderer's own generator, laid by the same renderer.
+    let procraft = std::env::var_os("PC_PROCRAFT").is_some();
+    let mut builder = procraft.then(|| {
+        let brush = photocraft_brush_bridge::brush(b);
+        procraft_engine::stroke::StrokeBuilder::new(brush, photocraft_brush_bridge::stroke_diameter(b), procraft_engine::input::Pointer::Stylus)
+    });
     let mut times = Vec::new();
     for i in 0..48 {
         let x = (220.0 + i as f64 * 9.0).min(w as f64 - 220.0);
         let y = (h as f64) * 0.45 + (i as f64 * 0.28).sin() * (h as f64) * 0.2;
         let p = StrokePoint::new(x, y, 0.72);
         let t = Instant::now();
-        r.push(&[p]);
+        match builder.as_mut() {
+            Some(builder) => {
+                let sample = procraft_engine::input::Sample::at(
+                    procraft_engine::geom::Vec2::new(x as f32, y as f32),
+                    0.72,
+                    i as f64 * 8.0,
+                );
+                let stamps = builder.add(&[sample]);
+                let dabs = photocraft_brush_bridge::dabs(&stamps, b, b.color);
+                r.push_dabs(&dabs);
+            }
+            None => r.push(&[p]),
+        }
         std::hint::black_box(&r);
         times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     let t = Instant::now();
-    r.finish();
+    match builder.as_mut() {
+        Some(builder) => {
+            let stamps = builder.add_tipped(&[]).0;
+            let dabs = photocraft_brush_bridge::dabs(&stamps, b, b.color);
+            r.push_dabs(&dabs);
+            r.finish();
+        }
+        None => r.finish(),
+    }
     let finish = t.elapsed().as_secs_f64() * 1000.0;
     times.sort_by(f64::total_cmp);
     Run { target, times, finish }

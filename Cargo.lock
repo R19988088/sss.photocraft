@@ -5456,6 +5456,7 @@ dependencies = [
 name = "photocraft-brush-bridge"
 version = "0.24.0"
 dependencies = [
+ "photocraft-geom",
  "photocraft-paint",
  "procraft-engine",
 ]
@@ -5849,6 +5850,7 @@ dependencies = [
  "icu_locale_core",
  "log",
  "photocraft-algo",
+ "photocraft-brush-bridge",
  "photocraft-cms",
  "photocraft-codecs",
  "photocraft-color",
@@ -5868,6 +5870,7 @@ dependencies = [
  "photocraft-text",
  "photocraft-vector",
  "pollster 0.4.0",
+ "procraft-engine",
  "rayon",
  "serde",
  "serde_json",
