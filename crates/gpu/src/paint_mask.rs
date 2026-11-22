@@ -194,7 +194,7 @@ impl DabMaskBatch for GpuMasker {
             let (c, d, rgb) = st.read_masks_color(&self.device, &self.queue, (w, h)).map_err(|e| dbg_note(&e.0)).ok()?;
             (c, d, Some(rgb))
         } else {
-            let (c, d) = st.read_masks(&self.device, &self.queue, (w, h)).map_err(|e| dbg_note(&e.0)).ok()?;
+            let (c, d) = st.read_masks(&self.device, &self.queue, (w, h), true).map_err(|e| dbg_note(&e.0)).ok()?;
             (c, d, None)
         };
         // Split the one read into each lane's own rectangle: rows 0..ph are the primary lane,
@@ -274,20 +274,22 @@ impl DabMaskBatch for GpuMasker {
         st.stamp(&self.device, &self.queue, &dabs).map_err(|e| dbg_note(&e.0)).ok()?;
         // Only the packed extent comes back: the atlas is bucketed to powers of two and can be
         // several times the pixels the dabs actually fill.
-        let (coverage, depth) = st.read_masks(&self.device, &self.queue, used).map_err(|e| dbg_note(&e.0)).ok()?;
+        let (coverage, depth) = st.read_masks(&self.device, &self.queue, used, batch.want_depth).map_err(|e| dbg_note(&e.0)).ok()?;
         let atlas_w = used.0 as usize;
         let mut out = Vec::with_capacity(batch.rects.len());
         for (rect, at) in batch.rects.iter().zip(&at) {
             let (w, h) = (rect.width() as usize, rect.height() as usize);
             let (x0, y0) = (at[0] as usize, at[1] as usize);
             let mut cov = Vec::with_capacity(w * h);
-            let mut dep = Vec::with_capacity(w * h);
+            let mut dep = Vec::with_capacity(if batch.want_depth { w * h } else { 0 });
             for row in 0..h {
                 let src = (y0 + row) * atlas_w + x0;
                 let Some(slice) = coverage.get(src..src + w) else { return None };
                 cov.extend_from_slice(slice);
-                let Some(slice) = depth.get(src..src + w) else { return None };
-                dep.extend_from_slice(slice);
+                if batch.want_depth {
+                    let Some(slice) = depth.get(src..src + w) else { return None };
+                    dep.extend_from_slice(slice);
+                }
             }
             out.push(MaskDab { coverage: cov, depth: dep });
         }

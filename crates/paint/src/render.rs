@@ -1264,6 +1264,9 @@ struct LaneTransport {
     /// Dabs this frame queued for the transport backend, with the footprints the CPU falls back to
     /// if the backend refuses them.
     pending: Vec<Pending>,
+    /// The area the queued dabs cover: a frame is handed to the backend in chunks that fit the
+    /// working-pixel budget, so a long stroke never pins a whole document on the GPU at once.
+    pending_area: Rect,
     out: Vec<f32>,
 }
 
@@ -1289,6 +1292,7 @@ impl LaneTransport {
             changed: Rect::EMPTY,
             blur_changed: Rect::EMPTY,
             pending: Vec::new(),
+            pending_area: Rect::EMPTY,
             out: Vec::new(),
         })
     }
@@ -1302,10 +1306,18 @@ impl LaneTransport {
         // generous halo here used to push a 900 px dab's union past the region budget, which
         // re-read the layer on every dab.
         let needed = rect.inflate(2);
-        let footprint = Footprint { dab: *d, index: 0, rect, cov: mask.to_vec() };
         if d.mix_strength > 0.0 {
             if self.takes_backend(ctx) {
-                let (keep, scale, has_previous) = self.mix_state.feedback_plan(&footprint);
+                // 64 MB of working pixels each way is the most one backend frame may pin on the
+                // GPU, so the queued dabs are handed over in chunks that fit.
+                let area = self.pending_area.union(&rect.inflate(2));
+                if i64::from(area.width()) * i64::from(area.height()) * 16 > 64 * 1024 * 1024 {
+                    self.flush_pending(ctx);
+                }
+                // The backend carries the coverage itself, so the CPU footprint stays empty here: a
+                // copy of the dab's mask is 13 MB at 900 px, and the backend already needs one.
+                let plan = Footprint { dab: *d, index: 0, rect, cov: Vec::new() };
+                let (keep, scale, has_previous) = self.mix_state.feedback_plan(&plan);
                 let m = &ctx.brush.mix_settings;
                 self.pending.push(Pending {
                     dab: *d,
@@ -1322,11 +1334,13 @@ impl LaneTransport {
                         coverage: mask.to_vec(),
                     },
                 });
+                self.pending_area = self.pending_area.union(&rect.inflate(2));
             } else {
                 // A CPU dab has to see what the dabs before it left: the backend's frame runs first.
                 self.flush_pending(ctx);
                 self.fit(ctx, &needed);
                 self.region.grow_to(&self.mix, needed);
+                let footprint = Footprint { dab: *d, index: 0, rect, cov: mask.to_vec() };
                 self.mix_state.smudge_dab(&mut self.region, &footprint);
             }
             self.changed = self.changed.union(&rect);
@@ -1335,6 +1349,7 @@ impl LaneTransport {
             self.fit(ctx, &needed);
             if let Some(blur) = self.blur.as_ref() {
                 self.blur_region.grow_to(blur, needed);
+                let footprint = Footprint { dab: *d, index: 0, rect, cov: mask.to_vec() };
                 self.blur_state.blur_dab(&mut self.blur_region, &footprint);
                 self.blur_changed = self.blur_changed.union(&rect);
             }
@@ -1352,12 +1367,10 @@ impl LaneTransport {
             return false;
         }
         // `over_carried`'s pigment branch and the premultiplied-alpha maths are CPU-only for now.
-        if ctx.brush.pigment_mix_strength > 0.0 || self.region.ch != 4 || alpha_index(&self.mix.format()) != Some(3) {
+        if ctx.brush.pigment_mix_strength > 0.0 || self.mix.format().channels() != 4 || alpha_index(&self.mix.format()) != Some(3) {
             return false;
         }
-        // 64 MB of working pixels each way is the most a frame may pin on the GPU.
-        let px = i64::from(self.region.rect.width()) * i64::from(self.region.rect.height());
-        px * 4 * 4 <= 64 * 1024 * 1024
+        true
     }
 
     /// Run this frame's queued dabs on the transport backend (or, when it refuses, on the CPU),
@@ -1366,6 +1379,7 @@ impl LaneTransport {
         if self.pending.is_empty() {
             return;
         }
+        self.pending_area = Rect::EMPTY;
         let Some(backend) = ctx.transport() else {
             for p in std::mem::take(&mut self.pending) {
                 let mut td = p.td;
@@ -1378,6 +1392,7 @@ impl LaneTransport {
             return;
         };
         let pending = std::mem::take(&mut self.pending);
+        self.pending_area = Rect::EMPTY;
         // The backend reads the whole frame's area at once: the working pixels must hold every dab's
         // square (and the previous carrier's, which sits inside them).
         let mut area = Rect::EMPTY;
@@ -1495,7 +1510,9 @@ fn fill(masker: &dyn crate::stamp::DabMaskBatch, batch: &mut crate::stamp::MaskB
     }
     for (k, m) in masks.into_iter().enumerate() {
         let rect = batch.rects[k];
-        if m.coverage.len() == (rect.width() * rect.height()) as usize && m.depth.len() == m.coverage.len() {
+        let sized = m.coverage.len() == (rect.width() * rect.height()) as usize;
+        // The depth lane only comes back for a wet stroke (`MaskBatch::want_depth`).
+        if sized && (!batch.want_depth || m.depth.len() == m.coverage.len()) {
             out[at[k]] = Some(m);
         }
     }
@@ -1836,6 +1853,7 @@ impl StrokeRenderer {
             rects: Vec::new(),
             texture: self.ctx.mask_texture(),
             tip: self.ctx.mask_tip(),
+            want_depth: wet,
         };
         let mut at = Vec::with_capacity(dabs.len());
         let mut chunk_px = 0u64;

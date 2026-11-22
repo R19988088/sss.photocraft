@@ -239,6 +239,9 @@ pub struct MaskBatch {
     pub texture: MaskTexture,
     /// The brush's sampled tip, when its dabs carry one.
     pub tip: Option<std::sync::Arc<MaskTip>>,
+    /// Ask for the Wet Edges depth lane as well: a stroke without wet edges never reads it, and the
+    /// lane is a second readback the backend would otherwise always pay.
+    pub want_depth: bool,
 }
 
 /// One dab's masks, row-major over its rectangle.

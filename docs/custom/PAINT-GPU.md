@@ -183,6 +183,24 @@ release、`masker_slot` 装上真实 GPU 描边面）：`paint_modes_bench <size
 transport 10（GPU 通道自报：upload 10 ms、record 0.4、submit 4、wait 0、copy 3 for ~9 dabs）、
 rest 40。**transport 从 97 掉到 10 ms，此后涂抹的账几乎全是 mask 回读与 CPU 累加。**
 
+### 再一刀：mask 只读要用的道，涂抹的覆盖只留一份
+
+| 笔（900 px / 1%） | 上一版 | 现在 | 纯 CPU 回落 |
+|---|---|---|---|
+| 涂抹 V1 | 147 ms | 115 ms | 273 ms |
+
+- **mask 回读不再读 Wet Edges 的 depth 道**：`MaskBatch` 多了 `want_depth`（= 这一帧 `wet`），
+  `read_masks` 只拷 coverage，depth 那条 2 B/px 的拷贝和整段解码都省了；`fill` 的尺寸闸门
+  相应放宽到「不要 depth 时不比长度」。masks 82 → 55 ms。
+- **一个 dab 的覆盖只留一份**：走到后端的那一支原来既给 `Footprint` 拷一份 `cov`、又给
+  `TransportDab` 拷一份（900 px 一笔 13 MB × 2 × 9 dab/帧），现在后端支的 footprint 不带 cov
+  （`feedback_plan` 只看 `dab`），CPU 支才建。transport 10 → 4.3 ms。
+- **一帧的后端工作按 64 MB 预算切块**：`pending_area` 超预算就先 `flush_pending`，长笔画不会
+  一次把整幅文档压在显存里，`takes_backend` 也不再依赖「region 已经长好」这个副作用。
+
+分项：涂抹 115 ms/帧里 masks 55、accumulate 22–24、tr-weights 12、transport 4.3、rest 44。
+
+
 ### 试过、量过、没留下：图案色进 colour lane
 
 把 `ColorPattern::sample_pigment` 的五抽样搬进 `paint_surface.wgsl`（RGBA32Float 纹理 +

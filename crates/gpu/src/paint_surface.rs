@@ -519,8 +519,9 @@ impl PaintSurface {
     }
 
     /// Reads the coverage and depth lanes only, over the `used` top-left region: what a batch
-    /// masker needs, without the colour lane or the unused part of the atlas.
-    pub fn read_masks(&self, device: &wgpu::Device, queue: &wgpu::Queue, used: (u32, u32)) -> Result<(Vec<f32>, Vec<f32>), Unsupported> {
+    /// masker needs, without the colour lane or the unused part of the atlas. `depth` is the Wet
+    /// Edges lane: a stroke without wet edges never reads it, so it is not copied back at all.
+    pub fn read_masks(&self, device: &wgpu::Device, queue: &wgpu::Queue, used: (u32, u32), depth: bool) -> Result<(Vec<f32>, Vec<f32>), Unsupported> {
         let (w, h) = (used.0.clamp(1, self.width), used.1.clamp(1, self.height));
         let cov_row = align_256(u64::from(w) * 8);
         let depth_row = align_256(u64::from(w) * 2);
@@ -535,22 +536,32 @@ impl PaintSurface {
         let cov_out = staging("pc_paint_surface_cov_masks", cov_row * u64::from(h));
         let depth_out = staging("pc_paint_surface_depth_masks", depth_row * u64::from(h));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pc_paint_surface_read_masks") });
-        for (texture, buffer, row) in [(&self.cov, &cov_out, cov_row), (&self.depth, &depth_out, depth_row)] {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &self.cov, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &cov_out,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(cov_row as u32), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        if depth {
             encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: &self.depth, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 wgpu::TexelCopyBufferInfo {
-                    buffer,
-                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row as u32), rows_per_image: Some(h) },
+                    buffer: &depth_out,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(depth_row as u32), rows_per_image: Some(h) },
                 },
                 wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
         }
         let index = queue.submit([encoder.finish()]);
         cov_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        depth_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        if depth {
+            depth_out.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        }
         device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None }).map_err(|e| Unsupported(format!("GPU wait failed: {e}")))?;
         let cov = decode_rgba_r(&cov_out, cov_row, w, h, 8)?;
-        let depth = decode(&depth_out, depth_row, w, h, 2)?;
+        let depth = if depth { decode(&depth_out, depth_row, w, h, 2)? } else { Vec::new() };
         Ok((cov, depth))
     }
 

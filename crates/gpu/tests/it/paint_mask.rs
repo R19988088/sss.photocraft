@@ -79,7 +79,7 @@ fn frame() -> Vec<Dab> {
 
 fn batch_for(brush: &BrushSettings, dabs: &[Dab]) -> MaskBatch {
     let ctx = BrushContext::new(brush);
-    let mut batch = MaskBatch { jobs: Vec::new(), rects: Vec::new(), texture: ctx.mask_texture(), tip: ctx.mask_tip() };
+    let mut batch = MaskBatch { jobs: Vec::new(), rects: Vec::new(), texture: ctx.mask_texture(), tip: ctx.mask_tip(), want_depth: true };
     for d in dabs {
         let job = ctx.mask_job(d, false).unwrap_or_else(|| panic!("a textured dab must be maskable"));
         batch.jobs.push(job);
