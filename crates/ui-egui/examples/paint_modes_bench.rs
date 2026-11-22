@@ -91,7 +91,7 @@ fn stroke(b: &BrushSettings, w: i32, h: i32) -> Run {
                     0.72,
                     i as f64 * 8.0,
                 );
-                let stamps = builder.add(&[sample]);
+                let stamps = builder.add_tipped(&[sample]).0; // the stamps drawn for good (the tip is the canvas's own)
                 let dabs = photocraft_brush_bridge::dabs(&stamps, b, b.color);
                 r.push_dabs(&dabs);
             }
@@ -103,8 +103,12 @@ fn stroke(b: &BrushSettings, w: i32, h: i32) -> Run {
     let t = Instant::now();
     match builder.as_mut() {
         Some(builder) => {
-            let stamps = builder.add_tipped(&[]).0;
-            let dabs = photocraft_brush_bridge::dabs(&stamps, b, b.color);
+            // Pen up: what the tapers still hold back, then the tip as the stroke ends. ProCraft's
+            // `add` is what the app's canvas calls each frame (`add_tipped`, drawing the tip on its
+            // own); here the tip is left out so the number is the stroke's own page, not the
+            // preview layer's.
+            let (kept, _tip) = builder.add_tipped(&[]);
+            let dabs = photocraft_brush_bridge::dabs(&kept, b, b.color);
             r.push_dabs(&dabs);
             r.finish();
         }
