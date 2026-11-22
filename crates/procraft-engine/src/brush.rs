@@ -1,0 +1,1280 @@
+//! Brush settings: what a stroke's stamps look like and how input drives them.
+//!
+//! Only the parameters the stroke builder uses so far are here; the full set (shape and grain
+//! images, rendering modes, wet mix, colour dynamics, tilt and roll) is added as it is drawn.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::curve::Curve;
+use crate::textures::TEXTURE_SIZE;
+
+/// An image of the user's own for a brush's shape or grain: square greyscale, `TEXTURE_SIZE` on a
+/// side, rows top to bottom, white = paint; known by a hash of its pixels. One of our stand-ins for
+/// a stock image is known by what it is drawn from instead, is drawn the first time its pixels are
+/// read, and knows which stock image it stands in for, by the key its measurements are kept under
+/// (see [`crate::textures::stock_key`]).
+#[derive(Clone, Debug)]
+pub struct Source {
+    pub id: u64,
+    pub pixels: Pixels,
+    pub stand_in_for: Option<u64>,
+}
+
+/// A source's pixels: drawn, or drawn the first time they are read (a stand-in, which most brushes
+/// holding it never draw with), once for every brush sharing them. They read as the pixels.
+#[derive(Clone)]
+pub struct Pixels(Arc<PixelCell>);
+
+struct PixelCell {
+    drawn: std::sync::OnceLock<Arc<Vec<u8>>>,
+    draw: Option<Box<dyn Fn() -> Option<Vec<u8>> + Send + Sync>>,
+}
+
+impl Pixels {
+    /// Pixels drawn already.
+    pub fn drawn(pixels: Arc<Vec<u8>>) -> Pixels {
+        let drawn = std::sync::OnceLock::new();
+        let _ = drawn.set(pixels);
+        Pixels(Arc::new(PixelCell { drawn, draw: None }))
+    }
+
+    /// Pixels `draw` draws the first time they are read (`TEXTURE_SIZE` square; blank if it can't).
+    pub fn later(draw: impl Fn() -> Option<Vec<u8>> + Send + Sync + 'static) -> Pixels {
+        Pixels(Arc::new(PixelCell { drawn: std::sync::OnceLock::new(), draw: Some(Box::new(draw)) }))
+    }
+
+    /// The pixels, to share (drawn now if they weren't).
+    pub fn shared(&self) -> Arc<Vec<u8>> {
+        Arc::clone(self.now())
+    }
+
+    /// Whether they are drawn yet.
+    pub fn is_drawn(&self) -> bool {
+        self.0.drawn.get().is_some()
+    }
+
+    /// Whether `a` and `b` are the same pixels, not a copy.
+    pub fn same(a: &Pixels, b: &Pixels) -> bool {
+        Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// A hold on them that doesn't keep them.
+    pub fn downgrade(&self) -> WeakPixels {
+        WeakPixels(Arc::downgrade(&self.0))
+    }
+
+    fn now(&self) -> &Arc<Vec<u8>> {
+        self.0.drawn.get_or_init(|| {
+            let side = TEXTURE_SIZE * TEXTURE_SIZE;
+            let drawn = self.0.draw.as_ref().and_then(|draw| draw()).filter(|p| p.len() == side);
+            Arc::new(drawn.unwrap_or_else(|| vec![0; side]))
+        })
+    }
+}
+
+impl std::ops::Deref for Pixels {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Vec<u8> {
+        self.now()
+    }
+}
+
+impl std::fmt::Debug for Pixels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Pixels({})", if self.is_drawn() { "drawn" } else { "to draw" })
+    }
+}
+
+/// A hold on a source's pixels that doesn't keep them (see [`Pixels::downgrade`]).
+#[derive(Clone)]
+pub struct WeakPixels(std::sync::Weak<PixelCell>);
+
+impl WeakPixels {
+    /// The pixels, if anything still holds them.
+    pub fn upgrade(&self) -> Option<Pixels> {
+        self.0.upgrade().map(Pixels)
+    }
+}
+
+impl PartialEq for Source {
+    fn eq(&self, other: &Source) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Source {
+    /// The image, or none if it isn't `TEXTURE_SIZE` square.
+    pub fn new(pixels: Vec<u8>) -> Option<Source> {
+        if pixels.len() != TEXTURE_SIZE * TEXTURE_SIZE {
+            return None;
+        }
+        Some(Source { id: image_id(&pixels), pixels: Pixels::drawn(Arc::new(pixels)), stand_in_for: None })
+    }
+
+    /// The image from pixels already shared (not copied), or none if it isn't `TEXTURE_SIZE`
+    /// square.
+    pub fn shared(pixels: Arc<Vec<u8>>) -> Option<Source> {
+        if pixels.len() != TEXTURE_SIZE * TEXTURE_SIZE {
+            return None;
+        }
+        Some(Source { id: image_id(&pixels), pixels: Pixels::drawn(pixels), stand_in_for: None })
+    }
+
+    /// The image `pixels` draws, known as `id` (what it is drawn from, told apart from any other).
+    pub fn drawn_later(id: u64, pixels: Pixels) -> Source {
+        Source { id, pixels, stand_in_for: None }
+    }
+
+    /// The image as our stand-in for the stock image whose measurements are kept under `key`.
+    pub fn standing_in_for(self, key: u64) -> Source {
+        Source { stand_in_for: Some(key), ..self }
+    }
+
+    /// The pixels as text (base64), to keep with a brush.
+    pub fn to_text(&self) -> String {
+        crate::base64::encode(&self.pixels)
+    }
+
+    /// An image kept as text by [`Source::to_text`]; none if it isn't one.
+    pub fn from_text(text: &str) -> Option<Source> {
+        Source::new(crate::base64::decode(text)?)
+    }
+}
+
+/// An image's id, from its pixels (FNV-1a).
+fn image_id(pixels: &[u8]) -> u64 {
+    pixels.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The most pixels a side of a grain or shape image is kept at. A grain fixed to the canvas is read
+/// once a canvas pixel, so a tile's width in pixels is the most of an image it can use: this holds
+/// all of it for most tiles, a little soft past that, at a quarter of the memory of twice the side.
+pub const FULL_GRAIN_MOST: usize = 1024;
+
+/// A grain or shape image at more than `TEXTURE_SIZE`, square, from a brush file or the user's own
+/// picture: its pixels are kept in a file of their own, and held here only until then.
+#[derive(Clone, Debug)]
+pub struct FullGrain {
+    pub id: u64,
+    /// Pixels a side (a power of two).
+    pub side: u32,
+    pub pixels: Option<Arc<Vec<u8>>>,
+}
+
+impl PartialEq for FullGrain {
+    fn eq(&self, other: &FullGrain) -> bool {
+        self.id == other.id
+    }
+}
+
+impl FullGrain {
+    /// The image, or none if it isn't `side` square.
+    pub fn new(side: u32, pixels: Vec<u8>) -> Option<FullGrain> {
+        (pixels.len() == (side as usize).pow(2)).then(|| FullGrain {
+            id: image_id(&pixels),
+            side,
+            pixels: Some(Arc::new(pixels)),
+        })
+    }
+}
+
+/// The controls that move a stroke's colour or mix in the secondary colour: its jitter per stamp
+/// and per stroke, and its response to pressure and tilt.
+const COLOUR_DYNAMICS: [&str; 18] = [
+    "stamp_hue",
+    "stamp_saturation",
+    "stamp_lightness",
+    "stamp_darkness",
+    "stamp_secondary",
+    "stroke_hue",
+    "stroke_saturation",
+    "stroke_lightness",
+    "stroke_darkness",
+    "stroke_secondary",
+    "pressure_hue",
+    "pressure_saturation",
+    "pressure_brightness",
+    "pressure_secondary",
+    "tilt_hue",
+    "tilt_saturation",
+    "tilt_brightness",
+    "tilt_secondary",
+];
+
+/// What a brush file or the user's own picture gave a grain beyond the [`Source`] the brush holds
+/// of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrainFile {
+    /// The id of the `Source` it goes with: a grain changed since leaves all this behind.
+    pub source: u64,
+    /// How wide the file's image is (pixels): a tile fixed to the canvas goes by it. 0 for the
+    /// user's own picture, whose tile goes by the grain's scale, whatever size the picture is.
+    pub width: u32,
+    /// The image at more than the `Source` holds, if it has that to give.
+    pub full: Option<FullGrain>,
+}
+
+/// What a brush file or the user's own picture gave a shape beyond the [`Source`] the brush holds
+/// of it: the image at more than that holds, so that a stamp bigger than a `Source` doesn't only
+/// magnify it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeFile {
+    /// The id of the `Source` it goes with: a shape changed since leaves it behind.
+    pub source: u64,
+    pub full: FullGrain,
+}
+
+/// Size and opacity at the ends of a stroke.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Taper {
+    /// Length of the start taper, 0..1: of [`TAPER_TIME_MS`] for the newer taper, of
+    /// [`CLASSIC_TAPER_SPAN`] canvas pixels for the classic one.
+    pub start: f32,
+    /// Length of the end taper, likewise.
+    pub end: f32,
+    /// How thin the tips get: 0 = no change, 1 = down to nothing.
+    pub size: f32,
+    /// How transparent the tips get: 0 = no change, 1 = fully transparent.
+    pub opacity: f32,
+}
+
+/// A newer taper of length 1 lasts this many milliseconds of the stroke, from when it starts or
+/// back from when it ends.
+pub const TAPER_TIME_MS: f64 = 83.34;
+
+/// A classic taper of length 1 spans this many canvas pixels, whatever the brush's size.
+pub const CLASSIC_TAPER_SPAN: f32 = 512.0;
+
+impl Taper {
+    pub const NONE: Taper = Taper { start: 0.0, end: 0.0, size: 0.0, opacity: 0.0 };
+
+    /// The multipliers (size, opacity) where the start taper has grown `start` and the end taper
+    /// `end` of the way to full (0..1 each), with a tip of sharpness `tip` (0 comes to a point,
+    /// 1 stays almost whole until the very end).
+    pub fn applied(&self, start: f32, end: f32, tip: f32) -> (f32, f32) {
+        let power = Taper::tip_power(tip);
+        let left = |grown: f32| 1.0 - grown.clamp(0.0, 1.0).powf(power);
+        let (size, opacity) = (self.size.clamp(0.0, 1.0), self.opacity.clamp(0.0, 1.0));
+        let (s, e) = (left(start), left(end));
+        let thinned = (1.0 - size * s) * (1.0 - size * e);
+        let faded = (1.0 - (opacity * s).powf(2.5)) * (1.0 - (opacity * e).powf(2.5));
+        (thinned, faded)
+    }
+
+    /// The power a taper's growth is taken to for a tip of sharpness `tip` (1 for a sharp one).
+    pub fn tip_power(tip: f32) -> f32 {
+        1.0 - TIP_BLUNTING * tip.clamp(0.0, 1.0)
+    }
+}
+
+/// How far a blunt tip (1) bends the taper's growth: it grows to the power 1 less this.
+const TIP_BLUNTING: f32 = 0.984375;
+
+/// How a stroke's stamps build up within the stroke (the studio's rendering modes: Light Glaze
+/// keeps the strongest; Uniformed Glaze, Intense Glaze and Intense Blending build up; Heavy Glaze
+/// and Uniform Blending build up gradually).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rendering {
+    /// Each stamp adds to what is there ("over"), up to the stroke's opacity.
+    #[default]
+    BuildUp,
+    /// Overlapping stamps don't build up: the stroke keeps the strongest stamp at each pixel.
+    Strongest,
+    /// Each stamp adds less the more is there (by what is left, squared).
+    Gradual,
+    /// Each stamp adds towards its transfer (what light pressure lets through), never past it.
+    Capped,
+}
+
+/// What the pen's pressure drives, each taking it through a curve of its own and following it at
+/// a speed of its own (see [`Brush::pressures`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressureUse {
+    Size = 0,
+    Opacity = 1,
+    Bleed = 2,
+    Roundness = 3,
+    /// The stamp's own pressure, which the brush's other curves read.
+    Stamp = 4,
+}
+
+/// What else a brush may give a pressure curve of its own: the control is then scaled by the
+/// curve at the stamp's pressure (a finger's is full), and without one it doesn't follow the
+/// pressure at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PressureCurve {
+    LateralJitter,
+    LinearJitter,
+    Count,
+    CountJitter,
+    SizeJitter,
+    OpacityJitter,
+    Scatter,
+    /// The roundness jitter's two ways: along the stamp's height and its width.
+    RoundnessJitterY,
+    RoundnessJitterX,
+    GrainMovement,
+    GrainScale,
+    GrainZoom,
+    GrainDepth,
+    GrainDepthJitter,
+    WetGrade,
+    WetBlur,
+    WetBlurJitter,
+    WetnessJitter,
+    /// The colour's own response to pressure: hue, saturation, brightness and the secondary
+    /// colour's share.
+    Hue,
+    Saturation,
+    Brightness,
+    Secondary,
+    /// The stamp colour jitters.
+    HueJitter,
+    SaturationJitter,
+    LightnessJitter,
+    DarknessJitter,
+    SecondaryJitter,
+    /// The controls that follow the pressure straight when the brush has no curve for them
+    /// (see [`PressureCurves::through`]): flow, bleed, roundness, the wet mix's dilution,
+    /// charge, attack and pull, the smudge's pull; and the spacing jitter.
+    Flow,
+    Bleed,
+    Roundness,
+    Dilution,
+    Charge,
+    Attack,
+    WetPull,
+    SmudgePull,
+    SpacingJitter,
+}
+
+/// A brush's own [`PressureCurve`]s, those it has.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PressureCurves(BTreeMap<PressureCurve, Curve>);
+
+impl PressureCurves {
+    pub fn get(&self, kind: PressureCurve) -> Option<&Curve> {
+        self.0.get(&kind)
+    }
+
+    /// Gives `kind` a curve, or takes its curve away.
+    pub fn set(&mut self, kind: PressureCurve, curve: Option<Curve>) {
+        match curve {
+            Some(c) => self.0.insert(kind, c),
+            None => self.0.remove(&kind),
+        };
+    }
+
+    /// The curves a new brush has: the colour's following the pressure, straight.
+    pub fn new_brush() -> PressureCurves {
+        let colour =
+            [PressureCurve::Hue, PressureCurve::Saturation, PressureCurve::Brightness, PressureCurve::Secondary];
+        PressureCurves(colour.into_iter().map(|k| (k, Curve::linear())).collect())
+    }
+
+    /// What `kind` is scaled by at `pressure`: 1 without a curve.
+    pub fn at(&self, kind: PressureCurve, pressure: f32) -> f32 {
+        self.0.get(&kind).map_or(1.0, |c| c.eval(pressure))
+    }
+
+    /// `pressure` through `kind`'s curve: as it is without one.
+    pub fn through(&self, kind: PressureCurve, pressure: f32) -> f32 {
+        self.0.get(&kind).map_or(pressure, |c| c.eval(pressure))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (PressureCurve, &Curve)> {
+        self.0.iter().map(|(k, c)| (*k, c))
+    }
+}
+
+/// The size slider's curve: the size it sets is its place to this power.
+pub const SIZE_CURVE: f32 = 2.2;
+
+/// A stamp's opacity is its flow, pressure, tilt and speed together, through the brush's opacity
+/// range, to this power: light touches fall away fast.
+pub const FLOW_POWER: f32 = 2.5;
+
+/// The stroke length (canvas pixels) by which an amount of 1 has run out (see [`run_out`]).
+pub const RUN_OUT_LENGTH: f32 = 33.0;
+
+/// How far `amount` has run out once a stroke has gone `length` canvas pixels, 0..1: by the cube
+/// root of the length (the fall off's fade, and a wet brush's paint running out).
+pub fn run_out(amount: f32, length: f32) -> f32 {
+    (amount * (length.max(0.0) / RUN_OUT_LENGTH).cbrt()).clamp(0.0, 1.0)
+}
+
+/// A grain's own blend modes, numbered past the layers' (and as brush files number them): the
+/// coverage, raised twelvefold by the depth, as a height the grain cuts into, straight or also
+/// thinned over the grain's light (the renderer's `grain_combine`).
+pub const GRAIN_HEIGHT: u32 = 27;
+pub const GRAIN_LINEAR_HEIGHT: u32 = 28;
+
+/// The modes a grain blends by, in the order the studio lists them: some of the layers' and the
+/// grain's own two. (A brush file may name any layer mode; it is kept and drawn by it.)
+pub fn grain_blends() -> Vec<(u32, &'static str)> {
+    use crate::document::BlendMode as B;
+    let mut modes: Vec<(u32, &'static str)> = [
+        B::Multiply,
+        B::Darken,
+        B::ColorBurn,
+        B::LinearBurn,
+        B::Lighten,
+        B::ColorDodge,
+        B::Overlay,
+        B::HardMix,
+        B::Difference,
+        B::Subtract,
+        B::Divide,
+    ]
+    .iter()
+    .map(|m| (m.id(), m.name()))
+    .collect();
+    modes.extend([(GRAIN_HEIGHT, "Height"), (GRAIN_LINEAR_HEIGHT, "Linear Height")]);
+    modes
+}
+
+/// The modes a dual brush's two strokes combine by, in the order the studio lists them.
+pub fn combine_modes() -> Vec<(u32, &'static str)> {
+    use crate::document::BlendMode as B;
+    [
+        B::Multiply,
+        B::Darken,
+        B::ColorBurn,
+        B::LinearBurn,
+        B::Normal,
+        B::Lighten,
+        B::ColorDodge,
+        B::Overlay,
+        B::HardMix,
+        B::Difference,
+        B::Subtract,
+        B::Divide,
+    ]
+    .iter()
+    .map(|m| (m.id(), m.name()))
+    .chain([(GRAIN_LINEAR_HEIGHT, "Linear Height")])
+    .collect()
+}
+
+/// The blend mode that lays a brush's paint under what the layer has (only brushes and their burnt
+/// edges have it), numbered past the grain's own modes.
+pub const BRUSH_BEHIND: u32 = 29;
+
+/// The modes a brush (and its burnt edges) blends by, in the order the studio lists them: the
+/// layers' and then behind.
+pub fn brush_blends() -> Vec<(u32, &'static str)> {
+    let mut modes: Vec<(u32, &'static str)> =
+        crate::document::BlendMode::ALL.iter().map(|m| (m.id(), m.name())).collect();
+    modes.push((BRUSH_BEHIND, "Behind"));
+    modes
+}
+
+/// Where a grain sits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GrainMode {
+    /// Fixed to the canvas, like paper: applied to the whole stroke.
+    #[default]
+    Texturized,
+    /// Travels with each stamp.
+    Moving,
+}
+
+/// The stamp's shape and how it is placed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shape {
+    /// A shape image (see `textures::shape`), or none for the round tip drawn with `hardness`.
+    pub image: Option<u32>,
+    /// An image of the user's own, in place of `image`.
+    pub source: Option<Source>,
+    /// Fixed rotation, radians.
+    pub rotation: f32,
+    /// How far the stamp turns with the stroke's direction: 1 follows it, 0 holds still, −1
+    /// turns against it.
+    pub follow: f32,
+    /// Turn with the direction the pen leans.
+    pub follow_azimuth: bool,
+    /// A random rotation, the same for every stamp of a stroke.
+    pub randomise: bool,
+    /// 1 = as drawn; lower squashes the stamp across its rotation.
+    pub roundness: f32,
+    /// How far each stamp turns at random, up to this many half turns either way (the Scatter
+    /// control, 0..2).
+    pub scatter: f32,
+    /// Random offset from the path, in stamp diameters (some brushes of our own throw their
+    /// stamps about; files keep such randomness as jitter).
+    pub throw: f32,
+    /// Stamps placed at each step.
+    pub count: u32,
+    /// Random reduction of each stamp's size and opacity, 0..1.
+    pub size_jitter: f32,
+    pub opacity_jitter: f32,
+}
+
+impl Default for Shape {
+    fn default() -> Shape {
+        Shape {
+            image: None,
+            source: None,
+            rotation: 0.0,
+            follow: 0.0,
+            follow_azimuth: false,
+            randomise: false,
+            roundness: 1.0,
+            scatter: 0.0,
+            throw: 0.0,
+            count: 1,
+            size_jitter: 0.0,
+            opacity_jitter: 0.0,
+        }
+    }
+}
+
+/// What a brush paints a model's metalness or roughness through, tiled like a grain: white takes
+/// the brush's amount, black none of it. Neither image: the amount all over.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MaterialSource {
+    /// A grain image (see `textures::grain`), or none.
+    pub image: Option<u32>,
+    /// An image of the user's own, in place of `image`.
+    pub source: Option<Source>,
+}
+
+/// The texture inside the stroke.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Grain {
+    /// A grain image (see `textures::grain`), or none.
+    pub image: Option<u32>,
+    /// An image of the user's own, in place of `image`.
+    pub source: Option<Source>,
+    pub mode: GrainMode,
+    /// Size of one grain tile on the canvas, pixels (a moving grain's is
+    /// [`Grain::moving_tile`]).
+    pub scale: f32,
+    /// How strongly the grain shows, 0..1.
+    pub depth: f32,
+}
+
+/// How far a stock grain's stand-in is tiled smaller, or larger, than its scale, at most (see
+/// [`Brush::grain_tile`]): past these the stand-in's own pattern would show more than its features.
+const STAND_IN_TILE_LEAST: f32 = 0.125;
+const STAND_IN_TILE_MOST: f32 = 4.0;
+
+/// A stand-in's tile against the scale for a stock grain's feature size `theirs` and our grain's
+/// `ours` (see [`Brush::grain_tile`]).
+fn stand_in_tile(theirs: Option<f32>, ours: Option<f32>) -> f32 {
+    match (theirs, ours) {
+        (Some(theirs), Some(ours)) if ours > 0.0 && theirs.is_finite() => {
+            (theirs / ours).clamp(STAND_IN_TILE_LEAST, STAND_IN_TILE_MOST)
+        }
+        _ => 1.0,
+    }
+}
+
+/// A moving grain's tile, cropped (not following the stamp's size), for each of the scale as
+/// brush files keep it: a stamp whose half side is 128 canvas pixels spans the half diagonal of a
+/// tile.
+const CROPPED_GRAIN_TILE: f32 = 256.0 / std::f32::consts::FRAC_1_SQRT_2;
+
+impl Grain {
+    /// The scale as brush files keep it (`textureScale`): the studio's control squared, times 16.
+    pub fn file_scale(&self) -> f32 {
+        16.0 * (self.scale / crate::studio::MAX_GRAIN_SCALE).powi(2)
+    }
+
+    /// A moving grain's tile on the canvas (pixels) under a stamp `diameter` pixels across, its
+    /// zoom `zoom` (0 follows the stamp's size, 1 crops) and its scale times `scale_by` (the
+    /// scale's pressure curve): following the size, the stamp's diagonal times the file's scale;
+    /// cropped, [`CROPPED_GRAIN_TILE`] times it. In between the zoom goes by how much of the tile
+    /// the stamp spans, not by the tile's size, so a big tile gives way to a small one early.
+    pub fn moving_tile(&self, diameter: f32, zoom: f32, scale_by: f32) -> f32 {
+        let scale = self.file_scale() * scale_by;
+        let (zoom, diameter) = (zoom.clamp(0.0, 1.0), diameter.max(1e-3));
+        let least = 1.0 / 32.0;
+        let follow = std::f32::consts::FRAC_1_SQRT_2 / scale.max(least);
+        let cropped = diameter / (CROPPED_GRAIN_TILE * scale).max(least * CROPPED_GRAIN_TILE / 128.0);
+        (diameter / (follow * (1.0 - zoom) + cropped * zoom)).max(1.0)
+    }
+
+    /// The scale for a moving grain whose cropped tile is `tile` canvas pixels.
+    pub fn scale_for_cropped_tile(tile: f32) -> f32 {
+        crate::studio::MAX_GRAIN_SCALE * (tile.max(0.0) / (16.0 * CROPPED_GRAIN_TILE)).sqrt()
+    }
+}
+
+/// What leaning the pen does.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tilt {
+    /// The tilt angle control's dial (radians, a quarter turn at most): each tilt control starts
+    /// to act from its own angle, this one unless it has its own (see [`Tilt::reach`]).
+    pub angle: f32,
+    /// What leaning adds to the stamp's size, in the size's units ([`Brush::size_unit`]) at the
+    /// most lean, before it is taken as far as the lean has gone.
+    pub size: f32,
+    /// Fading of the stamp as the pen leans, 0..1.
+    pub opacity: f32,
+}
+
+/// A lean (radians from upright) about as flat as pens go.
+pub const FLAT_TILT: f32 = 1.2;
+
+impl Tilt {
+    /// How far a pen leaning `lean` radians from upright has gone for a tilt control whose angle
+    /// is `theta` (its dial's share of a quarter turn): nothing until it is down to 34° above the
+    /// surface (at 0; at 1, from upright), rising as it goes down to 26°, the most it counts,
+    /// where it reaches 0.5 (at 0) to 0.88 (at 1).
+    pub fn reach(lean: f32, theta: f32) -> f32 {
+        if !lean.is_finite() {
+            return 0.0;
+        }
+        let altitude = (1.0 - lean / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0);
+        let theta = if theta.is_finite() { theta.clamp(0.0, 1.0) } else { 0.0 };
+        let span = TILT_SPAN_LOW + (TILT_SPAN_HIGH - TILT_SPAN_LOW) * theta;
+        (1.0 - (altitude.max(TILT_LOWEST) - TILT_SPAN_LOW) / span).clamp(1.0 / 1024.0, 1.0)
+    }
+}
+
+/// The ramp of [`Tilt::reach`], as shares of a quarter turn of altitude: the lowest it counts
+/// (25.8°), and its span at a tilt angle of 0 and of 1.
+const TILT_LOWEST: f32 = 0.28648;
+const TILT_SPAN_LOW: f32 = 0.19099;
+const TILT_SPAN_HIGH: f32 = 0.80901;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Brush {
+    pub name: String,
+    /// Distance between stamps, as a fraction of the stamp diameter.
+    pub spacing: f32,
+    /// Smoothing of the stroke's path, 0..1.
+    pub streamline: f32,
+    /// Smoothing of pen pressure, 0..1.
+    pub pressure_smoothing: f32,
+    /// Edge of the round tip: 0 = soft all the way to the centre, 1 = hard.
+    pub hardness: f32,
+    /// Stamp diameter in canvas pixels at the size slider's minimum and maximum.
+    pub min_size: f32,
+    pub max_size: f32,
+    /// Stroke opacity at the opacity slider's minimum and maximum.
+    pub min_opacity: f32,
+    pub max_opacity: f32,
+    /// How much each stamp adds at full pressure, 0..1 (the studio's flow control to the power
+    /// [`FLOW_POWER`]).
+    pub flow: f32,
+    /// The opacity slider, for a stroke: a finger's wet attack follows it as a pen's does its
+    /// pressure. Not part of the brush as it is kept.
+    pub touch_opacity: f32,
+    /// What a brush file gave the grain, if it came from one with its image in it.
+    pub grain_file: Option<GrainFile>,
+    /// What a brush file gave the shape, if it came from one with its image in it at more than a
+    /// [`Source`] holds.
+    pub shape_file: Option<ShapeFile>,
+    /// How much pen pressure shrinks the stamp (0 = not at all, 1 = to nothing at no pressure).
+    pub pressure_size: f32,
+    /// How much pen pressure lowers the stamp's opacity.
+    pub pressure_opacity: f32,
+    pub pressure_curve: Curve,
+    /// What the pressure (after [`Brush::pressure_curve`]) becomes for the size and for the
+    /// opacity.
+    pub size_curve: Curve,
+    pub opacity_curve: Curve,
+    /// Its own pressure curves for its other controls.
+    pub pressure_curves: PressureCurves,
+    /// Taper for pens and for fingers.
+    pub pen_taper: Taper,
+    pub touch_taper: Taper,
+    pub shape: Shape,
+    pub grain: Grain,
+    /// What it paints a model's metalness and roughness through (their amounts are studio controls).
+    pub metallic: MaterialSource,
+    pub roughness: MaterialSource,
+    pub tilt: Tilt,
+    pub rendering: Rendering,
+    /// Brush studio controls the engine does not draw yet, by key (see `studio`).
+    pub extra: BTreeMap<String, f32>,
+    /// Values saved on the side sliders while this brush is in use, shown there as notches.
+    pub notches: Notches,
+    /// Where its size and opacity sliders stand for painting, smudging and erasing (slider places
+    /// 0..1, kept as [`Notches::tool`] says), as its file brought them: a tool's start there when
+    /// the brush is first picked for it. None: at its preview size, fully opaque.
+    pub sliders: [Option<[f32; 2]>; 3],
+    /// Its preview as its file brought it (PNG), shown in place of a drawn one until the brush is
+    /// changed.
+    pub thumbnail: Option<std::sync::Arc<[u8]>>,
+    /// Who made it, as its file says; none for ProCraft's own.
+    pub author: Option<Author>,
+    /// What resetting the brush puts back: set the first time it is opened in the studio.
+    pub reset_point: Option<ResetPoint>,
+    /// The stock images its file named for its shape, grain and materials, which our own stand in
+    /// for.
+    pub stock: StockImages,
+    /// A dual brush's second: its own stroke along the same path, whose coverage combines with
+    /// this one's by `dual_blend` (the colour this one's).
+    pub secondary: Option<Box<Brush>>,
+    /// What a brush engine outside the app keeps of it, if one made it (see [`OutsideBrush`]).
+    pub engine: Option<OutsideBrush>,
+}
+
+/// What a brush engine outside the app's own (a plugin's) keeps of a brush it draws: the engine's
+/// name (its plugin's id, a dot, its key) and its own data, kept as it is. While that engine is on
+/// it draws the brush's strokes; without it the brush draws as the rest of its settings say.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutsideBrush {
+    pub engine: String,
+    pub data: std::sync::Arc<[u8]>,
+}
+
+/// The stock images a brush's file names for its shape, grain, metalness and roughness (drawn with
+/// ours standing in), kept so that they are named again when the brush is written out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StockImages {
+    pub shape: Option<StockImage>,
+    pub grain: Option<StockImage>,
+    pub metallic: Option<StockImage>,
+    pub roughness: Option<StockImage>,
+}
+
+/// A stock image as a brush file names it, and whether the file has it inverted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StockImage {
+    pub name: String,
+    pub inverted: bool,
+}
+
+/// A brush's maker as its file names them, with their picture and signature (PNG) if it has them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Author {
+    pub name: String,
+    pub picture: Option<std::sync::Arc<[u8]>>,
+    pub signature: Option<std::sync::Arc<[u8]>>,
+}
+
+/// A brush set aside to go back to (without a reset point of its own), and when: seconds since
+/// 1970.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResetPoint {
+    pub brush: Box<Brush>,
+    pub made: i64,
+}
+
+impl ResetPoint {
+    /// `brush` as it is, set aside at `made`.
+    pub fn of(brush: &Brush, made: i64) -> ResetPoint {
+        ResetPoint { brush: Box::new(Brush { reset_point: None, ..brush.clone() }), made }
+    }
+}
+
+/// A brush's saved side-slider values (its notches): sizes and opacities, slider positions 0..1,
+/// kept apart for each tool that uses the brush (painting, smudging, erasing; see [`Notches::tool`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notches {
+    pub sizes: [Vec<f32>; 3],
+    pub opacities: [Vec<f32>; 3],
+}
+
+impl Notches {
+    /// The most notches a slider takes.
+    pub const MOST: usize = 4;
+    /// How near a value (of the slider's length) is on a notch, and is pulled onto it.
+    pub const NEAR: f32 = 0.04;
+
+    /// Where a tool's notches are kept: 0 painting, 1 smudging, 2 erasing.
+    pub fn tool(painting: bool, smudging: bool) -> usize {
+        if painting {
+            0
+        } else if smudging {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// A tool's (0..3) size or opacity notches.
+    pub fn list(&self, tool: usize, size: bool) -> &[f32] {
+        let lists = if size { &self.sizes } else { &self.opacities };
+        lists.get(tool).map_or(&[], Vec::as_slice)
+    }
+
+    fn list_mut(&mut self, tool: usize, size: bool) -> Option<&mut Vec<f32>> {
+        if size { self.sizes.get_mut(tool) } else { self.opacities.get_mut(tool) }
+    }
+
+    /// The notch `value` is on (the nearest, within [`Notches::NEAR`]), if any.
+    pub fn at(&self, tool: usize, size: bool, value: f32) -> Option<f32> {
+        self.list(tool, size)
+            .iter()
+            .copied()
+            .filter(|n| (n - value).abs() < Self::NEAR)
+            .min_by(|a, b| (a - value).abs().total_cmp(&(b - value).abs()))
+    }
+
+    /// Saves `value` as a notch, unless the slider is full, one is there already, or it isn't a
+    /// slider position; whether it did.
+    pub fn add(&mut self, tool: usize, size: bool, value: f32) -> bool {
+        if !(0.0..=1.0).contains(&value) || self.at(tool, size, value).is_some() {
+            return false;
+        }
+        match self.list_mut(tool, size) {
+            Some(list) if list.len() < Self::MOST => {
+                list.push(value);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Takes away the notch `value` is on; whether there was one.
+    pub fn remove(&mut self, tool: usize, size: bool, value: f32) -> bool {
+        let Some(n) = self.at(tool, size, value) else { return false };
+        let Some(list) = self.list_mut(tool, size) else { return false };
+        list.retain(|&v| v != n);
+        true
+    }
+}
+
+impl Brush {
+    /// A plain round inking pen: ProCraft's own starting brush until the library exists.
+    pub fn round_pen() -> Brush {
+        Brush {
+            name: "Round Pen".to_owned(),
+            spacing: 0.08,
+            streamline: 0.015,
+            pressure_smoothing: 0.0,
+            hardness: 0.92,
+            min_size: 1.0,
+            max_size: 120.0,
+            min_opacity: 0.0,
+            max_opacity: 1.0,
+            flow: 1.0,
+            touch_opacity: 1.0,
+            grain_file: None,
+            shape_file: None,
+            pressure_size: 0.85,
+            pressure_opacity: 0.0,
+            pressure_curve: Curve::linear(),
+            size_curve: Curve::linear(),
+            opacity_curve: Curve::linear(),
+            pressure_curves: PressureCurves::new_brush(),
+            pen_taper: Taper { start: 0.15, end: 0.2, size: 0.8, opacity: 0.0 },
+            touch_taper: Taper { start: 0.1, end: 0.1, size: 0.6, opacity: 0.0 },
+            shape: Shape::default(),
+            grain: Grain::default(),
+            metallic: MaterialSource::default(),
+            roughness: MaterialSource::default(),
+            tilt: Tilt::default(),
+            rendering: Rendering::BuildUp,
+            extra: BTreeMap::new(),
+            notches: Notches::default(),
+            sliders: [None; 3],
+            thumbnail: None,
+            author: None,
+            reset_point: None,
+            stock: StockImages::default(),
+            secondary: None,
+            engine: None,
+        }
+    }
+
+    /// Canvas pixels a stamp is across for each unit of size as brush files keep it: the
+    /// stamp's square, of which a round tip of ours covers [`crate::brushfile::ROUND_TIP_SHARE`].
+    pub fn size_unit(&self) -> f32 {
+        crate::brushfile::PIXELS_PER_SIZE * if self.round_tip() { crate::brushfile::ROUND_TIP_SHARE } else { 1.0 }
+    }
+
+    /// Whether it draws the round tip, not a shape image.
+    pub fn round_tip(&self) -> bool {
+        self.shape.image.is_none() && self.shape.source.is_none()
+    }
+
+    /// The brush as a dual brush's second: drawn apart as coverage alone, its grain goes on stamp
+    /// by stamp, even one fixed to the canvas; where its colour shows, it is the stroke's own,
+    /// nothing jittering or moving it.
+    pub fn as_second(mut self) -> Brush {
+        if self.grain.mode == GrainMode::Texturized {
+            self.grain.mode = GrainMode::Moving;
+        }
+        for key in COLOUR_DYNAMICS {
+            self.extra.remove(key);
+        }
+        self
+    }
+
+    /// What a brush file gave the grain the brush has now.
+    pub fn grain_file_now(&self) -> Option<&GrainFile> {
+        let source = self.grain.source.as_ref()?;
+        self.grain_file.as_ref().filter(|f| f.source == source.id)
+    }
+
+    /// What a brush file gave the shape, while the shape is still the file's.
+    pub fn shape_file_now(&self) -> Option<&ShapeFile> {
+        let source = self.shape.source.as_ref()?;
+        self.shape_file.as_ref().filter(|f| f.source == source.id)
+    }
+
+    /// The brush files' grains and shapes it can still come to: its own, even one it has moved on
+    /// from, its second's and its reset point's.
+    pub fn full_grains(&self) -> Vec<&FullGrain> {
+        let own = self.grain_file.iter().filter_map(|f| f.full.as_ref()).chain(self.shape_file.iter().map(|f| &f.full));
+        let others = self.secondary.iter().map(|b| &**b).chain(self.reset_point.iter().map(|r| &*r.brush));
+        own.chain(others.flat_map(Brush::full_grains)).collect()
+    }
+
+    /// Whether its grain, fixed to the canvas, goes on stamp by stamp, each stamp combined with it
+    /// as it lands and as deep as that stamp's depth (the depth's pressure curve, its jitter and its
+    /// least), rather than once over the whole stroke: as another app's brush that textures each
+    /// stamp does. Only a brush file of another app's sets it.
+    pub fn grain_each_stamp(&self) -> bool {
+        self.grain.mode == GrainMode::Texturized && self.setting("grain_each_stamp") >= 0.5
+    }
+
+    /// The grain's tile on the canvas (pixels): fixed to the canvas, a brush file's image is as
+    /// wide as the file's own times its scale over root two; else what the grain says.
+    pub fn grain_tile(&self) -> f32 {
+        match self.grain_file_now() {
+            Some(f) if self.grain.mode == GrainMode::Texturized && f.width > 0 => {
+                f.width as f32 * self.grain.file_scale() / std::f32::consts::SQRT_2
+            }
+            _ => self.grain.scale * self.stand_in_tile(),
+        }
+    }
+
+    /// How a stock grain's stand-in is tiled against the scale, so that its features come out the
+    /// size the stock image's would at a tile that size: their feature size there over ours, as
+    /// measured, held to an eighth to four times. 1 for any other grain, or where either isn't
+    /// known.
+    fn stand_in_tile(&self) -> f32 {
+        // the stock image its file names, or (a stock brush of ours, which names none) the one its
+        // grain's image stands in for
+        let stock = self.stock.grain.as_ref().map(|s| crate::textures::stock_key(&s.name));
+        let stock = stock.or_else(|| self.grain.source.as_ref().and_then(|s| s.stand_in_for));
+        let (Some(stock), Some(index)) = (stock, self.grain.image) else { return 1.0 };
+        // a paper or a wash drawn by the stock image's own octaves of noise: a share of that image,
+        // fixed to the canvas as wide as it times the file's scale over root two (as a brush
+        // file's own image is), moving read as the image is stamp by stamp
+        if crate::textures::drawn_by_octaves(index)
+            && let Some((width, _)) = crate::textures::stock_grain_octaves_of(stock)
+        {
+            let share = crate::textures::OCTAVE_SHARE;
+            if self.grain.mode == GrainMode::Moving {
+                return share;
+            }
+            return width * self.grain.file_scale() / std::f32::consts::SQRT_2 * share / self.grain.scale.max(1e-3);
+        }
+        // a pattern drawn to the stock image's own proportions: fixed to the canvas, the tile that
+        // image would have, as wide as it times the file's scale over root two, as a brush file's
+        // own image is; moving, read as the image is stamp by stamp, whose tile doesn't go by its
+        // width
+        if let Some(width) = crate::textures::drawn_to_stock_width(index) {
+            if self.grain.mode == GrainMode::Moving {
+                return 1.0;
+            }
+            return width * self.grain.file_scale() / std::f32::consts::SQRT_2 / self.grain.scale.max(1e-3);
+        }
+        let theirs = crate::textures::stock_grain_features_of(stock)
+            .map(|levels| crate::textures::feature_at_tile(&levels, self.grain.scale));
+        stand_in_tile(theirs, crate::textures::grain_feature(index))
+    }
+
+    /// The brush as a file whose grain image is `width` pixels wide keeps it: the same tile, by a
+    /// scale to suit. Only a grain fixed to the canvas goes by its image's width.
+    pub fn with_grain_image_width(mut self, width: u32) -> Brush {
+        if self.grain.mode == GrainMode::Texturized && self.grain_file_now().is_some() {
+            let scale = self.grain_tile() * std::f32::consts::SQRT_2 / width.max(1) as f32;
+            self.grain.scale = crate::studio::MAX_GRAIN_SCALE * (scale / 16.0).sqrt();
+        }
+        self
+    }
+
+    /// Stamp diameter (canvas px) for a size slider at 0..1: the slider to the power
+    /// [`SIZE_CURVE`] (so small sizes get most of it), from the least size to the most.
+    pub fn diameter(&self, slider: f32) -> f32 {
+        let s = if slider.is_finite() { slider.clamp(0.0, 1.0) } else { 0.5 };
+        let most = self.biggest();
+        let least = self.min_size.min(most);
+        (least + (most - least) * s.powf(SIZE_CURVE)).max(0.5)
+    }
+
+    /// The most size drawn (canvas pixels): the brush's own, held to what its spacing allows.
+    pub fn biggest(&self) -> f32 {
+        self.max_size.min(self.most_size() * self.size_unit())
+    }
+
+    /// Stroke opacity for an opacity slider at 0..1.
+    pub fn opacity(&self, slider: f32) -> f32 {
+        let s = if slider.is_finite() { slider.clamp(0.0, 1.0) } else { 1.0 };
+        (self.min_opacity + (self.max_opacity - self.min_opacity) * s).clamp(0.0, 1.0)
+    }
+
+    /// The (size, opacity) multipliers for a pressure of 0..1.
+    pub fn pressure_factors(&self, pressure: f32) -> (f32, f32) {
+        let [size, opacity, ..] = self.pressures(pressure);
+        self.factors(size, opacity)
+    }
+
+    /// The pressure as each of its uses takes it, through the pressure curve and their own:
+    /// [`PressureUse`] order.
+    pub fn pressures(&self, pressure: f32) -> [f32; 5] {
+        let p = self.pressure_curve.eval(pressure);
+        let curves = &self.pressure_curves;
+        [
+            self.size_curve.eval(p),
+            self.opacity_curve.eval(p),
+            curves.through(PressureCurve::Bleed, p),
+            curves.through(PressureCurve::Roundness, p),
+            p,
+        ]
+    }
+
+    /// The (size, opacity) multipliers for the size's and the opacity's own pressures: an amount
+    /// above 0 takes away as the pressure lightens, one below 0 as it presses.
+    pub fn factors(&self, size: f32, opacity: f32) -> (f32, f32) {
+        let factor = |amount: f32, p: f32| {
+            let amount = amount.clamp(-1.0, 1.0);
+            if amount >= 0.0 { 1.0 - amount * (1.0 - p) } else { 1.0 + amount * p }
+        };
+        (factor(self.pressure_size, size), factor(self.pressure_opacity, opacity))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_s_grain_goes_on_stamp_by_stamp() {
+        let mut b = Brush::round_pen();
+        b.grain.mode = GrainMode::Texturized;
+        assert_eq!(b.as_second().grain.mode, GrainMode::Moving);
+    }
+
+    #[test]
+    fn a_second_paints_the_stroke_s_own_colour() {
+        // its colour jitter, its response to pressure and tilt and its secondary colour all off
+        let mut b = Brush::round_pen();
+        for key in COLOUR_DYNAMICS {
+            b.set_setting(key, 0.5);
+        }
+        let second = b.as_second();
+        for key in COLOUR_DYNAMICS {
+            assert_eq!(second.setting(key), 0.0, "{key}");
+        }
+        let samples = [0.0f32, 30.0].map(|x| crate::input::Sample::at(crate::geom::Vec2::new(x, 0.0), 0.4, 0.0));
+        let stamps = crate::stroke::StrokeBuilder::new(second, 10.0, crate::input::Pointer::Stylus).add(&samples);
+        assert!(stamps.iter().all(|s| s.tint == crate::stroke::Tint::NONE && s.secondary == 0.0));
+    }
+
+    #[test]
+    fn a_stock_grain_s_stand_in_is_tiled_to_the_stock_image_s_feature_size() {
+        // finer features than ours: tiled smaller, as far as an eighth; coarser: larger, as far as
+        // four times; unknown: as the scale says
+        assert_eq!(stand_in_tile(Some(0.002), Some(0.004)), 0.5);
+        assert_eq!(stand_in_tile(Some(0.0004), Some(0.004)), STAND_IN_TILE_LEAST);
+        assert_eq!(stand_in_tile(Some(0.1), Some(0.01)), STAND_IN_TILE_MOST);
+        assert_eq!(stand_in_tile(None, Some(0.01)), 1.0);
+        assert_eq!(stand_in_tile(Some(0.01), None), 1.0);
+        // only a stock grain's stand-in: our own grain, or one named in no table, keeps its scale
+        let mut b = Brush::round_pen();
+        b.grain = Grain { image: Some(crate::textures::grain::FINE_NOISE), scale: 300.0, ..Grain::default() };
+        assert_eq!(b.grain_tile(), 300.0);
+        b.stock.grain = Some(StockImage { name: "no such grain.png".into(), inverted: false });
+        assert_eq!(b.grain_tile(), 300.0);
+        // a pattern drawn to a stock image's proportions: that image's tile (2048 pixels wide at a
+        // file scale of 0.1024: 148 pixels)
+        b.grain.image = Some(crate::textures::grain::GRAPH_PAPER);
+        b.grain.scale = 81.92;
+        assert!((b.grain_tile() - 2048.0 * 0.1024 / std::f32::consts::SQRT_2).abs() < 0.01, "{}", b.grain_tile());
+        // moving, it goes by the moving grain's own tile, as the image's would
+        b.grain.mode = GrainMode::Moving;
+        assert_eq!(b.grain_tile(), 81.92);
+    }
+
+    #[test]
+    fn a_paper_drawn_by_its_octaves_is_tiled_as_a_share_of_the_stock_image() {
+        // a quarter of the paper (2048 pixels wide) at a file scale of 0.6728: fixed to the canvas
+        // 2048 x 0.6728 / root two / 4
+        let mut b = Brush::round_pen();
+        b.grain = Grain {
+            mode: GrainMode::Texturized,
+            scale: crate::studio::MAX_GRAIN_SCALE * (0.6728f32 / 16.0).sqrt(),
+            image: Some(crate::textures::grain::SHEET),
+            ..Grain::default()
+        };
+        b.stock.grain = Some(StockImage { name: "Wax-Crayon-Paper.jpg".into(), inverted: false });
+        let tile = 2048.0 * 0.6728 / std::f32::consts::SQRT_2 / 4.0;
+        assert!((b.grain_tile() - tile).abs() < 0.5, "{} {tile}", b.grain_tile());
+        // moving, a quarter of the moving grain's own tile
+        b.grain.mode = GrainMode::Moving;
+        assert!((b.grain_tile() - b.grain.scale / 4.0).abs() < 1e-3, "{}", b.grain_tile());
+    }
+
+    #[test]
+    fn a_grain_of_the_user_s_own_is_tiled_by_its_scale_at_any_size() {
+        let source = Source::new(vec![9; TEXTURE_SIZE * TEXTURE_SIZE]).unwrap();
+        let mut b = Brush::round_pen();
+        b.grain = Grain { mode: GrainMode::Texturized, scale: 100.0, source: Some(source.clone()), ..Grain::default() };
+        assert_eq!(b.grain_tile(), 100.0);
+        b.grain_file = Some(GrainFile { source: source.id, width: 0, full: None });
+        assert_eq!(b.grain_tile(), 100.0);
+        // written with its image, it comes back a file's grain, the same size
+        let mut written = b.clone().with_grain_image_width(1024);
+        written.grain_file = Some(GrainFile { source: source.id, width: 1024, full: None });
+        assert!((written.grain_tile() - 100.0).abs() < 0.01, "{}", written.grain_tile());
+    }
+
+    #[test]
+    fn a_brush_file_s_grain_is_tiled_by_its_own_image() {
+        let source = Source::new(vec![9; TEXTURE_SIZE * TEXTURE_SIZE]).unwrap();
+        let scale = crate::studio::MAX_GRAIN_SCALE * (0.75f32 / 16.0).sqrt();
+        let mut b = Brush::round_pen();
+        b.grain = Grain { mode: GrainMode::Texturized, scale, source: Some(source.clone()), ..Grain::default() };
+        // without a file's width: what the grain says
+        assert_eq!(b.grain_tile(), scale);
+        b.grain_file = Some(GrainFile { source: source.id, width: 2048, full: None });
+        let tile = 2048.0 * 0.75 / std::f32::consts::SQRT_2;
+        assert!((b.grain_tile() - tile).abs() < 0.5, "{}", b.grain_tile());
+        // written with a smaller image it comes back the same size
+        let written = b.clone().with_grain_image_width(1024);
+        assert!((written.grain.file_scale() - 1.5).abs() < 1e-3);
+        // a grain changed since leaves the file's behind
+        b.grain.source = Source::new(vec![8; TEXTURE_SIZE * TEXTURE_SIZE]);
+        assert!(b.grain_file_now().is_none());
+        assert_eq!(b.grain_tile(), scale);
+    }
+
+    #[test]
+    fn a_moving_grain_is_written_at_its_own_scale_whatever_its_image_s_width() {
+        let source = Source::new(vec![9; TEXTURE_SIZE * TEXTURE_SIZE]).unwrap();
+        let scale = crate::studio::MAX_GRAIN_SCALE * (0.75f32 / 16.0).sqrt();
+        let mut b = Brush::round_pen();
+        b.grain = Grain { mode: GrainMode::Moving, scale, source: Some(source.clone()), ..Grain::default() };
+        b.grain_file = Some(GrainFile { source: source.id, width: 2048, full: None });
+        assert_eq!(b.with_grain_image_width(1024).grain.scale, scale);
+    }
+
+    #[test]
+    fn a_brush_holds_its_own_grain_its_second_s_and_its_reset_point_s() {
+        let with = |fill: u8| {
+            let full = FullGrain::new(512, vec![fill; 512 * 512]).unwrap();
+            let file = GrainFile { source: 1, width: 512, full: Some(full) };
+            Brush { grain_file: Some(file), ..Brush::round_pen() }
+        };
+        let mut second = with(2);
+        second.reset_point = Some(ResetPoint::of(&with(3), 0));
+        let mut before = with(4);
+        before.secondary = Some(Box::new(with(5)));
+        let mut brush = with(1);
+        brush.secondary = Some(Box::new(second));
+        brush.reset_point = Some(ResetPoint::of(&before, 0));
+        let ids: Vec<u64> = brush.full_grains().iter().map(|g| g.id).collect();
+        let wanted = [1, 2, 3, 4, 5].map(|fill| FullGrain::new(512, vec![fill; 512 * 512]).unwrap().id);
+        assert!(ids.len() == 5 && wanted.iter().all(|id| ids.contains(id)), "{ids:?}");
+    }
+
+    #[test]
+    fn a_moving_grain_s_tile_follows_the_stamp_or_is_cropped_by_its_file_scale() {
+        // a file scale of 1: following the size, the stamp's diagonal; cropped, 256 over the half
+        // diagonal; half way, by the share of the tile each spans
+        let grain = Grain { scale: crate::studio::MAX_GRAIN_SCALE / 4.0, ..Grain::default() };
+        assert!((grain.file_scale() - 1.0).abs() < 1e-5);
+        let diagonal = 100.0 * std::f32::consts::SQRT_2;
+        assert!((grain.moving_tile(100.0, 0.0, 1.0) - diagonal).abs() < 1e-3);
+        assert!((grain.moving_tile(100.0, 1.0, 1.0) - 362.039).abs() < 1e-2);
+        let halfway = 2.0 / (1.0 / diagonal + 1.0 / 362.039);
+        assert!((grain.moving_tile(100.0, 0.5, 1.0) - halfway).abs() < 1e-2);
+        // the scale's pressure curve scales it; a cropped tile asked for gives its scale back
+        assert!((grain.moving_tile(100.0, 1.0, 0.5) - 181.019).abs() < 1e-2);
+        let wanted = Grain { scale: Grain::scale_for_cropped_tile(90.0), ..Grain::default() };
+        assert!((wanted.moving_tile(30.0, 1.0, 1.0) - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_taper_thins_and_fades_its_tips_as_far_as_it_has_grown() {
+        let t = Taper { start: 0.5, end: 0.5, size: 1.0, opacity: 0.5 };
+        // grown fully at both ends: whole; at a tip: thinned to nothing, faded by its opacity
+        assert_eq!(t.applied(1.0, 1.0, 0.0), (1.0, 1.0));
+        let (size, opacity) = t.applied(0.0, 1.0, 0.0);
+        assert_eq!(size, 0.0);
+        assert!((opacity - (1.0 - 0.5f32.powf(2.5))).abs() < 1e-6);
+        // a sharp tip grows evenly; a blunt one is almost whole a little way in
+        assert!((t.applied(0.25, 1.0, 0.0).0 - 0.25).abs() < 1e-6);
+        assert!(t.applied(0.05, 1.0, 1.0).0 > 0.95);
+        // both ends at once take away what each other leaves
+        assert!((t.applied(0.5, 0.5, 0.0).0 - 0.25).abs() < 1e-6);
+        assert_eq!(Taper::NONE.applied(0.0, 0.0, 0.0), (1.0, 1.0));
+    }
+
+    #[test]
+    fn tilt_reaches_past_its_angle() {
+        let deg = |d: f32| d.to_radians();
+        // upright, next to nothing; down to 26 degrees above the surface, the most
+        assert!(Tilt::reach(0.0, 0.1) < 0.001);
+        assert!((Tilt::reach(FLAT_TILT, 0.0) - 0.5).abs() < 1e-3);
+        assert!((Tilt::reach(FLAT_TILT, 0.1) - 0.622).abs() < 1e-3);
+        assert!((Tilt::reach(FLAT_TILT, 1.0) - 0.882).abs() < 1e-3);
+        // at 0.1 it starts about 50 degrees from upright
+        assert!(Tilt::reach(deg(48.0), 0.1) < 0.001);
+        assert!(Tilt::reach(deg(52.0), 0.1) > 0.02);
+        // at 1 it starts at once
+        assert!(Tilt::reach(deg(10.0), 1.0) > 0.05);
+        assert_eq!(Tilt::reach(f32::NAN, 0.5), 0.0);
+    }
+
+    #[test]
+    fn sliders_map_into_range() {
+        let b = Brush::round_pen();
+        assert_eq!(b.diameter(0.0), b.min_size);
+        assert_eq!(b.diameter(1.0), b.max_size);
+        assert!(b.diameter(0.5) < (b.min_size + b.max_size) / 2.0);
+        assert_eq!(b.diameter(f32::NAN), b.diameter(0.5));
+        assert_eq!(b.opacity(1.0), 1.0);
+        let (s, o) = b.pressure_factors(1.0);
+        assert_eq!((s, o), (1.0, 1.0));
+        let (s0, _) = b.pressure_factors(0.0);
+        assert!((s0 - 0.15).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_source_image_keeps_as_text() {
+        let n = TEXTURE_SIZE * TEXTURE_SIZE;
+        let pixels: Vec<u8> = (0..n).map(|i| (i * 7 % 251) as u8).collect();
+        let a = Source::new(pixels.clone()).unwrap();
+        let back = Source::from_text(&a.to_text()).unwrap();
+        assert_eq!(*back.pixels, pixels);
+        assert_eq!(back, a);
+        // another image is another source; the wrong size or text is none
+        assert_ne!(Source::new(vec![0; n]).unwrap(), a);
+        assert!(Source::new(vec![0; 10]).is_none());
+        assert!(Source::from_text("not an image!").is_none());
+    }
+
+    #[test]
+    fn notches_are_saved_per_tool_and_slider_and_found_nearby() {
+        let mut n = Notches::default();
+        assert!(n.add(0, true, 0.3));
+        // already there (within reach), or not a slider position
+        assert!(!n.add(0, true, 0.32));
+        assert!(!n.add(0, true, 1.5));
+        assert!(!n.add(0, true, f32::NAN));
+        // another tool's or the other slider's are their own
+        assert!(n.add(2, true, 0.3));
+        assert!(n.add(0, false, 0.3));
+        assert_eq!(n.list(0, true), &[0.3]);
+        assert_eq!(n.list(1, true), &[] as &[f32]);
+        assert_eq!(n.list(9, true), &[] as &[f32]);
+        // the nearest within reach
+        assert!(n.add(0, true, 0.37));
+        assert_eq!(n.at(0, true, 0.335), Some(0.3));
+        assert_eq!(n.at(0, true, 0.345), Some(0.37));
+        assert_eq!(n.at(0, true, 0.5), None);
+        // full at four
+        assert!(n.add(0, true, 0.6));
+        assert!(n.add(0, true, 0.9));
+        assert!(!n.add(0, true, 0.1));
+        assert!(n.remove(0, true, 0.61));
+        assert!(!n.remove(0, true, 0.61));
+        assert_eq!(n.list(0, true), &[0.3, 0.37, 0.9]);
+        assert_eq!(Notches::tool(true, false), 0);
+        assert_eq!(Notches::tool(false, true), 1);
+        assert_eq!(Notches::tool(false, false), 2);
+    }
+}

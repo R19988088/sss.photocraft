@@ -1,0 +1,1435 @@
+//! Layers on a real GPU: blend modes, clipping, alpha lock, merge, duplicate, delete and their
+//! undo (skipped where the machine has none).
+#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+use procraft_engine::document::{BlendMode, Document, LayerId};
+use procraft_engine::geom::Vec2;
+use procraft_engine::stroke::Stamp;
+use procraft_gpu::{Canvas, Filter, Gpu, Resample, StrokeStyle, StrokeTool};
+
+const W: u32 = 16;
+
+fn setup() -> Option<(Gpu, Document, Canvas)> {
+    let gpu = match Gpu::headless() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return None;
+        }
+    };
+    let doc = Document::new(W, W);
+    let canvas = Canvas::new(&gpu, &doc).unwrap();
+    Some((gpu, doc, canvas))
+}
+
+fn paint(canvas: &mut Canvas, doc: &Document, layer: LayerId, rgb: [u8; 3], at: Vec2, radius: f32, tool: StrokeTool) {
+    let color = rgb.map(|c| f32::from(c) / 255.0);
+    let preserve_alpha = doc.layer(layer).is_some_and(|l| l.alpha_lock);
+    canvas.begin_stroke(layer, StrokeStyle { preserve_alpha, ..StrokeStyle::new(tool, color, 1.0) });
+    canvas.add_stamps(&[Stamp::round(at, radius, 1.0)]);
+    canvas.end_stroke();
+}
+
+/// Covers the whole canvas.
+fn fill(canvas: &mut Canvas, doc: &Document, layer: LayerId, rgb: [u8; 3]) {
+    paint(canvas, doc, layer, rgb, Vec2::new(8.0, 8.0), 100.0, StrokeTool::Paint);
+}
+
+fn composite_at(gpu: &Gpu, doc: &mut Document, canvas: &mut Canvas, x: u32, y: u32) -> [u8; 4] {
+    canvas.render(gpu, doc, None);
+    assert_eq!(gpu.errors(), 0, "GPU validation errors");
+    let px = canvas.read_composite(gpu).unwrap();
+    let i = ((y * W + x) * 4) as usize;
+    [px[i], px[i + 1], px[i + 2], px[i + 3]]
+}
+
+fn layer_at(gpu: &Gpu, doc: &mut Document, canvas: &mut Canvas, id: LayerId, x: u32, y: u32) -> [u8; 4] {
+    canvas.render(gpu, doc, None);
+    assert_eq!(gpu.errors(), 0, "GPU validation errors");
+    let px = canvas.read_layer(gpu, id).unwrap();
+    let i = ((y * W + x) * 4) as usize;
+    [px[i], px[i + 1], px[i + 2], px[i + 3]]
+}
+
+/// The usual compositing definitions on 0..1 values, for opaque colours.
+fn reference(mode: BlendMode, b: f32, s: f32) -> f32 {
+    match mode {
+        BlendMode::Multiply => b * s,
+        BlendMode::Screen => b + s - b * s,
+        BlendMode::Darken => b.min(s),
+        BlendMode::Lighten => b.max(s),
+        BlendMode::Difference => (b - s).abs(),
+        BlendMode::Exclusion => b + s - 2.0 * b * s,
+        BlendMode::Add => (b + s).min(1.0),
+        BlendMode::Subtract => (b - s).max(0.0),
+        BlendMode::LinearBurn => (b + s - 1.0).max(0.0),
+        BlendMode::Overlay => {
+            if b <= 0.5 {
+                s * 2.0 * b
+            } else {
+                let t = 2.0 * b - 1.0;
+                s + t - s * t
+            }
+        }
+        _ => s,
+    }
+}
+
+#[test]
+fn separable_blend_modes_match_the_definitions() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let bottom = doc.current();
+    let top = doc.add_layer();
+    let (b, s) = ([200u8, 90, 30], [60u8, 140, 250]);
+    fill(&mut canvas, &doc, bottom, b);
+    fill(&mut canvas, &doc, top, s);
+    for mode in [
+        BlendMode::Multiply,
+        BlendMode::Screen,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Add,
+        BlendMode::Subtract,
+        BlendMode::LinearBurn,
+        BlendMode::Overlay,
+        BlendMode::Normal,
+    ] {
+        doc.set_blend(top, mode);
+        canvas.invalidate();
+        let got = composite_at(&gpu, &mut doc, &mut canvas, 8, 8);
+        for c in 0..3 {
+            let want = (reference(mode, f32::from(b[c]) / 255.0, f32::from(s[c]) / 255.0) * 255.0).round() as i32;
+            assert!((i32::from(got[c]) - want).abs() <= 2, "{mode:?} channel {c}: got {} want {want}", got[c]);
+        }
+        assert_eq!(got[3], 255);
+    }
+}
+
+#[test]
+fn shade_darkens_and_shows_nothing_over_clear() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let bottom = doc.current();
+    let top = doc.add_layer();
+    let (b, s) = ([200u8, 90, 30], [60u8, 140, 250]);
+    fill(&mut canvas, &doc, bottom, b);
+    fill(&mut canvas, &doc, top, s);
+    doc.set_blend(top, BlendMode::Shade);
+    canvas.invalidate();
+    let got = composite_at(&gpu, &mut doc, &mut canvas, 8, 8);
+    for c in 0..3 {
+        assert!((i32::from(got[c]) - i32::from(b[c].min(s[c]))).abs() <= 2, "channel {c}: {got:?}");
+    }
+    // with nothing below it, a shaded layer adds nothing
+    doc.set_visible(bottom, false);
+    doc.background_visible = false;
+    canvas.invalidate();
+    let got = composite_at(&gpu, &mut doc, &mut canvas, 8, 8);
+    assert!(got[3] <= 1, "{got:?}");
+}
+
+#[test]
+fn colour_modes_keep_the_backdrop_lightness() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let bottom = doc.current();
+    let top = doc.add_layer();
+    fill(&mut canvas, &doc, bottom, [128, 128, 128]);
+    fill(&mut canvas, &doc, top, [255, 0, 0]);
+    doc.set_blend(top, BlendMode::Color);
+    let [r, g, b, _] = composite_at(&gpu, &mut doc, &mut canvas, 8, 8);
+    // red hue at grey's lightness: reddish, and about as light (0.3 r + 0.59 g + 0.11 b ≈ 128)
+    assert!(r > g && r > b, "{r} {g} {b}");
+    let lum = 0.3 * f32::from(r) + 0.59 * f32::from(g) + 0.11 * f32::from(b);
+    assert!((lum - 128.0).abs() < 4.0, "lum {lum}");
+    doc.set_blend(top, BlendMode::Luminosity);
+    canvas.invalidate();
+    let [r, g, b, _] = composite_at(&gpu, &mut doc, &mut canvas, 8, 8);
+    assert!(r == g && g == b, "grey stays grey: {r} {g} {b}");
+}
+
+#[test]
+fn opacity_visibility_and_clipping() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let base = doc.current();
+    let clipped = doc.add_layer();
+    // the base covers the left part only; the clipped layer covers everything
+    paint(&mut canvas, &doc, base, [0, 0, 255], Vec2::new(2.0, 8.0), 4.0, StrokeTool::Paint);
+    fill(&mut canvas, &doc, clipped, [255, 0, 0]);
+    doc.set_clipped(clipped, true);
+    canvas.invalidate();
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 2, 8), [255, 0, 0, 255]);
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 14, 8), [255, 255, 255, 255], "clipped away");
+    doc.set_opacity(clipped, 0.5);
+    canvas.invalidate();
+    let [r, _, b, _] = composite_at(&gpu, &mut doc, &mut canvas, 2, 8);
+    assert!((126..=129).contains(&r) && (126..=129).contains(&b), "half red over blue: {r} {b}");
+    // hiding the base hides what is clipped to it
+    doc.set_visible(base, false);
+    canvas.invalidate();
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 2, 8), [255, 255, 255, 255]);
+}
+
+#[test]
+fn alpha_lock_recolours_only_painted_pixels() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let layer = doc.current();
+    paint(&mut canvas, &doc, layer, [0, 0, 0], Vec2::new(4.0, 4.0), 3.0, StrokeTool::Paint);
+    doc.set_alpha_lock(layer, true);
+    fill(&mut canvas, &doc, layer, [255, 0, 0]);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, layer, 4, 4), [255, 0, 0, 255]);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, layer, 12, 12)[3], 0, "outside stays empty");
+}
+
+#[test]
+fn merge_down_and_undo() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let lower = doc.current();
+    let upper = doc.add_layer();
+    fill(&mut canvas, &doc, lower, [200, 200, 200]);
+    fill(&mut canvas, &doc, upper, [100, 50, 0]);
+    doc.set_blend(upper, BlendMode::Multiply);
+    let before = doc.clone();
+    canvas.merge_down(upper, lower, before, None);
+    assert!(doc.finish_merge_down(upper));
+    assert_eq!(doc.layers().len(), 1);
+    let merged = layer_at(&gpu, &mut doc, &mut canvas, lower, 8, 8);
+    assert_eq!(merged[..3], [78, 39, 0], "200 × 100 / 255 and so on");
+    // the composite is unchanged by merging
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 8, 8)[..3], [78, 39, 0]);
+
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 8, 8), [200, 200, 200, 255]);
+    assert_eq!(doc.layers().len(), 2);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, upper, 8, 8), [100, 50, 0, 255]);
+    canvas.redo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(doc.layers().len(), 1);
+}
+
+#[test]
+fn merge_down_applies_each_mask_first() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    // red all over, hidden at the left by its mask
+    let lower = doc.current();
+    fill(&mut canvas, &doc, lower, [200, 0, 0]);
+    let lower_mask = doc.add_mask(lower).unwrap();
+    fill(&mut canvas, &doc, lower_mask, [255, 255, 255]);
+    paint(&mut canvas, &doc, lower_mask, [0, 0, 0], Vec2::new(1.0, 8.0), 2.0, StrokeTool::Paint);
+    // blue over the right, hidden at its far right by its mask
+    assert!(doc.set_current(lower));
+    let upper = doc.add_layer();
+    paint(&mut canvas, &doc, upper, [0, 0, 200], Vec2::new(12.0, 8.0), 4.0, StrokeTool::Paint);
+    let upper_mask = doc.add_mask(upper).unwrap();
+    fill(&mut canvas, &doc, upper_mask, [255, 255, 255]);
+    paint(&mut canvas, &doc, upper_mask, [0, 0, 0], Vec2::new(15.0, 8.0), 1.5, StrokeTool::Paint);
+    let at = [(1, 8), (5, 8), (11, 8), (15, 8)];
+    let shown: Vec<[u8; 4]> = at.iter().map(|&(x, y)| composite_at(&gpu, &mut doc, &mut canvas, x, y)).collect();
+    let before = doc.clone();
+    canvas.merge_down_with_masks(upper, lower, vec![(upper, upper_mask), (lower, lower_mask)], false, before, None);
+    assert!(doc.finish_merge_down(upper));
+    assert_eq!(doc.layers().len(), 1, "both masks gone with it");
+    // the layer as the two showed: nothing, red, blue, red
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8)[3], 0);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 5, 8), [200, 0, 0, 255]);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 11, 8), [0, 0, 200, 255]);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 15, 8), [200, 0, 0, 255]);
+    for (&(x, y), was) in at.iter().zip(&shown) {
+        assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, x, y), *was, "shown at {x}, {y}");
+    }
+    // undone: both layers and masks as they were; redone: merged again
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8), [200, 0, 0, 255]);
+    assert_eq!(doc.layers().len(), 4);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, upper, 15, 8), [0, 0, 200, 255]);
+    for (&(x, y), was) in at.iter().zip(&shown) {
+        assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, x, y), *was, "undone, shown at {x}, {y}");
+    }
+    canvas.redo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8)[3], 0);
+    assert_eq!(doc.layers().len(), 1);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 11, 8), [0, 0, 200, 255]);
+}
+
+#[test]
+fn merging_picked_layers_applies_each_mask_first() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    // as above: red hidden at the left, blue over the right hidden at its far right
+    let lower = doc.current();
+    fill(&mut canvas, &doc, lower, [200, 0, 0]);
+    let lower_mask = doc.add_mask(lower).unwrap();
+    fill(&mut canvas, &doc, lower_mask, [255, 255, 255]);
+    paint(&mut canvas, &doc, lower_mask, [0, 0, 0], Vec2::new(1.0, 8.0), 2.0, StrokeTool::Paint);
+    assert!(doc.set_current(lower));
+    let upper = doc.add_layer();
+    paint(&mut canvas, &doc, upper, [0, 0, 200], Vec2::new(12.0, 8.0), 4.0, StrokeTool::Paint);
+    let upper_mask = doc.add_mask(upper).unwrap();
+    fill(&mut canvas, &doc, upper_mask, [255, 255, 255]);
+    paint(&mut canvas, &doc, upper_mask, [0, 0, 0], Vec2::new(15.0, 8.0), 1.5, StrokeTool::Paint);
+    let at = [(1, 8), (5, 8), (11, 8), (15, 8)];
+    let shown: Vec<[u8; 4]> = at.iter().map(|&(x, y)| composite_at(&gpu, &mut doc, &mut canvas, x, y)).collect();
+    let before = doc.clone();
+    canvas.merge_layers_with_masks(
+        vec![upper],
+        lower,
+        vec![(lower, lower_mask), (upper, upper_mask)],
+        false,
+        before,
+        None,
+    );
+    assert!(doc.finish_merge_chosen(lower, &[upper]));
+    assert_eq!(doc.layers().len(), 1, "both masks gone with them");
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8)[3], 0);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 15, 8), [200, 0, 0, 255]);
+    for (&(x, y), was) in at.iter().zip(&shown) {
+        assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, x, y), *was, "shown at {x}, {y}");
+    }
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8), [200, 0, 0, 255]);
+    assert_eq!(doc.layers().len(), 4);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, upper, 15, 8), [0, 0, 200, 255]);
+    canvas.redo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 11, 8), [0, 0, 200, 255]);
+    assert_eq!(doc.layers().len(), 1);
+}
+
+#[test]
+fn merging_onto_a_hidden_layer_keeps_only_what_showed() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    // red all over, hidden; blue at the right above it
+    let lower = doc.current();
+    fill(&mut canvas, &doc, lower, [200, 0, 0]);
+    assert!(doc.set_visible(lower, false));
+    let upper = doc.add_layer();
+    paint(&mut canvas, &doc, upper, [0, 0, 200], Vec2::new(12.0, 8.0), 4.0, StrokeTool::Paint);
+    let shown = [(1, 8), (12, 8)].map(|(x, y)| composite_at(&gpu, &mut doc, &mut canvas, x, y));
+    let before = doc.clone();
+    canvas.merge_down_with_masks(upper, lower, Vec::new(), true, before, None);
+    assert!(doc.finish_merge_down(upper));
+    // it shows now, holding only the blue: the picture as it was
+    assert!(doc.layer(lower).unwrap().visible);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8)[3], 0);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 12, 8), [0, 0, 200, 255]);
+    assert_eq!([(1, 8), (12, 8)].map(|(x, y)| composite_at(&gpu, &mut doc, &mut canvas, x, y)), shown);
+    // undone: the red back, hidden
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8), [200, 0, 0, 255]);
+    assert!(!doc.layer(lower).unwrap().visible);
+}
+
+#[test]
+fn merging_onto_a_faded_layer_keeps_its_look() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    // red all over at half; blue at the right, full, above it
+    let lower = doc.current();
+    fill(&mut canvas, &doc, lower, [200, 0, 0]);
+    assert!(doc.set_opacity(lower, 0.5));
+    let upper = doc.add_layer();
+    paint(&mut canvas, &doc, upper, [0, 0, 200], Vec2::new(12.0, 8.0), 4.0, StrokeTool::Paint);
+    let shown = [(1, 8), (12, 8)].map(|(x, y)| composite_at(&gpu, &mut doc, &mut canvas, x, y));
+    let before = doc.clone();
+    canvas.merge_down(upper, lower, before, None);
+    assert!(doc.finish_merge_down(upper));
+    // at full now, the half in its pixels: the blue as strong as it was
+    assert!((doc.layer(lower).unwrap().opacity - 1.0).abs() < 1e-6);
+    let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 1);
+    for ((x, y), was) in [(1, 8), (12, 8)].into_iter().zip(shown) {
+        let now = composite_at(&gpu, &mut doc, &mut canvas, x, y);
+        assert!(near(now, was), "at {x}, {y}: {now:?} was {was:?}");
+    }
+    // undone: the red whole again, at half
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, lower, 1, 8)[3], 255);
+    assert!((doc.layer(lower).unwrap().opacity - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn a_clipped_layer_follows_its_base_s_mask() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    // red all over, its mask hiding the left
+    let base = doc.current();
+    fill(&mut canvas, &doc, base, [200, 0, 0]);
+    let mask = doc.add_mask(base).unwrap();
+    fill(&mut canvas, &doc, mask, [255, 255, 255]);
+    paint(&mut canvas, &doc, mask, [0, 0, 0], Vec2::new(1.0, 8.0), 3.0, StrokeTool::Paint);
+    // blue all over, clipped to it
+    assert!(doc.set_current(base));
+    let top = doc.add_layer();
+    fill(&mut canvas, &doc, top, [0, 0, 200]);
+    assert!(doc.set_clipped(top, true));
+    canvas.invalidate();
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 13, 8)[..3], [0, 0, 200]);
+    let left = composite_at(&gpu, &mut doc, &mut canvas, 1, 8);
+    // where the mask hides the base, the clipped layer shows nothing either
+    assert!(doc.set_visible(top, false));
+    canvas.invalidate();
+    assert_eq!(composite_at(&gpu, &mut doc, &mut canvas, 1, 8), left);
+}
+
+/// Lays `rgb` on `layer` fading in across the canvas: clear at the left, full at the right (a soft
+/// edge: its alpha up 17 levels a column).
+fn ramp(canvas: &mut Canvas, layer: LayerId, rgb: [u8; 3]) {
+    let mut px = vec![0u8; (W * W * 4) as usize];
+    for (i, p) in px.chunks_mut(4).enumerate() {
+        let a = (i as u32 % W) * 17;
+        for (c, v) in p.iter_mut().zip(rgb) {
+            *c = ((u32::from(v) * a + 127) / 255) as u8;
+        }
+        p[3] = a as u8;
+    }
+    canvas.write_layer(layer, px);
+}
+
+/// The composite's row `y`.
+fn row(gpu: &Gpu, doc: &mut Document, canvas: &mut Canvas, y: u32) -> Vec<[u8; 4]> {
+    (0..W).map(|x| composite_at(gpu, doc, canvas, x, y)).collect()
+}
+
+/// Whether two rows are within `slack` of each other, every channel.
+fn rows_near(a: &[[u8; 4]], b: &[[u8; 4]], slack: u8) -> bool {
+    a.iter().flatten().zip(b.iter().flatten()).all(|(p, q)| p.abs_diff(*q) <= slack)
+}
+
+const TEAL: [f32; 3] = [40.0 / 255.0, 140.0 / 255.0, 150.0 / 255.0];
+
+#[test]
+fn a_layer_clipped_to_a_soft_edge_shows_as_alpha_lock_paints() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    doc.background = TEAL;
+    // white fading in from the left, red clipped to it
+    let base = doc.current();
+    ramp(&mut canvas, base, [255, 255, 255]);
+    let clipped = doc.add_layer();
+    fill(&mut canvas, &doc, clipped, [220, 40, 60]);
+    assert!(doc.set_clipped(clipped, true));
+    canvas.invalidate();
+    let shown = row(&gpu, &mut doc, &mut canvas, 8);
+    // where the white is a third: the red a third over the teal, no white in it
+    eprintln!("clipped at a third: {:?}", shown[5]);
+    assert!(rows_near(&shown[5..6], &[[100, 107, 120, 255]], 1), "{:?}", shown[5]);
+    // the same red painted onto the white, alpha-locked
+    assert!(doc.set_visible(clipped, false));
+    assert!(doc.set_alpha_lock(base, true));
+    fill(&mut canvas, &doc, base, [220, 40, 60]);
+    let locked = row(&gpu, &mut doc, &mut canvas, 8);
+    eprintln!("alpha-locked at a third: {:?}", locked[5]);
+    assert!(rows_near(&shown, &locked, 1), "clipped {shown:?}\nlocked {locked:?}");
+}
+
+#[test]
+fn a_multiply_layer_clipped_to_a_soft_base_multiplies_the_base_alone() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    doc.background = TEAL;
+    let base = doc.current();
+    ramp(&mut canvas, base, [230, 200, 60]);
+    let top = doc.add_layer();
+    let blue = [120u8, 180, 250];
+    fill(&mut canvas, &doc, top, blue);
+    canvas.render(&gpu, &mut doc, None);
+    let unclipped = canvas.texture_bytes();
+    assert!(doc.set_clipped(top, true));
+    canvas.invalidate();
+    canvas.render(&gpu, &mut doc, None);
+    // a clipping group of normal layers takes one texture more, of a blend mode two
+    let per = u64::from(W * W * 4);
+    assert_eq!(canvas.texture_bytes(), unclipped + per);
+    assert!(doc.set_blend(top, BlendMode::Multiply));
+    canvas.invalidate();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(canvas.texture_bytes(), unclipped + 2 * per);
+    // the blue multiplies the base's own colour, then that shows as much as the base does over
+    // the teal (which the blue leaves as it is)
+    let stored = canvas.read_layer(&gpu, base).unwrap();
+    let shown = row(&gpu, &mut doc, &mut canvas, 8);
+    for (x, got) in shown.iter().enumerate() {
+        let p = &stored[(8 * W as usize + x) * 4..][..4];
+        let a = f32::from(p[3]) / 255.0;
+        for c in 0..3 {
+            let cb = if p[3] == 0 { 0.0 } else { f32::from(p[c]) / f32::from(p[3]) };
+            let want = (cb * f32::from(blue[c]) / 255.0 * a + TEAL[c] * (1.0 - a)) * 255.0;
+            assert!((f32::from(got[c]) - want).abs() <= 1.5, "at {x}: {got:?}, channel {c} wants {want}");
+        }
+    }
+}
+
+#[test]
+fn merging_layers_clipped_to_a_soft_base_keeps_the_picture() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    doc.background = TEAL;
+    // blue at the left, under a half-faded white fading in from the left; red clipped to the
+    // white all over, and a multiplied yellow clipped over the red
+    let under = doc.current();
+    paint(&mut canvas, &doc, under, [30, 30, 200], Vec2::new(3.0, 8.0), 5.0, StrokeTool::Paint);
+    let base = doc.add_layer();
+    ramp(&mut canvas, base, [255, 255, 255]);
+    assert!(doc.set_opacity(base, 0.8));
+    let red = doc.add_layer();
+    fill(&mut canvas, &doc, red, [220, 40, 60]);
+    assert!(doc.set_clipped(red, true));
+    let yellow = doc.add_layer();
+    fill(&mut canvas, &doc, yellow, [250, 230, 90]);
+    assert!(doc.set_blend(yellow, BlendMode::Multiply));
+    assert!(doc.set_clipped(yellow, true));
+    canvas.invalidate();
+    let shown = row(&gpu, &mut doc, &mut canvas, 8);
+    // all three into the blue at once
+    let before = doc.clone();
+    canvas.merge_layers(vec![base, red, yellow], under, before, None);
+    assert!(doc.finish_merge_chosen(under, &[base, red, yellow]));
+    let merged = row(&gpu, &mut doc, &mut canvas, 8);
+    assert!(rows_near(&shown, &merged, 2), "shown {shown:?}\nmerged {merged:?}");
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(doc.layers().len(), 4);
+    // one at a time: the yellow into the red (both clipped), the red into the white
+    let before = doc.clone();
+    canvas.merge_down(yellow, red, before, None);
+    assert!(doc.finish_merge_down(yellow));
+    let merged = row(&gpu, &mut doc, &mut canvas, 8);
+    assert!(rows_near(&shown, &merged, 2), "shown {shown:?}\ninto the red {merged:?}");
+    let before = doc.clone();
+    canvas.merge_down(red, base, before, None);
+    assert!(doc.finish_merge_down(red));
+    let merged = row(&gpu, &mut doc, &mut canvas, 8);
+    assert!(rows_near(&shown, &merged, 2), "shown {shown:?}\ninto the white {merged:?}");
+}
+
+#[test]
+fn a_clipping_group_worked_on_composites_around_caches_as_whole() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_cache_composites(true);
+    // bottom up: green; white fading in, with red and an overlay clipped to it; grey at the top
+    let bottom = t.docs[0].current();
+    t.each(|doc, canvas| {
+        doc.background = TEAL;
+        paint(canvas, doc, bottom, [40, 200, 40], Vec2::new(4.0, 4.0), 5.0, StrokeTool::Paint);
+        let base = doc.add_layer();
+        ramp(canvas, base, [255, 255, 255]);
+        let red = doc.add_layer();
+        paint(canvas, doc, red, [220, 40, 60], Vec2::new(9.0, 9.0), 6.0, StrokeTool::Paint);
+        assert!(doc.set_clipped(red, true));
+        let overlay = doc.add_layer();
+        fill(canvas, doc, overlay, [30, 120, 220]);
+        assert!(doc.set_blend(overlay, BlendMode::Overlay));
+        assert!(doc.set_clipped(overlay, true));
+        let top = doc.add_layer();
+        paint(canvas, doc, top, [90, 90, 90], Vec2::new(13.0, 13.0), 2.0, StrokeTool::Paint);
+        doc.set_current(red);
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "as made");
+    assert!(t.canvases[0].composites_cached(), "made around caches");
+    // a stroke open on the clipped layer, then on the base (erasing), shows live in the group
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    let (base, red) = (ids[1], ids[2]);
+    for (layer, tool) in [(red, StrokeTool::Paint), (base, StrokeTool::Erase)] {
+        t.each(|doc, canvas| {
+            doc.set_current(layer);
+            canvas.begin_stroke(layer, StrokeStyle::new(tool, [0.1, 0.3, 0.9], 1.0));
+            canvas.add_stamps(&[Stamp::round(Vec2::new(10.0, 6.0), 3.0, 1.0)]);
+        });
+        t.same(&gpu, 2, "a stroke open");
+        assert!(t.canvases[0].composites_cached());
+        t.each(|_, canvas| canvas.end_stroke());
+        t.same(&gpu, 2, "the stroke ended");
+    }
+}
+
+#[test]
+fn duplicate_delete_and_undo_keep_pixels() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let a = doc.current();
+    paint(&mut canvas, &doc, a, [0, 255, 0], Vec2::new(8.0, 8.0), 3.0, StrokeTool::Paint);
+    let before = doc.clone();
+    let b = doc.duplicate_layer(a).unwrap();
+    canvas.duplicate_layer(a, b, before);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, b, 8, 8), [0, 255, 0, 255]);
+
+    let before = doc.clone();
+    assert!(doc.delete_layer(a));
+    canvas.record_document(before);
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(doc.layers().len(), 1);
+    // the deleted layer's pixels are kept while undo can bring it back
+    assert_eq!(canvas.layer_texture_count(), 2);
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(doc.layers().len(), 2);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 8, 8), [0, 255, 0, 255]);
+}
+
+#[test]
+fn thumbnails_are_scaled_layers() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let a = doc.current();
+    fill(&mut canvas, &doc, a, [10, 20, 30]);
+    let t = canvas.layer_thumbnail(&gpu, &mut doc, a, 8).unwrap();
+    assert_eq!((t.width, t.height), (8, 8));
+    assert_eq!(t.rgba.len(), 8 * 8 * 4);
+    assert_eq!(t.rgba[..4], [10, 20, 30, 255]);
+}
+
+#[test]
+fn a_thumbnail_shows_what_is_drawn_never_enlarged() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let a = doc.current();
+    // a 2 x 3 block near a corner of the 16 x 16 layer
+    let mut pixels = vec![0u8; 16 * 16 * 4];
+    for (x, y) in [(12, 1), (13, 1), (12, 2), (13, 2), (12, 3), (13, 3)] {
+        pixels[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4].copy_from_slice(&[0, 0, 255, 255]);
+    }
+    canvas.write_layer(a, pixels);
+    let t = canvas.layer_thumbnail(&gpu, &mut doc, a, 8).unwrap();
+    assert_eq!((t.width, t.height), (2, 3));
+    assert!(t.rgba.chunks(4).all(|p| p[3] > 0));
+    // an empty layer: the whole canvas, fitted
+    let b = doc.add_layer();
+    let t = canvas.layer_thumbnail(&gpu, &mut doc, b, 8).unwrap();
+    assert_eq!((t.width, t.height), (8, 8));
+}
+
+#[test]
+fn smudge_drags_colour_and_undoes() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let layer = doc.current();
+    // red on the left half, blue on the right
+    paint(&mut canvas, &doc, layer, [255, 0, 0], Vec2::new(-92.0, 8.0), 100.0, StrokeTool::Paint);
+    paint(&mut canvas, &doc, layer, [0, 0, 255], Vec2::new(108.0, 8.0), 100.0, StrokeTool::Paint);
+    let before = layer_at(&gpu, &mut doc, &mut canvas, layer, 11, 8);
+    assert_eq!(before[..3], [0, 0, 255]);
+    // drag from the red into the blue
+    let stamps: Vec<Stamp> = (0..30).map(|i| Stamp::round(Vec2::new(2.0 + i as f32 * 0.4, 8.0), 4.0, 1.0)).collect();
+    canvas.begin_stroke(layer, StrokeStyle::new(StrokeTool::Smudge, [0.0; 3], 1.0));
+    canvas.add_stamps(&stamps);
+    let during = layer_at(&gpu, &mut doc, &mut canvas, layer, 11, 8);
+    assert!(during[0] > 60, "red carried into the blue: {during:?}");
+    canvas.end_stroke();
+    canvas.render(&gpu, &mut doc, None);
+    assert!(canvas.can_undo());
+    canvas.undo();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, layer, 11, 8), before);
+
+    // a cancelled smudge leaves the layer as it was
+    canvas.begin_stroke(layer, StrokeStyle::new(StrokeTool::Smudge, [0.0; 3], 1.0));
+    canvas.add_stamps(&stamps);
+    canvas.render(&gpu, &mut doc, None);
+    canvas.cancel_stroke();
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, layer, 11, 8), before);
+}
+
+#[test]
+fn a_held_edit_is_one_undo_step_or_put_back() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let a = doc.current();
+    fill(&mut canvas, &doc, a, [10, 20, 30]);
+    canvas.render(&gpu, &mut doc, None);
+    let steps = |c: &Canvas| c.can_undo();
+    assert!(steps(&canvas));
+    // many puts, kept: one step back to the fill
+    let before = doc.clone();
+    canvas.hold_layer(a);
+    for v in [100u8, 150, 200] {
+        canvas.put_layer(a, [v, v, v, 255].repeat((W * W) as usize));
+    }
+    canvas.release_layer(true, Some(before));
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 3, 3), [200, 200, 200, 255]);
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 3, 3), [10, 20, 30, 255]);
+    // put back: as if nothing happened
+    canvas.hold_layer(a);
+    canvas.put_layer(a, [9, 9, 9, 255].repeat((W * W) as usize));
+    canvas.release_layer(false, None);
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 3, 3), [10, 20, 30, 255]);
+    // held quietly, clearing and filling it make no steps of their own: one, holding one copy
+    // (after a step of its own, so nothing waits to be redone)
+    fill(&mut canvas, &doc, a, [10, 20, 30]);
+    canvas.render(&gpu, &mut doc, None);
+    let (steps, bytes) = (canvas.steps_made(), canvas.history_bytes());
+    canvas.hold_layer_quietly(a);
+    canvas.clear_layer(a);
+    fill(&mut canvas, &doc, a, [40, 50, 60]);
+    canvas.release_layer(true, None);
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(canvas.steps_made(), steps + 1);
+    assert_eq!(canvas.history_bytes() - bytes, u64::from(W * W) * 4, "one copy of the layer");
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 3, 3), [40, 50, 60, 255]);
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(layer_at(&gpu, &mut doc, &mut canvas, a, 3, 3), [10, 20, 30, 255]);
+}
+
+/// The same edits to an artwork composited fully and one composited around caches.
+struct Twins {
+    docs: [Document; 2],
+    canvases: [Canvas; 2],
+}
+
+impl Twins {
+    fn each(&mut self, f: impl Fn(&mut Document, &mut Canvas)) {
+        for (doc, canvas) in self.docs.iter_mut().zip(self.canvases.iter_mut()) {
+            f(doc, canvas);
+        }
+    }
+
+    /// Both composites, every pixel within `slack` of each other (a run of plain layers above is
+    /// flattened once, so its 8-bit picture can round a step apart).
+    fn same(&mut self, gpu: &Gpu, slack: u8, what: &str) {
+        let mut pictures = Vec::new();
+        for (doc, canvas) in self.docs.iter_mut().zip(self.canvases.iter_mut()) {
+            canvas.render(gpu, doc, None);
+            // caches remade and layers parked a little each render: until the caches are, the
+            // composite waits
+            for _ in 0..1000 {
+                if !canvas.wants_render() {
+                    break;
+                }
+                canvas.render(gpu, doc, None);
+            }
+            assert!(!canvas.wants_render(), "{what}: caches still being remade or layers parked");
+            assert_eq!(gpu.errors(), 0, "GPU validation errors");
+            pictures.push(canvas.read_composite(gpu).unwrap());
+        }
+        let worst = pictures[0].iter().zip(&pictures[1]).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(worst <= slack, "{what}: cached composite differs by {worst}");
+    }
+}
+
+#[test]
+fn composites_made_around_cached_pictures_match_full_ones() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_cache_composites(true);
+    // bottom up: red; multiplied blue; a group of green and screened yellow; a masked layer with
+    // an overlay clipped to it (worked on); two plain layers at the top
+    let base = t.docs[0].current();
+    t.each(|doc, canvas| {
+        fill(canvas, doc, base, [200, 40, 40]);
+        let multiply = doc.add_layer();
+        doc.set_blend(multiply, BlendMode::Multiply);
+        paint(canvas, doc, multiply, [60, 60, 230], Vec2::new(5.0, 5.0), 4.0, StrokeTool::Paint);
+        let green = doc.add_layer();
+        paint(canvas, doc, green, [40, 200, 40], Vec2::new(10.0, 6.0), 4.0, StrokeTool::Paint);
+        let yellow = doc.add_layer();
+        doc.set_blend(yellow, BlendMode::Screen);
+        paint(canvas, doc, yellow, [230, 230, 30], Vec2::new(8.0, 10.0), 5.0, StrokeTool::Paint);
+        doc.set_current(green);
+        doc.toggle_pick(yellow);
+        // what comes next goes above the group, not in it
+        let group = doc.group_chosen().unwrap();
+        doc.set_current(group);
+        let masked = doc.add_layer();
+        paint(canvas, doc, masked, [250, 250, 250], Vec2::new(8.0, 8.0), 6.0, StrokeTool::Paint);
+        let mask = doc.add_mask(masked).unwrap();
+        paint(canvas, doc, mask, [0, 0, 0], Vec2::new(4.0, 12.0), 3.0, StrokeTool::Paint);
+        let overlay = doc.add_layer();
+        doc.set_blend(overlay, BlendMode::Overlay);
+        doc.set_clipped(overlay, true);
+        fill(canvas, doc, overlay, [30, 120, 220]);
+        let plain = doc.add_layer();
+        paint(canvas, doc, plain, [255, 140, 0], Vec2::new(3.0, 3.0), 3.0, StrokeTool::Paint);
+        doc.set_opacity(plain, 0.6);
+        let top = doc.add_layer();
+        paint(canvas, doc, top, [20, 20, 20], Vec2::new(13.0, 13.0), 2.0, StrokeTool::Paint);
+        doc.set_current(masked);
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "as made");
+    assert!(t.canvases[0].composites_cached(), "made around caches");
+    // painting what is worked on keeps the caches; undoing it too
+    let masked = t.docs[0].current();
+    t.each(|doc, canvas| paint(canvas, doc, masked, [0, 200, 200], Vec2::new(9.0, 4.0), 3.0, StrokeTool::Paint));
+    t.same(&gpu, 2, "painted");
+    assert!(t.canvases[0].composites_cached());
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "undone");
+    // a layer below changed, one above hidden, then another layer worked on (inside the group)
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    let multiply = ids[1];
+    // as the app makes them: an undo step
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_opacity(multiply, 0.4);
+        canvas.record_document(before);
+    });
+    t.same(&gpu, 2, "a layer below changed");
+    let top = *ids.last().unwrap();
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_visible(top, false);
+        canvas.record_document(before);
+    });
+    t.same(&gpu, 2, "a layer above hidden");
+    let green = t.docs[0].layers().iter().find(|l| l.blend == BlendMode::Screen).map(|l| l.id).unwrap();
+    t.each(|doc, canvas| {
+        doc.set_current(green);
+        paint(canvas, doc, green, [255, 0, 255], Vec2::new(6.0, 9.0), 3.0, StrokeTool::Paint);
+    });
+    t.same(&gpu, 2, "worked on inside the group");
+    // the bottom layer worked on: nothing below it but the background
+    t.each(|doc, canvas| {
+        doc.set_current(base);
+        paint(canvas, doc, base, [0, 0, 0], Vec2::new(12.0, 3.0), 2.0, StrokeTool::Erase);
+    });
+    t.same(&gpu, 2, "the bottom worked on");
+    assert!(t.canvases[0].composites_cached());
+}
+
+#[test]
+fn with_little_memory_the_caches_borrow_their_second_textures_and_composite_the_same() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W), Document::new(W, W)];
+    let mut canvases = docs.each_ref().map(|d| Canvas::new(&gpu, d).unwrap());
+    // a device of 4 GB (a quarter for the layers' textures: room for every layer here), one of
+    // plenty, and the full composite
+    canvases[0].set_resident_budget(1 << 30);
+    canvases[1].set_cache_composites(true);
+    let [d0, d1, d2] = docs;
+    let [c0, c1, c2] = canvases;
+    let mut t = Twins { docs: [d0, d2], canvases: [c0, c2] };
+    let mut plenty = (d1, c1);
+    // bottom up: red; multiplied blue; screened yellow; the layer worked on with an overlay
+    // clipped to it; a layer of difference and a plain one above
+    let base = t.docs[0].current();
+    let scene = |doc: &mut Document, canvas: &mut Canvas| {
+        fill(canvas, doc, base, [200, 40, 40]);
+        let multiply = doc.add_layer();
+        doc.set_blend(multiply, BlendMode::Multiply);
+        paint(canvas, doc, multiply, [60, 60, 230], Vec2::new(5.0, 5.0), 4.0, StrokeTool::Paint);
+        let yellow = doc.add_layer();
+        doc.set_blend(yellow, BlendMode::Screen);
+        paint(canvas, doc, yellow, [230, 230, 30], Vec2::new(8.0, 10.0), 5.0, StrokeTool::Paint);
+        let worked = doc.add_layer();
+        paint(canvas, doc, worked, [250, 250, 250], Vec2::new(8.0, 8.0), 6.0, StrokeTool::Paint);
+        let overlay = doc.add_layer();
+        doc.set_blend(overlay, BlendMode::Overlay);
+        doc.set_clipped(overlay, true);
+        fill(canvas, doc, overlay, [30, 120, 220]);
+        let difference = doc.add_layer();
+        doc.set_blend(difference, BlendMode::Difference);
+        paint(canvas, doc, difference, [90, 200, 120], Vec2::new(11.0, 5.0), 4.0, StrokeTool::Paint);
+        let top = doc.add_layer();
+        paint(canvas, doc, top, [20, 20, 20], Vec2::new(13.0, 13.0), 2.0, StrokeTool::Paint);
+        doc.set_current(worked);
+        canvas.invalidate();
+    };
+    t.each(scene);
+    scene(&mut plenty.0, &mut plenty.1);
+    t.same(&gpu, 2, "as made");
+    assert!(t.canvases[0].composites_cached(), "made around caches");
+    plenty.1.render_finished(&gpu, &mut plenty.0);
+    assert!(plenty.1.composites_cached());
+    // the same pictures, with fewer textures the canvas's size (two fewer, one borrowed back)
+    let side = u64::from(W * W * 4);
+    assert!(t.canvases[0].texture_bytes() + side <= plenty.1.texture_bytes());
+    // painted on, undone, a layer below changed and one above hidden: each remakes from there
+    let worked = t.docs[0].current();
+    t.each(|doc, canvas| paint(canvas, doc, worked, [0, 200, 200], Vec2::new(9.0, 4.0), 3.0, StrokeTool::Paint));
+    t.same(&gpu, 2, "painted");
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "undone");
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_opacity(ids[1], 0.4);
+        canvas.record_document(before);
+    });
+    t.same(&gpu, 2, "a layer below changed");
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_visible(ids[6], false);
+        canvas.record_document(before);
+    });
+    t.same(&gpu, 2, "a layer above hidden");
+    assert!(t.canvases[0].composites_cached());
+}
+
+#[test]
+fn parked_layers_come_back_as_they_were() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    // room for three layers' textures only: the rest are parked
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    let modes = [BlendMode::Normal, BlendMode::Multiply, BlendMode::Screen, BlendMode::Normal, BlendMode::Overlay];
+    t.each(|doc, canvas| {
+        let base = doc.current();
+        fill(canvas, doc, base, [180, 180, 180]);
+        for i in 0..9u8 {
+            let id = doc.add_layer();
+            doc.set_blend(id, modes[usize::from(i) % modes.len()]);
+            let at = Vec2::new(f32::from(i % 4) * 4.0 + 2.0, f32::from(i / 4) * 5.0 + 2.0);
+            paint(canvas, doc, id, [i * 25, 200 - i * 20, 90], at, 3.0, StrokeTool::Paint);
+        }
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "made");
+    // the composite is made around pictures of the rest, so layers can go
+    t.same(&gpu, 2, "made, parked");
+    assert!(t.canvases[0].parked_layers() >= 6, "parked: {}", t.canvases[0].parked_layers());
+    // a parked layer worked on again, painted, undone and redone
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    let low = ids[2];
+    t.each(|doc, canvas| {
+        doc.set_current(low);
+        paint(canvas, doc, low, [0, 0, 250], Vec2::new(8.0, 8.0), 4.0, StrokeTool::Paint);
+    });
+    t.same(&gpu, 2, "a parked layer painted");
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "undone");
+    t.each(|_, canvas| canvas.redo());
+    t.same(&gpu, 2, "redone");
+    // its pixels and picture read while parked again, as the other's
+    let top = *ids.last().unwrap();
+    t.each(|doc, _| {
+        doc.set_current(top);
+    });
+    t.same(&gpu, 2, "the top worked on");
+    let read: Vec<Vec<u8>> = t.canvases.iter().map(|c| c.read_layer(&gpu, low).unwrap()).collect();
+    assert_eq!(read[0], read[1], "a parked layer reads as it is");
+    let mut pictures = Vec::new();
+    for (doc, canvas) in t.docs.iter_mut().zip(t.canvases.iter_mut()) {
+        pictures.push(canvas.layer_picture(&gpu, doc, low, 8).unwrap().rgba);
+    }
+    // a parked layer's is box-filtered from its small picture, not sampled on the GPU: the edges
+    // soften a little differently
+    let near = |a: &[u8], b: &[u8]| {
+        let diffs = a.iter().zip(b).map(|(x, y)| u32::from(x.abs_diff(*y)));
+        a.len() == b.len() && diffs.clone().max().unwrap_or(0) <= 32 && diffs.sum::<u32>() <= 4 * a.len() as u32
+    };
+    assert!(near(&pictures[0], &pictures[1]), "its picture");
+    let mut thumbs = Vec::new();
+    for (doc, canvas) in t.docs.iter_mut().zip(t.canvases.iter_mut()) {
+        thumbs.push(canvas.layer_thumbnail(&gpu, doc, low, 8).unwrap());
+    }
+    // what is drawn on it, cropped a pixel or so differently
+    let [a, b] = [&thumbs[0], &thumbs[1]];
+    assert!(a.width.abs_diff(b.width) <= 2 && a.height.abs_diff(b.height) <= 2, "its thumbnail");
+    assert!(a.rgba.as_chunks::<4>().0.iter().any(|p| p[3] > 0), "something drawn on its thumbnail");
+    // every layer's coverage at a point, parked ones too
+    for (x, y) in [(2, 2), (8, 8), (13, 9)] {
+        let mut alphas = Vec::new();
+        for (doc, canvas) in t.docs.iter_mut().zip(t.canvases.iter_mut()) {
+            alphas.push(canvas.alphas_at(&gpu, doc, x, y).unwrap());
+        }
+        assert_eq!(alphas[0], alphas[1], "coverage at {x}, {y}");
+    }
+    // merged down, duplicated, hidden: the layers they read and write come back first
+    let (upper, lower) = (ids[5], ids[4]);
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        canvas.merge_down(upper, lower, before, None);
+        assert!(doc.finish_merge_down(upper));
+    });
+    t.same(&gpu, 2, "merged");
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        let copy = doc.duplicate_layer(ids[1]).unwrap();
+        canvas.duplicate_layer(ids[1], copy, before);
+    });
+    t.same(&gpu, 2, "duplicated");
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_visible(ids[3], false);
+        canvas.record_document(before);
+    });
+    t.same(&gpu, 2, "hidden");
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "shown again");
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "the duplicate undone");
+    assert!(t.canvases[0].parked_layers() > 0);
+}
+
+#[test]
+fn an_artwork_opening_with_more_layers_than_fit_parks_the_rest() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let mut doc = Document::new(W, W);
+    for _ in 0..9 {
+        doc.add_layer();
+    }
+    let ids: Vec<LayerId> = doc.layers().iter().map(|l| l.id).collect();
+    // each layer a band of its own colour, half covering
+    let pixels: Vec<Vec<u8>> = (0..ids.len())
+        .map(|i| {
+            let mut px = vec![0u8; (W * W * 4) as usize];
+            for y in 0..W as usize {
+                for x in 0..W as usize {
+                    if (x + y + i) % 3 != 0 {
+                        let o = (y * W as usize + x) * 4;
+                        px[o..o + 4].copy_from_slice(&[(i * 25) as u8, 200 - (i * 20) as u8, 90, 255]);
+                    }
+                }
+            }
+            px
+        })
+        .collect();
+    let docs = [doc.clone(), doc];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    for (id, px) in ids.iter().zip(&pixels) {
+        if t.canvases[0].has_room() {
+            t.canvases[0].upload_layer(&gpu, *id, px).unwrap();
+        } else {
+            t.canvases[0].park_pixels(*id, px).unwrap();
+        }
+        t.canvases[1].upload_layer(&gpu, *id, px).unwrap();
+    }
+    assert!(t.canvases[0].parked_layers() >= 6);
+    t.same(&gpu, 2, "opened");
+    let middle = ids[5];
+    t.each(|doc, canvas| {
+        doc.set_current(middle);
+        paint(canvas, doc, middle, [250, 0, 0], Vec2::new(8.0, 8.0), 3.0, StrokeTool::Paint);
+    });
+    t.same(&gpu, 2, "one opened parked, painted");
+    assert!(t.canvases[0].parked_layers() > 0);
+}
+
+#[test]
+fn an_animation_keeps_only_the_frames_shown() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    t.each(|doc, canvas| {
+        let first = doc.current();
+        paint(canvas, doc, first, [0, 0, 0], Vec2::new(2.0, 8.0), 2.0, StrokeTool::Paint);
+        for i in 1..10u8 {
+            let id = doc.add_layer();
+            paint(
+                canvas,
+                doc,
+                id,
+                [i * 25, 100, 200 - i * 20],
+                Vec2::new(2.0 + f32::from(i) * 1.3, 8.0),
+                2.0,
+                StrokeTool::Paint,
+            );
+        }
+        doc.animation = Some(procraft_engine::animation::Animation { onion_frames: 1, ..Default::default() });
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "the last frame");
+    t.same(&gpu, 2, "the last frame, the rest parked");
+    assert!(t.canvases[0].parked_layers() >= 5, "parked: {}", t.canvases[0].parked_layers());
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    t.each(|doc, canvas| {
+        doc.set_current(ids[3]);
+        paint(canvas, doc, ids[3], [255, 255, 0], Vec2::new(8.0, 4.0), 2.0, StrokeTool::Paint);
+    });
+    t.same(&gpu, 2, "another frame painted");
+    for f in [0, 6, 9] {
+        t.each(|_, canvas| canvas.set_play_frame(Some(f)));
+        t.same(&gpu, 2, "played");
+    }
+    t.each(|_, canvas| canvas.set_play_frame(None));
+    t.same(&gpu, 2, "stopped");
+}
+
+#[test]
+fn empty_and_clipped_layers_cache_as_they_composite() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    t.each(|doc, canvas| {
+        let base = doc.current();
+        fill(canvas, doc, base, [120, 160, 200]);
+        for i in 0..10u8 {
+            let id = doc.add_layer();
+            match i % 5 {
+                // left empty
+                0 | 3 => {}
+                // clipped to what is under it (painted, or the empty one)
+                1 | 4 => {
+                    doc.set_clipped(id, true);
+                    fill(canvas, doc, id, [250, 40 + i * 20, 40]);
+                }
+                _ => paint(
+                    canvas,
+                    doc,
+                    id,
+                    [i * 20, 90, 200 - i * 15],
+                    Vec2::new(3.0 + f32::from(i), 9.0),
+                    3.0,
+                    StrokeTool::Paint,
+                ),
+            }
+        }
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "made");
+    t.same(&gpu, 2, "parked");
+    let ids: Vec<LayerId> = t.docs[0].layers().iter().map(|l| l.id).collect();
+    for current in [ids[0], ids[6], *ids.last().unwrap()] {
+        t.each(|doc, canvas| {
+            doc.set_current(current);
+            paint(canvas, doc, current, [10, 10, 10], Vec2::new(12.0, 4.0), 2.0, StrokeTool::Paint);
+        });
+        t.same(&gpu, 2, "another layer worked on");
+    }
+    assert!(t.canvases[0].parked_layers() > 0);
+}
+
+#[test]
+fn the_picture_read_back_waits_for_the_caches() {
+    let Some((gpu, _, _)) = setup() else { return };
+    // big enough that remaking the caches takes several renders
+    const SIDE: u32 = 768;
+    let docs = [Document::new(SIDE, SIDE), Document::new(SIDE, SIDE)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_resident_budget(3 * u64::from(SIDE * SIDE * 4));
+    t.each(|doc, canvas| {
+        for i in 0..40u8 {
+            let id = doc.add_layer();
+            let at = Vec2::new(f32::from(i % 8) * 90.0 + 40.0, f32::from(i / 8) * 140.0 + 60.0);
+            paint(canvas, doc, id, [i * 6, 220 - i * 5, 90], at, 70.0, StrokeTool::Paint);
+        }
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "made");
+    // a layer low down hidden (an undo step, as the app makes it), then the picture read at once
+    // (as a save does)
+    let low = t.docs[0].layers()[3].id;
+    t.each(|doc, canvas| {
+        let before = doc.clone();
+        doc.set_visible(low, false);
+        canvas.record_document(before);
+    });
+    let mut read = Vec::new();
+    for (doc, canvas) in t.docs.iter_mut().zip(t.canvases.iter_mut()) {
+        read.push(canvas.read_composite_without(&gpu, doc, &[]).unwrap());
+    }
+    let worst = read[0].iter().zip(&read[1]).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(worst <= 2, "read while the caches are remade: differs by {worst}");
+    assert!(!t.canvases[0].busy());
+}
+
+#[test]
+fn a_layers_version_changes_with_its_pixels_only() {
+    let Some((gpu, mut doc, mut canvas)) = setup() else { return };
+    let a = doc.current();
+    let b = doc.add_layer();
+    canvas.render(&gpu, &mut doc, None);
+    let (va, vb) = (canvas.layer_version(a), canvas.layer_version(b));
+    paint(&mut canvas, &doc, b, [200, 0, 0], Vec2::new(8.0, 8.0), 3.0, StrokeTool::Paint);
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(canvas.layer_version(a), va, "the other layer's stays");
+    let painted = canvas.layer_version(b);
+    assert_ne!(painted, vb, "the painted one's is new");
+    // hidden, and another chosen: its pixels are as they were
+    let before = doc.clone();
+    doc.set_visible(b, false);
+    canvas.record_document(before);
+    doc.set_current(a);
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(canvas.layer_version(b), painted, "hidden and left");
+    // shown again, then the stroke undone: new again
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    canvas.undo();
+    canvas.render(&gpu, &mut doc, None);
+    assert_ne!(canvas.layer_version(b), painted, "undone");
+    assert_eq!(gpu.errors(), 0);
+}
+
+#[test]
+fn transforms_and_adjustments_on_the_layer_worked_on_keep_the_caches() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    t.canvases[0].set_cache_composites(true);
+    let base = t.docs[0].current();
+    t.each(|doc, canvas| {
+        fill(canvas, doc, base, [200, 40, 40]);
+        for i in 0..4u8 {
+            let id = doc.add_layer();
+            let at = Vec2::new(f32::from(i) * 3.0 + 3.0, 8.0);
+            paint(canvas, doc, id, [i * 50, 100, 200 - i * 40], at, 3.0, StrokeTool::Paint);
+        }
+        canvas.invalidate();
+    });
+    let middle = t.docs[0].layers()[2].id;
+    t.each(|doc, _| {
+        doc.set_current(middle);
+    });
+    t.same(&gpu, 2, "made");
+    assert!(t.canvases[0].composites_cached());
+    // moved by (3, 2), applied, undone
+    t.each(|_, canvas| {
+        canvas.begin_transform(middle);
+        canvas.set_transform([1.0, 0.0, -3.0, 0.0, 1.0, -2.0, 0.0, 0.0, 1.0], Resample::Bilinear);
+    });
+    t.same(&gpu, 2, "moved");
+    assert!(t.canvases[0].composites_cached(), "kept while transforming");
+    t.each(|_, canvas| canvas.end_transform(true));
+    t.same(&gpu, 2, "applied");
+    t.each(|_, canvas| canvas.undo());
+    t.same(&gpu, 2, "undone");
+    // an adjustment on it, cancelled
+    t.each(|_, canvas| {
+        canvas.begin_transform(middle);
+        canvas.set_filter(Filter::Hsb { hue: 1.0, saturation: 0.5, brightness: 0.1 });
+    });
+    t.same(&gpu, 2, "adjusted");
+    assert!(t.canvases[0].composites_cached(), "kept while adjusting");
+    t.each(|_, canvas| canvas.end_transform(false));
+    t.same(&gpu, 2, "cancelled");
+    assert!(t.canvases[0].composites_cached());
+}
+
+#[test]
+fn a_render_reads_back_only_a_few_layers_to_park() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let docs = [Document::new(W, W), Document::new(W, W)];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    // drawn with room for every layer, so none has a compressed copy yet
+    t.each(|doc, canvas| {
+        let first = doc.current();
+        paint(canvas, doc, first, [0, 0, 0], Vec2::new(2.0, 8.0), 2.0, StrokeTool::Paint);
+        for i in 1..12u8 {
+            let id = doc.add_layer();
+            let at = Vec2::new(1.0 + f32::from(i), 8.0);
+            paint(canvas, doc, id, [i * 20, 100, 200 - i * 15], at, 2.0, StrokeTool::Paint);
+        }
+        canvas.invalidate();
+    });
+    t.same(&gpu, 2, "made");
+    // then room for three, and Animation Assist on: the frames not shown are parked, a few a render
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    t.each(|doc, canvas| {
+        doc.animation = Some(procraft_engine::animation::Animation { onion_frames: 1, ..Default::default() });
+        canvas.invalidate();
+    });
+    let (doc, canvas) = (&mut t.docs[0], &mut t.canvases[0]);
+    canvas.render(&gpu, doc, None);
+    let first = canvas.parked_layers();
+    assert!((1..=4).contains(&first), "parked in one render: {first}");
+    assert!(canvas.wants_render(), "more to park");
+    for _ in 0..100 {
+        if !canvas.wants_render() {
+            break;
+        }
+        canvas.render(&gpu, doc, None);
+    }
+    assert!(!canvas.wants_render());
+    assert!(canvas.parked_layers() >= 8, "parked in all: {}", canvas.parked_layers());
+    t.same(&gpu, 2, "the frames shown, the rest parked");
+}
+
+#[test]
+fn a_remake_part_composites_a_few_items_at_most() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let mut doc = Document::new(W, W);
+    for _ in 0..39 {
+        doc.add_layer();
+    }
+    let ids: Vec<LayerId> = doc.layers().iter().map(|l| l.id).collect();
+    // each layer a short band of its own colour
+    let pixels: Vec<Vec<u8>> = (0..ids.len())
+        .map(|i| {
+            let mut px = vec![0u8; (W * W * 4) as usize];
+            let (y, x0) = (i / 8 * 3 + 1, i % 8 * 2);
+            for x in x0..x0 + 3 {
+                let o = (y * W as usize + x) * 4;
+                px[o..o + 4].copy_from_slice(&[(i * 6) as u8, 200 - (i * 4) as u8, 90, 255]);
+            }
+            px
+        })
+        .collect();
+    let docs = [doc.clone(), doc];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    // room for 30 of the 40, every one kept compressed (as an opening artwork's past what fits):
+    // the caches are remade from layers quick to bring back, with room for many a part
+    t.canvases[0].set_resident_budget(30 * u64::from(W * W * 4));
+    for (id, px) in ids.iter().zip(&pixels) {
+        t.canvases[0].park_pixels(*id, px).unwrap();
+        t.canvases[1].upload_layer(&gpu, *id, px).unwrap();
+    }
+    t.same(&gpu, 2, "opened");
+    let stats = t.canvases[0].last_remake().unwrap();
+    assert!((1..=8).contains(&stats.largest_part), "{stats:?}");
+}
+
+#[test]
+fn layers_uploaded_with_their_copies_are_let_go_without_reading_them_back() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let mut doc = Document::new(W, W);
+    for _ in 0..11 {
+        doc.add_layer();
+    }
+    let ids: Vec<LayerId> = doc.layers().iter().map(|l| l.id).collect();
+    let pixels: Vec<Vec<u8>> = (0..ids.len())
+        .map(|i| {
+            let mut px = vec![0u8; (W * W * 4) as usize];
+            let (y, x0) = (i / 4 * 4 + 2, i % 4 * 4);
+            for x in x0..x0 + 3 {
+                let o = (y * W as usize + x) * 4;
+                px[o..o + 4].copy_from_slice(&[(i * 20) as u8, 200 - (i * 15) as u8, 90, 255]);
+            }
+            px
+        })
+        .collect();
+    let docs = [doc.clone(), doc];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    // room for 3 of 12, every one uploaded with its compressed copy (as an opening artwork's)
+    t.canvases[0].set_resident_budget(3 * u64::from(W * W * 4));
+    for (id, px) in ids.iter().zip(&pixels) {
+        let ready = procraft_gpu::ReadyToPark::of(px, W, W);
+        t.canvases[0]
+            .upload_layer_kept(&gpu, *id, px, ready, Some(procraft_engine::geom::IRect::from_size(W, W)))
+            .unwrap();
+        t.canvases[1].upload_layer(&gpu, *id, px).unwrap();
+    }
+    // one render lets all but what fits go: nothing to read back first
+    let (doc, canvas) = (&mut t.docs[0], &mut t.canvases[0]);
+    canvas.render(&gpu, doc, None);
+    assert!(canvas.parked_layers() >= 9, "parked in one render: {}", canvas.parked_layers());
+    t.same(&gpu, 2, "opened");
+    for (id, px) in ids.iter().zip(&pixels) {
+        assert_eq!(&t.canvases[0].read_layer(&gpu, *id).unwrap(), px, "{id:?} as uploaded");
+    }
+}
+
+#[test]
+fn a_remake_lets_go_only_what_its_parts_need_room_for() {
+    let Some((gpu, _, _)) = setup() else { return };
+    let mut doc = Document::new(W, W);
+    for _ in 0..39 {
+        doc.add_layer();
+    }
+    let ids: Vec<LayerId> = doc.layers().iter().map(|l| l.id).collect();
+    let pixels: Vec<Vec<u8>> = (0..ids.len())
+        .map(|i| {
+            let mut px = vec![0u8; (W * W * 4) as usize];
+            let (y, x0) = (i / 8 * 3 + 1, i % 8 * 2);
+            for x in x0..x0 + 3 {
+                let o = (y * W as usize + x) * 4;
+                px[o..o + 4].copy_from_slice(&[(i * 6) as u8, 200 - (i * 4) as u8, 90, 255]);
+            }
+            px
+        })
+        .collect();
+    let docs = [doc.clone(), doc];
+    let canvases = [Canvas::new(&gpu, &docs[0]).unwrap(), Canvas::new(&gpu, &docs[1]).unwrap()];
+    let mut t = Twins { docs, canvases };
+    // room for 30 of the 40, every one uploaded with its compressed copy: the caches are remade
+    // (40 needed), and of the clean textures only what the parts need room for goes
+    t.canvases[0].set_resident_budget(30 * u64::from(W * W * 4));
+    for (id, px) in ids.iter().zip(&pixels) {
+        let ready = procraft_gpu::ReadyToPark::of(px, W, W);
+        t.canvases[0]
+            .upload_layer_kept(&gpu, *id, px, ready, Some(procraft_engine::geom::IRect::from_size(W, W)))
+            .unwrap();
+        t.canvases[1].upload_layer(&gpu, *id, px).unwrap();
+    }
+    t.same(&gpu, 2, "opened");
+    assert!(t.canvases[0].last_remake().is_some(), "remade");
+    let parked = t.canvases[0].parked_layers();
+    assert!(parked <= 26, "parked {parked}: most that fit stay");
+}
+
+/// What the GPU's allocator holds, bytes, once the work sent so far is done; none where the
+/// backend gives no report.
+fn allocated(gpu: &Gpu) -> Option<u64> {
+    gpu.flush();
+    gpu.device.generate_allocator_report().map(|r| r.total_allocated_bytes)
+}
+
+#[test]
+fn a_canvas_makes_its_scratch_and_second_composite_only_once_wanted() {
+    let Some(gpu) = Gpu::headless().ok() else { return eprintln!("skipped: no GPU") };
+    // (counted for strokes in half floats: on a GPU that can't draw into them a stroke keeps more)
+    if !gpu.draws_half_floats() {
+        return eprintln!("skipped: strokes aren't in half floats here");
+    }
+    let side = 1024u32;
+    let mut doc = Document::new(side, side);
+    // the first canvas makes the device's pipelines; the second is measured
+    let _first = Canvas::new(&gpu, &doc).unwrap();
+    let before = allocated(&gpu);
+    let mut canvas = Canvas::new(&gpu, &doc).unwrap();
+    canvas.render(&gpu, &mut doc, None);
+    let per = u64::from(side * side);
+    // the layer, the composite and the stroke (half floats), the brush images and the small ones
+    let brushes = canvas.textures().iter().filter(|t| t.depth_or_array_layers() > 1).count();
+    assert_eq!(brushes, 2);
+    let images = procraft_gpu::textures_bytes(
+        &canvas.textures().into_iter().filter(|t| t.depth_or_array_layers() > 1).collect::<Vec<_>>(),
+    );
+    let small = 256 * 4 + 1;
+    assert_eq!(canvas.texture_bytes(), per * (4 + 4 + 8) + images + small);
+    // the allocator agrees, give or take its rounding of the small ones and the buffers (2 MB, or
+    // a tenth where a driver rounds more: Adreno's comes to 2.2 MB over 26 MB)
+    if let (Some(a), Some(b)) = (before, allocated(&gpu)) {
+        let made = b.saturating_sub(a);
+        let allowed = (2 << 20).max(canvas.texture_bytes() / 10);
+        assert!(
+            made.abs_diff(canvas.texture_bytes()) < allowed,
+            "allocated {made}, counted {}",
+            canvas.texture_bytes()
+        );
+    }
+    // a layer of a blend mode wants the composite's second texture, a stroke by a mode the scratch
+    let id = doc.current();
+    doc.set_blend(id, BlendMode::Multiply);
+    canvas.invalidate();
+    canvas.render(&gpu, &mut doc, None);
+    assert_eq!(canvas.texture_bytes(), per * (4 + 4 + 4 + 8) + images + small);
+    let by_mode = StrokeStyle { blend: 1, ..StrokeStyle::new(StrokeTool::Paint, [1.0, 0.0, 0.0], 1.0) };
+    canvas.begin_stroke(id, by_mode);
+    canvas.add_stamps(&[Stamp::round(Vec2::new(8.0, 8.0), 4.0, 1.0)]);
+    canvas.end_stroke();
+    canvas.render(&gpu, &mut doc, None);
+    // the stroke's undo snapshot besides
+    let undo = 16 * 16 * 4;
+    assert!(canvas.texture_bytes() >= per * (4 + 4 + 4 + 4 + 8) + images + small + undo);
+    assert_eq!(gpu.errors(), 0);
+}
+
+/// What the GPU's allocator holds aside, used or not, bytes, once the work sent so far is done;
+/// none where the backend gives no report.
+fn reserved(gpu: &Gpu) -> Option<u64> {
+    gpu.flush();
+    gpu.device.generate_allocator_report().map(|r| r.total_reserved_bytes)
+}
+
+#[test]
+fn the_gpu_memory_set_aside_stays_near_what_is_used() {
+    let Some(gpu) = Gpu::headless().ok() else { return eprintln!("skipped: no GPU") };
+    let side = 2048u32;
+    let mut doc = Document::new(side, side);
+    let mut canvas = Canvas::new(&gpu, &doc).unwrap();
+    canvas.render(&gpu, &mut doc, None);
+    let (Some(used), Some(held)) = (allocated(&gpu), reserved(&gpu)) else { return };
+    // a canvas's textures (some 76 MB at this size) in blocks of 64 MB at most, not 128 to 256
+    assert!(held <= used + (96 << 20), "{} MB held for {} MB", held >> 20, used >> 20);
+    // the first read back of a few bytes sets aside a few MB the CPU can see, not 64
+    let before = reserved(&gpu).unwrap_or(0);
+    let mut small = Document::new(2, 2);
+    let mut tiny = Canvas::new(&gpu, &small).unwrap();
+    tiny.render(&gpu, &mut small, None);
+    let between = reserved(&gpu).unwrap_or(0);
+    assert_eq!(tiny.read_composite(&gpu).unwrap().len(), 16);
+    let after = reserved(&gpu).unwrap_or(0);
+    assert!(after.saturating_sub(between) <= 8 << 20, "{} MB for a read back", (after - between) >> 20);
+    assert!(between >= before);
+    assert_eq!(gpu.errors(), 0);
+}
