@@ -27,7 +27,25 @@ Kept: size, opacity, spacing, flow, hardness, the three pressure bleeds, roundne
 streamline, the stamp diameter, and ProCraft's own stroke geometry (spacing rule, taper, scatter,
 jitter).
 
-Dropped for now (`UNMAPPED` in `crates/brush-bridge`, `Kind::Pink`): the pigment/Kubelka-Munk
+Ported from the old brush (the spacing rule deliberately left as ProCraft's):
+
+| ours | ProCraft's |
+|---|---|
+| end taper (`taper`) | `pen_taper` — same length, `size` is how much of the pressure it takes away |
+| tilt angle / size / opacity, Follow Azimuth | `tilt.angle`, `tilt.size`, `tilt.opacity`, `shape.follow_azimuth` |
+| angle jitter (share of ±180°) | `shape.scatter` (share of half turns) |
+| size jitter | `shape.size_jitter` |
+| angle control = Direction | `shape.follow = 1` |
+| scatter (1 = one radius) | `shape.throw` (1 = one stamp diameter, so half of it) |
+| dab count | `shape.count` |
+| Transfer's opacity jitter | `shape.opacity_jitter` |
+| wet edge's no-build-up rule | `Rendering::Strongest` |
+
+`Kind::Partial` in `UNMAPPED` marks the sections carried in part — shape dynamics, scattering,
+transfer, wet edge — so the panel can show them pink and name in the tooltip which of their controls
+are left out.
+
+Dropped for now (`UNMAPPED` in `crates/paint/src/procraft.rs`, `Kind::Pink`): the pigment/Kubelka-Munk
 machinery (`pigment_mix_strength`, `pigment`, `contour`, `canvas_material`, `saturation_*`,
 `mix_settings` with its V1/V2/V3, `mixer`), wet edge, our procedural patterns and sampled pattern
 colour (`pattern_enabled`, `sampled_pattern`, `texture`, `grain`, `noise`), the dynamics sections
