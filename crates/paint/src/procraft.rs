@@ -64,7 +64,10 @@ pub const UNMAPPED: &[Unmapped] = &[
     // Its scatter and count reach ProCraft's throw and count: the range, spacing and count jitters,
     // the radial option and the controls behind them do not.
     Unmapped { param: "scattering", kind: Kind::Partial },
-    Unmapped { param: "dual_brush", kind: Kind::Pink },
+    // The dual brush is ProCraft's secondary stroke (its whole settings, or the dual's own size,
+    // flow, hardness, roundness, angle, spacing, throw and count); its combine mode and the two
+    // strengths have no field.
+    Unmapped { param: "dual_brush", kind: Kind::Partial },
     Unmapped { param: "color_dynamics", kind: Kind::Pink },
     // Its opacity jitter reaches ProCraft's own; flow, wetness and mix jitter do not.
     Unmapped { param: "transfer", kind: Kind::Partial },
@@ -196,6 +199,34 @@ pub fn brush(settings: &BrushSettings) -> Brush {
     // it draws is the part ProCraft's brush has no field for (pink).
     if settings.wet_edges {
         brush.rendering = procraft_engine::brush::Rendering::Strongest;
+    }
+
+    // A dual brush is ProCraft's `secondary`: a second stroke along the same path. Its whole brush
+    // settings win when the preset carries them; otherwise the dual's own size, flow, hardness,
+    // roundness, angle, spacing, throw and count stand in, on the primary's other settings.
+    if settings.dual_brush.enabled {
+        let d = &settings.dual_brush;
+        let mut second = match &d.full_parameters {
+            Some(full) => crate::procraft::brush(full),
+            None => {
+                let mut second = brush.clone();
+                second.min_size = d.size.clamp(0.5, 4096.0);
+                second.max_size = second.min_size;
+                second.min_opacity = d.opacity.clamp(0.0, 1.0);
+                second.max_opacity = second.min_opacity;
+                second.flow = d.flow.clamp(0.0, 1.0);
+                second.hardness = d.hardness.clamp(0.0, 1.0);
+                second.shape.roundness = d.roundness.clamp(0.0, 1.0);
+                second.shape.rotation = d.angle.to_radians();
+                second.spacing = d.spacing.clamp(0.001, 10.0);
+                second.shape.throw = d.scatter.min(2.0) * 0.5;
+                second.shape.count = d.count.clamp(1, 16);
+                second
+            }
+        };
+        // One secondary each: the second stroke is not itself a dual brush.
+        second.secondary = None;
+        brush.secondary = Some(Box::new(second));
     }
 
     brush
@@ -377,6 +408,44 @@ mod tests {
     }
 
     #[test]
+    fn a_dual_brush_becomes_procrafts_secondary_stroke() {
+        use crate::brush::DualBrush;
+
+        let mut settings = BrushSettings::default();
+        settings.size = 120.0;
+        settings.dual_brush = DualBrush {
+            enabled: true,
+            size: 40.0,
+            opacity: 0.6,
+            flow: 0.5,
+            hardness: 0.3,
+            roundness: 0.7,
+            angle: 15.0,
+            spacing: 0.2,
+            scatter: 0.6,
+            count: 2,
+            ..Default::default()
+        };
+
+        let mapped = brush(&settings);
+        let second = mapped.secondary.expect("a dual brush has a secondary stroke");
+        assert_eq!(second.max_size, 40.0);
+        assert_eq!(second.min_opacity, 0.6);
+        assert_eq!(second.flow, 0.5);
+        assert_eq!(second.hardness, 0.3);
+        assert_eq!(second.shape.roundness, 0.7);
+        assert!((second.shape.rotation - 15f32.to_radians()).abs() < 1e-6);
+        assert_eq!(second.spacing, 0.2);
+        assert_eq!(second.shape.throw, 0.3, "a radius of throw is half a stamp diameter");
+        assert_eq!(second.shape.count, 2);
+        assert!(second.secondary.is_none(), "the second stroke is not itself a dual brush");
+
+        // Off: no secondary at all.
+        settings.dual_brush.enabled = false;
+        assert!(brush(&settings).secondary.is_none());
+    }
+
+    #[test]
     fn a_pointer_point_becomes_a_sample_with_its_lean() {
         let mut p = StrokePoint::new(12.5, 40.0, 0.6);
         p.tilt_x = 0.0;
@@ -391,3 +460,4 @@ mod tests {
         assert_eq!(s.time_ms, 128.0);
     }
 }
+
