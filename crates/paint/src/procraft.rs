@@ -304,7 +304,13 @@ pub fn tool(settings: &BrushSettings) -> Tool {
 /// A stroke's builder, as ProCraft makes it: the brush, the diameter, and the pointer that draws it.
 pub fn stroke(settings: &BrushSettings) -> procraft_engine::stroke::StrokeBuilder {
     let pointer = if settings.erase { Pointer::StylusEraser } else { Pointer::Stylus };
-    procraft_engine::stroke::StrokeBuilder::new(brush(settings), diameter(settings), pointer)
+    let mut builder = procraft_engine::stroke::StrokeBuilder::new(brush(settings), diameter(settings), pointer);
+    // At the lift the builder walks the path's end again and re-spaces everything it laid, which
+    // this app draws as a stroke that grows a new taper and new pressures the moment the pen comes
+    // up. The stamps laid as the stroke was drawn are settled already — the canvas holds them —
+    // so the end is tapered where it is and nothing behind it is laid again.
+    builder.hold_laid();
+    builder
 }
 
 /// This app's pointer point, as ProCraft's sample.
@@ -560,6 +566,39 @@ mod tests {
         // A brush that already asks for coarser stamps keeps them.
         settings.spacing = 0.2;
         assert_eq!(effective(&settings).spacing, 0.2);
+    }
+
+    #[test]
+    fn a_stroke_does_not_lay_itself_again_at_the_lift() {
+        use crate::brush::Taper;
+
+        // The stamps handed out as the stroke is drawn are what the canvas shows; at the lift they
+        // must stay where they are, at the size and pressure they had. Without `hold_laid` the
+        // builder re-spaces the whole stroke at the lift, which reads as the stroke growing a new
+        // taper and new pressures under the pen the moment it comes up.
+        let mut settings = BrushSettings::default();
+        settings.size = 40.0;
+        settings.spacing = 0.25;
+        settings.taper = Taper::NONE;
+        let mut builder = stroke(&settings);
+
+        let mut handed: Vec<procraft_engine::stroke::Stamp> = Vec::new();
+        for i in 0..12 {
+            let point = StrokePoint::new(20.0 + f64::from(i) * 8.0, 50.0, 0.6);
+            handed.extend(builder.add(&[sample(&point)]));
+        }
+        let at_lift = builder.finish();
+
+        assert!(!handed.is_empty(), "the stroke laid stamps as it came");
+        for (before, after) in handed.iter().zip(at_lift.iter()) {
+            assert!(
+                (before.center.x - after.center.x).abs() < 1e-3
+                    && (before.center.y - after.center.y).abs() < 1e-3
+                    && (before.radius - after.radius).abs() < 1e-3
+                    && (before.alpha - after.alpha).abs() < 1e-3,
+                "the lift moved a stamp already drawn: {before:?} -> {after:?}"
+            );
+        }
     }
 
     #[test]
