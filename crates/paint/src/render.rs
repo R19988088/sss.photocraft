@@ -2817,6 +2817,12 @@ impl StrokeRenderer {
         let primary_straight = paint(false, brush, &self.cov).unwrap_or(destination);
         let output: [f32; 4] = if let (Some(ctx), Some(dm)) = (&self.ctx.secondary, &self.dual) {
             let secondary = paint(true, &ctx.brush, dm).unwrap_or(destination);
+            // The second half's own smudge, composited over its own colour before the two lanes are
+            // blended: what it carried has to reach the pixels, not stay in its transport surface.
+            let secondary = match self.transports[1].as_ref() {
+                Some(t) => pipelines(dm, t, secondary),
+                None => secondary,
+            };
             let p = self.cov.get(x, y) * brush.opacity * brush.dual_brush.primary_strength;
             let d = dm.get(x, y) * brush.dual_brush.secondary_strength;
             let weight = (d / (p + d).max(0.0001)).clamp(0.0, 1.0);

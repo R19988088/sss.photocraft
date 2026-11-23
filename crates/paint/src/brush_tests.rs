@@ -2604,7 +2604,6 @@ fn a_dual_brush_can_have_a_smudge_of_its_own() {
 }
 
 #[test]
-#[ignore = "the second lane's transported colour never reaches the pixels: it has no colour composite"]
 fn the_second_half_pulls_canvas_colour_of_its_own() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
 
