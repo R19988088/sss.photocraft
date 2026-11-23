@@ -48,6 +48,45 @@ fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
 }
 
 #[test]
+fn a_pattern_stays_where_it_is_when_the_dabs_shrink_at_pen_up() {
+    // The pattern fills the brush at the brush's size and keeps its place on the canvas. A dab's
+    // radius follows the pressure, so a scale read off a dab shrank with the stamps: the stroke
+    // changed pattern magnification from frame to frame, and the smallest stamps landing at pen-up
+    // rescaled the patch under the whole stroke — the paint then turned pale (white) wherever the
+    // magnified patch was pale.
+    let mut b = brush();
+    b.size = 40.0;
+    b.spacing = 0.05;
+    b.pressure_size = true;
+    b.texture.enabled = false;
+    b.pattern_enabled = true;
+    // eight columns, pale and dark: rescaling the patch moves the bands, so the colours on the
+    // canvas say where the pattern was read from.
+    let px: Vec<[f32; 4]> = (0..64).map(|i| if i % 8 < 4 { [0.15, 0.15, 0.15, 1.0] } else { [0.85, 0.85, 0.85, 1.0] }).collect();
+    let patch = ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) };
+    b.sampled_pattern = Some(patch.clone());
+    let eff = crate::procraft::effective(&b);
+    let ctx = BrushContext::new(&eff);
+    let scale = ctx.pattern_scale();
+    assert!((scale - 8.0 / 40.0).abs() < 1e-6, "the patch fills the brush, whatever a dab's radius is");
+
+    let mut s = Surface::new(PixelFormat::RGBA32F);
+    let pre = s.clone();
+    let mut r = StrokeRenderer::on_surface(&eff, &pre, 1.0);
+    r.use_procraft(true);
+    let pts: Vec<StrokePoint> = (0..=20).map(|i| StrokePoint::new(10.0 + i as f64 * 4.0, 30.0, (1.0 - (i as f64 / 20.0) * 0.9) as f32)).collect();
+    r.push(&pts);
+    r.finish();
+    r.composite(&pre, &mut s, None, false, true);
+    for (x, y) in [(20, 30), (50, 30), (84, 30)] {
+        let p = s.rgba(x, y);
+        assert!(p[3] > 0.1, "the stroke painted nothing at {x},{y}: {p:?}");
+        let want = patch.sample_pigment_tiled(scale * (x as f32 + 0.5), scale * (y as f32 + 0.5));
+        assert!((p[0] - want[0]).abs() < 0.06, "the pattern moved at {x},{y}: {p:?} instead of {want:?}");
+    }
+}
+
+#[test]
 fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
     let mut b = brush();
     b.pattern_enabled = true;

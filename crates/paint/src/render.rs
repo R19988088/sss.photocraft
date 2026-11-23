@@ -315,6 +315,17 @@ pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
 }
 
 impl BrushContext {
+    /// Texels of the sampled pattern per canvas pixel: the patch fills the brush at the brush's
+    /// own size, and stays that size for the whole stroke.
+    ///
+    /// This belongs to the brush, not to a dab. A dab's radius follows the pressure and the taper,
+    /// so a mapping read off a dab rescaled the patch from frame to frame — the same canvas pixel
+    /// read a different part of the patch each frame, and the stroke's colour shifted when the last
+    /// (smallest) stamps landed at pen-up.
+    pub fn pattern_scale(&self) -> f32 {
+        pattern_scale_of(&self.brush)
+    }
+
     /// Route dabs through `stamper` when it handles them (a GPU backend), for this context and,
     /// when the brush has a Dual Brush, its secondary context too.
     pub fn set_stamper(&mut self, stamper: crate::stamp::StamperSlot) {
@@ -1566,13 +1577,22 @@ fn lift_rgb(format: &PixelFormat, rgb: &[f32], out: &mut Vec<f32>) {
 }
 
 /// The colours a patterned lane's dabs pick, filled over the whole `rect` of a folded frame.
-/// The pattern is sampled in each dab's own frame (`scale · (pixel − centre)`), and the dabs of
-/// one frame sit a pixel or two apart, so one reference dab stands in for the frame: the pattern
-/// keeps its size and phase, and the colour drifts by the fraction of a texel between dabs.
-fn lane_colors(pattern: &crate::brush::ColorPattern, format: &PixelFormat, rect: Rect, reference: &Dab, out: &mut Vec<f32>) {
+/// The pattern repeats across the canvas at `scale` texels per pixel (see
+/// [`BrushContext::pattern_scale`]), so the colour at a pixel is a property of the canvas, not of
+/// whichever dab happens to cover it: overlapping stamps agree instead of averaging into mud.
+/// Texels of a brush's sampled pattern per canvas pixel — see [`BrushContext::pattern_scale`].
+fn pattern_scale_of(b: &BrushSettings) -> f32 {
+    let Some(p) = b.sampled_pattern.as_ref() else { return 1.0 };
+    let size = b.size as f32;
+    if !size.is_finite() || size <= 0.0 {
+        return 1.0;
+    }
+    (p.width.max(p.height) as f32 / size).max(f32::MIN_POSITIVE)
+}
+
+fn lane_colors(pattern: &crate::brush::ColorPattern, format: &PixelFormat, rect: Rect, scale: f32, out: &mut Vec<f32>) {
     let width = rect.width() as usize;
     let nc = format.mode.color_channels();
-    let scale = pattern.width.max(pattern.height) as f32 / (2.0 * reference.radius).max(1.0);
     out.clear();
     out.resize(width * rect.height() as usize * nc, 0.0);
     let row_at = |row: usize, line: &mut [f32]| {
@@ -2054,14 +2074,14 @@ impl StrokeRenderer {
             return fold_debug("colour size mismatch", dabs.len());
         }
         let mut native = [0.0f32; 8];
-        // The lane's per-pixel colour: the pattern's own sample (in the dab's own frame, so it is
-        // recomputed once over the union from the frame's first dab), the backend's colour lane
+        // The lane's per-pixel colour: the pattern's own sample (canvas space at the brush's
+        // pattern scale, so it is recomputed once over the union), the backend's colour lane
         // when every dab brought its own, or else the stroke's one colour.
-        let mut lane_col = |pattern: Option<&crate::brush::ColorPattern>, rect: Rect, reference: &Dab, rgb: &[f32], colors: &mut Vec<f32>| -> Option<bool> {
+        let mut lane_col = |pattern: Option<&crate::brush::ColorPattern>, rect: Rect, scale: f32, rgb: &[f32], colors: &mut Vec<f32>| -> Option<bool> {
             let f = self.fmt?;
             match (pattern, rgb.is_empty()) {
                 (Some(p), _) => {
-                    lane_colors(p, &f, rect, reference, colors);
+                    lane_colors(p, &f, rect, scale, colors);
                     Some(true)
                 }
                 (None, false) => {
@@ -2083,7 +2103,7 @@ impl StrokeRenderer {
         let pattern = b.pattern_enabled.then(|| b.sampled_pattern.as_ref()).flatten();
         let rgb: &[f32] = if pattern.is_none() { &out.color } else { &[] };
         let t_col = profiling().then(std::time::Instant::now);
-        let col = lane_col(pattern, frame.lane.union, first, rgb, &mut colors);
+        let col = lane_col(pattern, frame.lane.union, pattern_scale_of(b), rgb, &mut colors);
         let t_col = t_col.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
         // The backend hands back what the frame's dabs leave over an empty pixel, `ceil·V`;
         // dividing by the ceiling gives the `v` the map's own `c + v·(ceil − c)` wants. Divides
@@ -2120,11 +2140,10 @@ impl StrokeRenderer {
                 None
             };
             let mut colors2 = Vec::new();
-            let reference2 = duals.first().copied().unwrap_or(*first);
             let col2 = ctx.and_then(|c| {
                 let pattern2 = c.brush.pattern_enabled.then(|| c.brush.sampled_pattern.as_ref()).flatten();
                 let rgb2: &[f32] = if pattern2.is_none() { &back.color } else { &[] };
-                lane_col(pattern2, lane2.union, &reference2, rgb2, &mut colors2)
+                lane_col(pattern2, lane2.union, pattern_scale_of(&c.brush), rgb2, &mut colors2)
             });
             dm.accumulate_wet(lane2.union, &vals2, lane2.ceil, col2.map(|p| (colors2.as_slice(), p)), wet2.then_some(&back.depth[..]), material2, None);
             dm.bounds = dm.bounds.union(&lane2.union);
@@ -2209,7 +2228,7 @@ impl StrokeRenderer {
                 let width = rect.width() as usize;
                 let height = rect.height() as usize;
                 let nc = f.mode.color_channels();
-                let scale = pattern.width.max(pattern.height) as f32 / (2.0 * d.radius).max(1.0);
+                let scale = self.ctx.pattern_scale();
                 colors.clear();
                 colors.resize(width * height * nc, 0.0);
                 if single.is_some()
@@ -2389,12 +2408,13 @@ impl StrokeRenderer {
                 let col = if let (Some(ctx), Some(f)) = (secondary, self.fmt) {
                     colors.clear();
                     let width = rect.width() as usize;
+                    let pattern_scale = ctx.pattern_scale();
                     for (i, coverage) in self.scratch.iter_mut().enumerate() {
                         let mut rgba = if ctx.brush.pattern_enabled {
                             if let Some(p) = &ctx.brush.sampled_pattern {
                                 let rgba = p.sample_pigment_tiled(
-                                    rect.x0 as f32 + (i % width) as f32 + 0.5,
-                                    rect.y0 as f32 + (i / width) as f32 + 0.5,
+                                    pattern_scale * (rect.x0 as f32 + (i % width) as f32 + 0.5),
+                                    pattern_scale * (rect.y0 as f32 + (i / width) as f32 + 0.5),
                                 );
                                 *coverage *= rgba[3];
                                 rgba
