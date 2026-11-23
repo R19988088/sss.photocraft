@@ -143,23 +143,39 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
     if !settings.pattern_enabled {
         return out;
     }
+    // A patch read off the canvas is never painted as a second colour lane under ProCraft's brush:
+    // those colours are the picture's own, and a dark patch read as the stroke's colour is a black
+    // stroke. The pattern is grain or it is nothing — with nothing, the brush paints its own colour.
+    let plain = |out: &mut BrushSettings| {
+        out.pattern_enabled = false;
+        out.sampled_pattern = None;
+    };
     let Some(pattern) = &settings.sampled_pattern else { return out };
-    if !pattern.is_valid() {
+    let (w, h) = (pattern.width as usize, pattern.height as usize);
+    if w == 0 || h == 0 || pattern.pixels.len() != w.checked_mul(h).unwrap_or(0) {
+        plain(&mut out);
         return out;
     }
+    // The patch may be wider than a tile takes: read every `step`th texel, which keeps the grain's
+    // scale and its look.
+    const MOST_TILE: usize = 2048;
+    let step = w.max(h).div_ceil(MOST_TILE).max(1);
+    let (tw, th) = (w.div_ceil(step), h.div_ceil(step));
     let was_textured = settings.texture.enabled;
-    out.texture.pattern = crate::brush::Pattern::Tile(crate::tile::GrayTile::from_fn(pattern.width, pattern.height, |x, y| {
-        let p = pattern.pixels[(y * pattern.width + x) as usize];
+    out.texture.pattern = crate::brush::Pattern::Tile(crate::tile::GrayTile::from_fn(tw as u32, th as u32, |x, y| {
+        let p = pattern.pixels[((y as usize * step) * w + (x as usize * step)).min(pattern.pixels.len() - 1)];
         // Weighted luma, with the patch's own alpha: a transparent corner stays a hole in the grain.
-        (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * p[3].clamp(0.0, 1.0)
+        // A sample that is not a number, or an alpha past 1, is read as what it can be.
+        let alpha = if p[3].is_finite() { p[3].clamp(0.0, 1.0) } else { 0.0 };
+        let luma = (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * alpha;
+        if luma.is_finite() { luma.clamp(0.0, 1.0) } else { 0.0 }
     }));
     out.texture.enabled = true;
     if !was_textured {
         out.texture.depth = 1.0;
     }
     out.texture.each_tip = false;
-    out.pattern_enabled = false;
-    out.sampled_pattern = None;
+    plain(&mut out);
     out
 }
 

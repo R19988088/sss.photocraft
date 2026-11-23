@@ -10,6 +10,50 @@ use crate::render::{BrushContext, StrokeRenderer, dual_blend, mask_combine, rend
 use crate::tile::GrayTile;
 use crate::{AttributeMode, Dab, Stroke, StrokePoint, dabs};
 
+#[test]
+fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
+    let mut b = brush();
+    b.size = 40.0;
+    b.spacing = 0.1;
+    b.color = [0.9, 0.15, 0.15, 1.0];
+    b.texture.enabled = false;
+    b.pattern_enabled = true;
+    let mut px: Vec<[f32; 4]> = (0..64).map(|i| if i % 2 == 0 { [0.7, 0.7, 0.7, 1.0] } else { [0.35, 0.35, 0.35, 1.0] }).collect();
+    // an alpha a canvas read can hand over, and one the pattern check refuses
+    px[0][3] = 1.4;
+    b.sampled_pattern = Some(ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) });
+
+    // under ProCraft's brush the patch is grain, never a second colour lane: the colours the
+    // picture has are not the stroke's, and a dark one read as its colour is a black stroke.
+    let eff = crate::procraft::effective(&b);
+    assert!(!eff.pattern_enabled && eff.sampled_pattern.is_none(), "the pattern stayed a colour lane");
+    assert!(eff.texture.enabled, "the patch is the stroke's grain");
+
+    let mut s = Surface::new(PixelFormat::RGBA32F);
+    let pre = s.clone();
+    let mut r = StrokeRenderer::on_surface(&eff, &pre, 1.0);
+    r.use_procraft(true);
+    r.push(&line(12.0, 88.0, 30.0));
+    r.finish();
+    r.composite(&pre, &mut s, None, false, true);
+    for (x, y) in [(20, 30), (50, 30), (80, 30)] {
+        let p = s.rgba(x, y);
+        assert!(p[3] > 0.1, "the stroke painted nothing at {x},{y}: {p:?}");
+        assert!(p[0] > 0.5 && p[1] < 0.4, "the stroke left its own colour at {x},{y}: {p:?}");
+    }
+}
+
+#[test]
+fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
+    let mut b = brush();
+    b.pattern_enabled = true;
+    // a patch whose pixels do not add up to its size
+    b.sampled_pattern = Some(ColorPattern { width: 4, height: 4, pixels: std::sync::Arc::from(vec![[0.0, 0.0, 0.0, 1.0]; 3]) });
+    let eff = crate::procraft::effective(&b);
+    assert!(!eff.pattern_enabled && eff.sampled_pattern.is_none(), "an unreadable patch is no pattern");
+    assert!(!eff.texture.enabled, "and it is not a grain either");
+}
+
 fn brush() -> BrushSettings {
     // The legacy tip maths on purpose: these tests pin the fork's own behaviour, while
     // `Default` now gives the reference application's one tip maths (see `c3_tip_math`).
