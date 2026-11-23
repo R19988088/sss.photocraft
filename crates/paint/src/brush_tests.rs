@@ -2571,81 +2571,71 @@ fn a_procraft_stroke_is_the_same_point_by_point_as_in_one_chunk() {
 }
 
 #[test]
-fn a_dual_brush_can_have_a_smudge_of_its_own() {
-    use crate::transport::BrushMixSettings;
-
-    // Without mixing and without a whole brush of its own, the second half only adds coverage.
+fn a_dual_brush_without_whole_parameters_has_no_second_half_of_its_own() {
+    // Mixing is the brush's, one switch: a dual brush is not a second brush of its own, so a light
+    // dual only masks the stroke. Only a preset that brings the second half's whole brush gives it
+    // stamps, a colour and a mix of its own.
     let mut parent = BrushSettings::default();
     parent.size = 100.0;
-    let dual = DualBrush { enabled: true, secondary_strength: 0.5, ..DualBrush::default() };
-    parent.dual_brush = dual;
-    assert!(parent.dual_brush.resolved_brush(&parent).is_none());
+    parent.mix_settings.enabled = true;
+    parent.mix_settings.smudge_enabled = true;
+    parent.mix_settings.strength = 0.7;
+    parent.dual_brush = DualBrush { enabled: true, secondary_strength: 0.5, size: 40.0, ..DualBrush::default() };
+    assert!(
+        parent.dual_brush.resolved_brush(&parent).is_none(),
+        "a light dual masks; it is not a second brush"
+    );
 
-    // With mixing of its own it gets a brush: the first half's, shaped as the dual names, carrying
-    // its own mixing — so it smudges on its own while the first half keeps its rule.
-    let mut mix = BrushMixSettings::default();
-    mix.enabled = true;
-    mix.smudge_enabled = true;
-    mix.strength = 0.7;
-    parent.dual_brush.mix_settings = Some(Box::new(mix));
-    parent.dual_brush.size = 40.0;
-    parent.dual_brush.flow = 0.5;
-
-    let second = parent.dual_brush.resolved_brush(&parent).expect("a mixing second half has a brush");
+    // With a whole brush of its own, the second half keeps everything that brush says, mixing
+    // included, and is not itself a dual brush.
+    let mut full = parent.clone();
+    full.dual_brush = DualBrush::default();
+    full.size = 40.0;
+    full.mix_settings.strength = 0.7;
+    parent.dual_brush.full_parameters = Some(Box::new(full));
+    let second = parent.dual_brush.resolved_brush(&parent).expect("a whole second brush");
     assert_eq!(second.size, 40.0, "the dual's own size");
-    assert_eq!(second.flow, 0.5);
-    assert_eq!(second.mix_settings.strength, 0.7, "its smudge is its own");
-    assert!(second.mix_settings.smudge_enabled);
+    assert_eq!(second.mix_settings.strength, 0.7);
     assert!(!second.dual_brush.enabled, "the second half is not itself a dual brush");
     assert_eq!(second.color, parent.color);
-
-    // The first half keeps its own rule, untouched.
-    assert!(parent.mix_settings.strength <= 1.0);
 }
 
 #[test]
-fn the_second_half_pulls_canvas_colour_of_its_own() {
+fn mixing_blends_the_carried_colour_into_the_stroke_today() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
 
-    // White canvas, blue stroke: with the second half mixing, it drags the canvas's white into the
-    // stroke where the first half laid paint; without it, it only adds coverage and nothing moves.
-    let run = |second_mixes: bool| {
+    // What the lane does today: the carried colour is blended *into* the stroke's colour by the
+    // transport weight, so at full strength it replaces it. C3's order — the mix beneath the
+    // stroke's own colour, four outputs for a dual brush — is the change this pins: when it lands,
+    // this test and the seven others that assert the replace contract are re-based together.
+    let run = |mixing: bool| {
         let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
-        let mut b = BrushSettings {
+        let b = BrushSettings {
             size: 40.0,
-            hardness: 1.0,
+            hardness: 0.5,
             spacing: 0.25,
             flow: 1.0,
             opacity: 1.0,
             color: [0.1, 0.3, 0.9, 1.0],
-            mix_settings: BrushMixSettings::default(),
-            ..brush()
-        };
-        b.dual_brush.enabled = true;
-        b.dual_brush.secondary_strength = 1.0;
-        b.dual_brush.mode = MaskMode::Normal;
-        b.dual_brush.size = 60.0;
-        b.dual_brush.spacing = 0.25;
-        b.dual_brush.flow = 1.0;
-        b.dual_brush.opacity = 1.0;
-        if second_mixes {
-            b.dual_brush.mix_settings = Some(Box::new(BrushMixSettings {
-                enabled: true,
+            mix_settings: BrushMixSettings {
+                enabled: mixing,
                 smudge_enabled: true,
                 strength: 0.9,
                 algorithm: MixAlgorithm::V1,
                 ..Default::default()
-            }));
-        }
+            },
+            ..brush()
+        };
         let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
         render_stroke(&mut s, &b, &points, None, false, 1.0);
         s
     };
 
     let plain = run(false).rgba(60, 60);
-    let mixing = run(true).rgba(60, 60);
+    let mixed = run(true).rgba(60, 60);
+    assert!(plain[2] > 0.85, "a plain stroke lays its own blue: {plain:?}");
     assert!(
-        mixing[2] > plain[2] + 0.02,
-        "the second half's own smudge must pull the canvas into the stroke: {plain:?} vs {mixing:?}"
+        mixed[0] > plain[0] + 0.005 && mixed[1] > plain[1] + 0.005,
+        "the carried white is blended into the stroke: {plain:?} vs {mixed:?}"
     );
 }
