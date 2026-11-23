@@ -711,6 +711,10 @@ impl From<Pose> for PoseWire {
 pub struct Smoothing {
     /// Switch smoothing off without discarding its amount or mode. Old presets remain enabled.
     pub enabled: bool,
+    /// How much the path is smoothed where it is, 0..1: each point averaged with those either
+    /// side of it, so the stamp stays under the pen (ProCraft's stabilisation). Nothing is
+    /// pulled back, so this one costs the stroke no latency.
+    pub realtime: f32,
     /// String length, 0..1 of 100 screen pixels.
     pub amount: f32,
     /// Lazy-mouse: paint only when the pointer pulls a string of `amount × 100 px` taut.
@@ -725,7 +729,15 @@ pub struct Smoothing {
 
 impl Default for Smoothing {
     fn default() -> Self {
-        Self { enabled: true, amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: true, adjust_for_zoom: true }
+        Self {
+            enabled: true,
+            realtime: 0.0,
+            amount: 0.0,
+            pulled_string: false,
+            catch_up: true,
+            catch_up_on_end: true,
+            adjust_for_zoom: true,
+        }
     }
 }
 

@@ -191,8 +191,20 @@ pub fn brush(settings: &BrushSettings) -> Brush {
     brush.shape.roundness = settings.roundness.clamp(0.0, 1.0);
     brush.shape.rotation = settings.angle.to_radians();
 
-    // Our string length (0..1 of 100 px) is ProCraft's streamline (0..1).
-    brush.streamline = if settings.smoothing.enabled { settings.smoothing.amount.clamp(0.0, 1.0) } else { 0.0 };
+    // 运笔 › 笔迹平滑 is ProCraft's stabilisation: each point averaged with those either side of
+    // it, so the path is smoothed where it already is and the stamp stays under the pen. Nothing
+    // is held back, so a smooth stroke costs no latency — which is what the old string did, and
+    // why this one is the smoothing the panel now sets.
+    let smoothing = settings.smoothing.enabled;
+    brush.set_setting("stabilization", if smoothing { settings.smoothing.realtime.clamp(0.0, 1.0) } else { 0.0 });
+
+    // The string is ProCraft's streamline, which keeps a stroke's newest 50 ms — the ink trails
+    // the pen by that much by design — so only the mode that is a string asks for it.
+    brush.streamline = if smoothing && settings.smoothing.pulled_string {
+        settings.smoothing.amount.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     // The stroke's tapers. Ours is the end taper alone — a share of the diameter, and how much of
     // the pen's pressure it takes away — which is ProCraft's `size` on the same length.
@@ -311,6 +323,18 @@ pub fn stroke(settings: &BrushSettings) -> procraft_engine::stroke::StrokeBuilde
     // so the end is tapered where it is and nothing behind it is laid again.
     builder.hold_laid();
     builder
+}
+
+/// The stamps still to draw when the pen lifts: the stroke's end, as it is once ended.
+///
+/// Everything the stroke laid as it came is already on the canvas — a stroke drawn with a tip
+/// hands those out as it goes (`add_tipped`) — so the lift draws only what the tapers still held
+/// back, not the whole stroke again. That is what made the end of a stroke wait: a long stroke
+/// re-rastered in full the moment the pen came up.
+pub fn lift(builder: &mut procraft_engine::stroke::StrokeBuilder) -> Vec<procraft_engine::stroke::Stamp> {
+    let drawn = builder.drawn_for_good().map_or(0, |d| d.len());
+    let stamps = builder.finish();
+    stamps.get(drawn.min(stamps.len())..).unwrap_or_default().to_vec()
 }
 
 /// This app's pointer point, as ProCraft's sample.
@@ -566,6 +590,60 @@ mod tests {
         // A brush that already asks for coarser stamps keeps them.
         settings.spacing = 0.2;
         assert_eq!(effective(&settings).spacing, 0.2);
+    }
+
+    #[test]
+    fn the_lift_draws_only_what_the_stroke_has_not_laid_yet() {
+        use crate::brush::Taper;
+
+        let mut settings = BrushSettings::default();
+        settings.size = 60.0;
+        settings.spacing = 0.2;
+        settings.taper = Taper { enabled: false, ..Taper::default() };
+        let mut builder = stroke(&settings);
+        let mut laid = 0;
+        for i in 0..24 {
+            laid += builder.add_tipped(&[sample(&StrokePoint::new(10.0 + f64::from(i) * 10.0, 40.0, 0.7))]).0.len();
+        }
+        // with no taper holding anything back, the lift has nothing left to lay
+        assert!(laid > 0, "the stroke laid stamps as it came");
+        assert!(lift(&mut builder).is_empty(), "the lift re-laid stamps the canvas already had");
+    }
+
+    #[test]
+    fn the_lift_lays_the_tapers_tail_and_no_more() {
+        use crate::brush::Taper;
+
+        let mut settings = BrushSettings::default();
+        settings.size = 60.0;
+        settings.spacing = 0.2;
+        settings.taper = Taper { enabled: true, end: 0.5, size: 0.8 };
+        let mut builder = stroke(&settings);
+        let mut laid = 0;
+        for i in 0..24 {
+            laid += builder.add_tipped(&[sample(&StrokePoint::new(10.0 + f64::from(i) * 10.0, 40.0, 0.7))]).0.len();
+        }
+        let whole = {
+            let mut probe = builder.clone();
+            probe.finish().len()
+        };
+        let tail = lift(&mut builder);
+        assert_eq!(laid + tail.len(), whole, "laid and lifted together are the stroke, once each");
+        assert!(tail.len() <= whole / 2, "the lift drew {} of {whole} stamps again", tail.len());
+    }
+
+    #[test]
+    fn stroke_smoothing_smooths_where_the_path_is_and_holds_nothing_back() {
+        let mut settings = BrushSettings::default();
+        settings.smoothing.realtime = 0.6;
+        let live = brush(&settings);
+        assert!((live.setting("stabilization") - 0.6).abs() < 1e-6, "笔迹平滑 is ProCraft's stabilisation");
+        assert_eq!(live.streamline, 0.0, "stabilisation holds nothing back, so there is no stream lag");
+
+        // the string mode is the one that paints behind the pointer
+        settings.smoothing.pulled_string = true;
+        settings.smoothing.amount = 0.4;
+        assert!((brush(&settings).streamline - 0.4).abs() < 1e-6);
     }
 
     #[test]

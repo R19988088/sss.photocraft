@@ -2534,10 +2534,11 @@ impl StrokeRenderer {
     /// End of stroke (smoothing catch-up, a lone first point).
     pub fn finish(&mut self) {
         if let Some(shared) = &self.procraft {
-            // Pen up: the tapers' held-back stretch, drawn for good.
+            // Pen up: the stretch the tapers held back, drawn for good — the rest of the stroke is
+            // already on the canvas (see [`crate::procraft::lift`]).
             let dabs = {
                 let mut p = shared.lock().unwrap_or_else(|e| e.into_inner());
-                let stamps = p.builder.add_tipped(&[]).0;
+                let stamps = crate::procraft::lift(&mut p.builder);
                 p.dabs(&stamps)
             };
             self.push_dabs(&dabs);

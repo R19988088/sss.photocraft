@@ -1289,6 +1289,12 @@ fn motion_settings(ui: &mut egui::Ui, b: &mut BrushSettings) {
         widgets::checkbox(ui, &mut motion.anchor_delay_pressure_enabled, tl!("Pressure Controls Anchor Delay"));
     });
     ui.separator();
+    // 运笔 › 笔迹平滑: ProCraft's stabilisation, smoothing the path where it is so the stamp stays
+    // under the pen. The string below is the mode that deliberately paints behind the pointer.
+    ui.add_enabled_ui(b.smoothing.enabled, |ui| {
+        pct(ui, tl!("Stroke Smoothing:"), &mut b.smoothing.realtime, 1.0);
+    });
+    ui.separator();
     let rope = &mut b.smoothing;
     let mut enabled = rope.enabled && rope.pulled_string;
     if widgets::checkbox(ui, &mut enabled, tl!("Pulled String Mode")).changed() {
