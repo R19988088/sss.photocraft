@@ -143,9 +143,10 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
     if !settings.pattern_enabled {
         return out;
     }
-    // A patch read off the canvas is never painted as a second colour lane under ProCraft's brush:
-    // those colours are the picture's own, and a dark patch read as the stroke's colour is a black
-    // stroke. The pattern is grain or it is nothing — with nothing, the brush paints its own colour.
+    // A pattern read off the canvas is the stroke's *paint*: its colours are what the stroke shows,
+    // not a grain over the brush's colour (a black brush over a blue-and-white patch would draw a
+    // black stroke). What a canvas read can hand over — an alpha past 1, a NaN, a patch wider than
+    // a tile takes — is cleaned up here, so the colour lane reads it without going black.
     let plain = |out: &mut BrushSettings| {
         out.pattern_enabled = false;
         out.sampled_pattern = None;
@@ -156,26 +157,23 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
         plain(&mut out);
         return out;
     }
-    // The patch may be wider than a tile takes: read every `step`th texel, which keeps the grain's
-    // scale and its look.
     const MOST_TILE: usize = 2048;
     let step = w.max(h).div_ceil(MOST_TILE).max(1);
     let (tw, th) = (w.div_ceil(step), h.div_ceil(step));
-    let was_textured = settings.texture.enabled;
-    out.texture.pattern = crate::brush::Pattern::Tile(crate::tile::GrayTile::from_fn(tw as u32, th as u32, |x, y| {
-        let p = pattern.pixels[((y as usize * step) * w + (x as usize * step)).min(pattern.pixels.len() - 1)];
-        // Weighted luma, with the patch's own alpha: a transparent corner stays a hole in the grain.
-        // A sample that is not a number, or an alpha past 1, is read as what it can be.
-        let alpha = if p[3].is_finite() { p[3].clamp(0.0, 1.0) } else { 0.0 };
-        let luma = (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) * alpha;
-        if luma.is_finite() { luma.clamp(0.0, 1.0) } else { 0.0 }
-    }));
-    out.texture.enabled = true;
-    if !was_textured {
-        out.texture.depth = 1.0;
-    }
-    out.texture.each_tip = false;
-    plain(&mut out);
+    let pixels: Vec<[f32; 4]> = (0..th)
+        .flat_map(|y| {
+            (0..tw).map(move |x| {
+                let p = pattern.pixels[(y * step * w + x * step).min(pattern.pixels.len() - 1)];
+                let read = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+                [read(p[0]), read(p[1]), read(p[2]), read(p[3])]
+            })
+        })
+        .collect();
+    out.sampled_pattern = Some(crate::brush::ColorPattern {
+        width: tw as u32,
+        height: th as u32,
+        pixels: std::sync::Arc::from(pixels),
+    });
     out
 }
 
@@ -696,8 +694,8 @@ mod tests {
     }
 
     #[test]
-    fn a_sampled_pattern_becomes_grain_under_the_procraft_brush() {
-        use crate::brush::{ColorPattern, Pattern};
+    fn a_sampled_pattern_is_the_strokes_paint_under_the_procraft_brush() {
+        use crate::brush::ColorPattern;
 
         let mut settings = BrushSettings::default();
         settings.pattern_enabled = true;
@@ -708,17 +706,20 @@ mod tests {
         });
 
         let e = effective(&settings);
-        assert!(!e.pattern_enabled, "the colour lane steps aside");
-        assert!(e.sampled_pattern.is_none());
-        assert!(e.texture.enabled, "the pattern is the texture lane's now");
-        assert_eq!(e.texture.depth, 1.0, "a pattern that was not textured gets the grain's whole depth");
-        match &e.texture.pattern {
-            Pattern::Tile(t) => {
-                assert_eq!((t.width, t.height), (4, 4));
-                assert_eq!(t.data.len(), 16);
-            }
-            _ => panic!("a sampled pattern becomes a gray tile"),
-        }
+        assert!(e.pattern_enabled, "the pattern paints: it is not a grain over the brush's colour");
+        let patch = e.sampled_pattern.as_ref().expect("the patch stays the stroke's paint");
+        assert!(patch.is_valid());
+        assert_eq!((patch.width, patch.height), (4, 4));
+        assert_eq!(patch.pixels[0], [0.2, 0.2, 0.2, 1.0], "a readable patch is taken as it is");
+        assert!(!e.texture.enabled, "and the texture lane is not pressed into service");
+
+        // A patch wider than a tile takes is read every other texel: the paint keeps its scale.
+        let wide: Vec<[f32; 4]> = (0..2100 * 2).map(|i| [i as f32 % 2.0, 0.0, 0.0, 1.0]).collect();
+        settings.sampled_pattern = Some(ColorPattern { width: 2100, height: 2, pixels: std::sync::Arc::from(wide) });
+        let e = effective(&settings);
+        let patch = e.sampled_pattern.as_ref().unwrap();
+        assert_eq!((patch.width, patch.height), (1050, 1), "a patch that wide is read every other texel");
+        assert!(patch.is_valid());
 
         // No pattern: the brush is left exactly as it is.
         let plain = BrushSettings::default();

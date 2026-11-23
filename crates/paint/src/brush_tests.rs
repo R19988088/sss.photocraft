@@ -23,11 +23,14 @@ fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
     px[0][3] = 1.4;
     b.sampled_pattern = Some(ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) });
 
-    // under ProCraft's brush the patch is grain, never a second colour lane: the colours the
-    // picture has are not the stroke's, and a dark one read as its colour is a black stroke.
+    // a pattern read off the canvas is the stroke's paint, not a grain over the brush's colour: a
+    // black brush over a blue-and-white patch would draw a black stroke. What the read hands over
+    // is cleaned up before the colour lane samples it.
     let eff = crate::procraft::effective(&b);
-    assert!(!eff.pattern_enabled && eff.sampled_pattern.is_none(), "the pattern stayed a colour lane");
-    assert!(eff.texture.enabled, "the patch is the stroke's grain");
+    assert!(eff.pattern_enabled && eff.sampled_pattern.is_some(), "the pattern is the stroke's paint");
+    let patch = eff.sampled_pattern.as_ref().unwrap();
+    assert!(patch.is_valid(), "the canvas patch is readable before the lane takes it");
+    assert_eq!(patch.pixels[0][3], 1.0, "an alpha past 1 is read as full");
 
     let mut s = Surface::new(PixelFormat::RGBA32F);
     let pre = s.clone();
@@ -39,7 +42,8 @@ fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
     for (x, y) in [(20, 30), (50, 30), (80, 30)] {
         let p = s.rgba(x, y);
         assert!(p[3] > 0.1, "the stroke painted nothing at {x},{y}: {p:?}");
-        assert!(p[0] > 0.5 && p[1] < 0.4, "the stroke left its own colour at {x},{y}: {p:?}");
+        assert!(p[0] > 0.2, "the stroke went black at {x},{y}: {p:?}");
+        assert!((p[0] - p[1]).abs() < 0.05 && (p[1] - p[2]).abs() < 0.05, "the patch's own grey is not the paint at {x},{y}: {p:?}");
     }
 }
 
@@ -51,7 +55,7 @@ fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
     b.sampled_pattern = Some(ColorPattern { width: 4, height: 4, pixels: std::sync::Arc::from(vec![[0.0, 0.0, 0.0, 1.0]; 3]) });
     let eff = crate::procraft::effective(&b);
     assert!(!eff.pattern_enabled && eff.sampled_pattern.is_none(), "an unreadable patch is no pattern");
-    assert!(!eff.texture.enabled, "and it is not a grain either");
+    assert!(!eff.texture.enabled, "and it is not a surface either");
 }
 
 fn brush() -> BrushSettings {
