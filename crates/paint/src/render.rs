@@ -1577,13 +1577,13 @@ fn lane_colors(pattern: &crate::brush::ColorPattern, format: &PixelFormat, rect:
     out.resize(width * rect.height() as usize * nc, 0.0);
     let row_at = |row: usize, line: &mut [f32]| {
         let mut native = [0.0f32; 8];
-        let sy = scale * (rect.y0 as f32 + row as f32 + 0.5 - reference.center.y as f32);
-        // A row walks +x, so the pattern's 4×4 texel neighbourhood is carried across pixels
-        // instead of being rebuilt for every one of them.
-        let mut walk = pattern.pigment_walk();
+        // The pattern is read in canvas space, not around the dab: every dab that covers a pixel
+        // reads the same texel there, so the colours the lane accumulates agree instead of averaging
+        // a dozen different offsets into a muddy one.
+        let sy = scale * (rect.y0 as f32 + row as f32 + 0.5);
         for c in 0..width {
-            let sx = scale * (rect.x0 as f32 + c as f32 + 0.5 - reference.center.x as f32);
-            let rgba = walk.sample(sx, sy);
+            let sx = scale * (rect.x0 as f32 + c as f32 + 0.5);
+            let rgba = pattern.sample_pigment_tiled(sx, sy);
             from_rgba_into(format, rgba, &mut native);
             line[c * nc..(c + 1) * nc].copy_from_slice(&native[..nc]);
         }
@@ -2228,15 +2228,15 @@ impl StrokeRenderer {
                 let base_view = &base_pixels[..];
                 let sample_row = |row: usize, out: &mut [f32], alpha: &mut [f32]| {
                     let mut native = [0.0f32; 8];
-                    let sy = scale * (rect.y0 as f32 + row as f32 + 0.5 - d.center.y as f32);
+                    let sy = scale * (rect.y0 as f32 + row as f32 + 0.5);
                     for col_i in 0..width {
                         let i = row * width + col_i;
                         let Some(&coverage) = scratch.get(i) else { break };
                         if coverage <= 0.0 {
                             continue;
                         }
-                        let sx = scale * (rect.x0 as f32 + col_i as f32 + 0.5 - d.center.x as f32);
-                        let mut rgba = pattern.sample_pigment(sx, sy);
+                        let sx = scale * (rect.x0 as f32 + col_i as f32 + 0.5);
+                        let mut rgba = pattern.sample_pigment_tiled(sx, sy);
                         alpha[col_i] = rgba[3];
                         if let Some(w) = single {
                             let channels = f.channels();
@@ -2392,9 +2392,9 @@ impl StrokeRenderer {
                     for (i, coverage) in self.scratch.iter_mut().enumerate() {
                         let mut rgba = if ctx.brush.pattern_enabled {
                             if let Some(p) = &ctx.brush.sampled_pattern {
-                                let rgba = p.sample_pigment(
-                                    rect.x0 as f32 + (i % width) as f32 + 0.5 - d.center.x as f32,
-                                    rect.y0 as f32 + (i / width) as f32 + 0.5 - d.center.y as f32,
+                                let rgba = p.sample_pigment_tiled(
+                                    rect.x0 as f32 + (i % width) as f32 + 0.5,
+                                    rect.y0 as f32 + (i / width) as f32 + 0.5,
                                 );
                                 *coverage *= rgba[3];
                                 rgba

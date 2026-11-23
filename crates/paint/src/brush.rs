@@ -1357,6 +1357,19 @@ impl ColorPattern {
         }
         [sum[0] / weight.max(0.0001), sum[1] / weight.max(0.0001), sum[2] / weight.max(0.0001), center[3]]
     }
+    /// As [`ColorPattern::sample_pigment`], with the patch repeating across the canvas: the
+    /// coordinates wrap into the patch, so a stroke reads the same patch square at the same pixel
+    /// however many dabs cover it — no per-dab offsets to average into one muddy colour.
+    pub fn sample_pigment_tiled(&self, x: f32, y: f32) -> [f32; 4] {
+        let (w, h) = (self.width as f32, self.height as f32);
+        if w <= 0.0 || h <= 0.0 {
+            return [0.0; 4];
+        }
+        let x = (x + w * 0.5).rem_euclid(w) - w * 0.5;
+        let y = (y + h * 0.5).rem_euclid(h) - h * 0.5;
+        self.sample_pigment(x, y)
+    }
+
     pub fn sample(&self, x: f32, y: f32) -> [f32; 4] {
         let (x, y) = (x + self.width as f32 * 0.5 - 0.5, y + self.height as f32 * 0.5 - 0.5);
         if x < -0.5 || y < -0.5 || x >= self.width as f32 - 0.5 || y >= self.height as f32 - 0.5 {
