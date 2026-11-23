@@ -283,7 +283,14 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     // way a smudge's is: what the canvas shows while drawing is what it leaves, and laying the
     // whole stroke again as the pen lifts took a tenth of a second on a long one (ProCraft's
     // `lay_stroke` after #288).
-    let taper_lands = brush.taper.enabled && brush.taper.size > 0.0 && !brush.paints_in_place();
+    // ProCraft's brush has no taper to give (see `crate::procraft`'s unmapped `taper`): the stroke
+    // keeps the pen's own width and pressure to the lift. Landing this app's taper here would lay
+    // the whole stroke again with a faded, re-pressured end — the wait at pen-up — and its smaller
+    // end leaves the live stroke's own end, already on the canvas, sticking out as a broken scrap.
+    let taper_lands = brush.taper.enabled
+        && brush.taper.size > 0.0
+        && !brush.paints_in_place()
+        && !photocraft_paint::procraft::enabled();
     let mut pts = pts;
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
