@@ -2756,6 +2756,33 @@ impl StrokeRenderer {
         // from the tip's own rasterised coverage, so the drag's shape and strength follow the nib
         // exactly; the two pipelines live on separate surfaces, so blurring never eats the drag and
         // the drag never samples a blurred layer.
+        //
+        // The mixed colour lies *under* the stroke's own: what the nib picked up and carried sits
+        // beneath the colour it lays, and the stroke's colour lets it through by the weight the
+        // pipeline recorded — C3's order, the mix below and the tip above. At a light mix the
+        // stroke's colour is nearly all of the pixel; at a strong one the carried colour shows
+        // through it, and the stroke's colour is never dropped from the pixel.
+        let under = |out: [f32; 4], value: [f32; 4], k: f32| {
+            let k = k.clamp(0.0, 1.0);
+            let carried = (value[3] * k).clamp(0.0, 1.0);
+            if carried <= 0.0 {
+                return out;
+            }
+            // The carried colour lies within the painted pixel, so the pixel keeps the alpha the
+            // stroke laid; only its colour is shared between the two.
+            let above = (out[3] * (1.0 - k)).clamp(0.0, 1.0);
+            let total = above + carried * (1.0 - above);
+            if total <= 0.000001 {
+                return out;
+            }
+            std::array::from_fn(|i| {
+                if i < 3 {
+                    (out[i] * above + value[i] * carried * (1.0 - above)) / total
+                } else {
+                    out[3]
+                }
+            })
+        };
         let pipelines = |map: &CoverageMap, t: &LaneTransport, base: [f32; 4]| {
             let weights = map.transport_weights(x, y);
             let mut out = base;
@@ -2764,19 +2791,13 @@ impl StrokeRenderer {
             {
                 let value = blur.rgba(x, y);
                 if value[3] > 0.0 {
-                    let k = weights[1].clamp(0.0, 1.0);
-                    for (channel, sample) in out.iter_mut().zip(value).take(3) {
-                        *channel += (sample - *channel) * k;
-                    }
+                    out = under(out, value, weights[1]);
                 }
             }
             if weights[0] > 0.0 {
                 let value = t.mix.rgba(x, y);
                 if value[3] > 0.0 {
-                    let k = weights[0].clamp(0.0, 1.0);
-                    for (channel, sample) in out.iter_mut().zip(value).take(3) {
-                        *channel += (sample - *channel) * k;
-                    }
+                    out = under(out, value, weights[0]);
                 }
             }
             out

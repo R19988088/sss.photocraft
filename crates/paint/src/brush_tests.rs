@@ -2601,13 +2601,12 @@ fn a_dual_brush_without_whole_parameters_has_no_second_half_of_its_own() {
 }
 
 #[test]
-fn mixing_blends_the_carried_colour_into_the_stroke_today() {
+fn mixing_lays_the_carried_colour_under_the_strokes_own() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
 
-    // What the lane does today: the carried colour is blended *into* the stroke's colour by the
-    // transport weight, so at full strength it replaces it. C3's order — the mix beneath the
-    // stroke's own colour, four outputs for a dual brush — is the change this pins: when it lands,
-    // this test and the seven others that assert the replace contract are re-based together.
+    // C3's order: what the nib carried lies beneath the colour it lays, and the stroke's colour
+    // lets it through by the weight the transport recorded. The stroke never drops its own colour
+    // from the pixel; at a strong mix the carried colour simply shows through it.
     let run = |mixing: bool| {
         let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
         let b = BrushSettings {
@@ -2634,8 +2633,10 @@ fn mixing_blends_the_carried_colour_into_the_stroke_today() {
     let plain = run(false).rgba(60, 60);
     let mixed = run(true).rgba(60, 60);
     assert!(plain[2] > 0.85, "a plain stroke lays its own blue: {plain:?}");
+    assert!(mixed[3] > 0.99, "the pixel stays opaque: {mixed:?}");
     assert!(
         mixed[0] > plain[0] + 0.005 && mixed[1] > plain[1] + 0.005,
-        "the carried white is blended into the stroke: {plain:?} vs {mixed:?}"
+        "the carried white shows through the stroke's own colour: {plain:?} vs {mixed:?}"
     );
+    assert!(mixed[2] > 0.3, "the stroke's own blue is still in the pixel: {mixed:?}");
 }
