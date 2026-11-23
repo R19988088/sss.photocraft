@@ -144,6 +144,25 @@ fn a_patch_with_see_through_texels_still_paints_the_whole_stroke() {
 }
 
 #[test]
+fn a_patch_is_trimmed_of_the_page_white_around_its_mark() {
+    // A sample is taken around a mark on the page; the page's white would tile as a band of gaps
+    // between the pattern's repeats, so only the mark itself is kept.
+    let px: Vec<[f32; 4]> = (0..144)
+        .map(|i| {
+            let (x, y) = (i % 12, i / 12);
+            if (3..9).contains(&x) && (3..9).contains(&y) { [0.7, 0.2, 0.15, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }
+        })
+        .collect();
+    let mut b = brush();
+    b.pattern_enabled = true;
+    b.sampled_pattern = Some(ColorPattern { width: 12, height: 12, pixels: std::sync::Arc::from(px) });
+    let eff = crate::procraft::effective(&b);
+    let patch = eff.sampled_pattern.as_ref().unwrap();
+    assert_eq!((patch.width, patch.height), (6, 6), "the blank page around the mark is trimmed");
+    assert!(patch.pixels.iter().all(|p| p[3] == 1.0 && (p[0] - 0.7).abs() < 1e-3), "what is left is the mark");
+}
+
+#[test]
 fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
     let mut b = brush();
     b.pattern_enabled = true;
