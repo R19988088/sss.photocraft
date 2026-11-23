@@ -66,6 +66,9 @@ pub const UNMAPPED: &[Unmapped] = &[
     // flow, hardness, roundness, angle, spacing, throw and count); its combine mode and the two
     // strengths have no field.
     Unmapped { param: "dual_brush", kind: Kind::Partial },
+    // A taper takes the stroke's width and pressure away near the ends — a shape the brush did not
+    // draw, and on a big brush it reads as the stroke being cut short. It is not mapped at all.
+    Unmapped { param: "taper", kind: Kind::Pink },
     Unmapped { param: "color_dynamics", kind: Kind::Pink },
     // Its opacity jitter reaches ProCraft's own; flow, wetness and mix jitter do not.
     Unmapped { param: "transfer", kind: Kind::Partial },
@@ -206,18 +209,14 @@ pub fn brush(settings: &BrushSettings) -> Brush {
         0.0
     };
 
-    // The stroke's tapers. Ours is the end taper alone — a share of the diameter, and how much of
-    // the pen's pressure it takes away — which is ProCraft's `size` on the same length.
-    brush.pen_taper = if settings.taper.enabled {
-        procraft_engine::brush::Taper {
-            start: 0.0,
-            end: settings.taper.end.clamp(0.0, 1.0),
-            size: settings.taper.size.clamp(0.0, 1.0),
-            opacity: 0.0,
-        }
-    } else {
-        procraft_engine::brush::Taper::NONE
-    };
+    // No taper, at either end, on either pointer: the stroke keeps the width and the pressure the
+    // pen gave it all the way to the lift. A taper is a shape the brush never drew — it thins the
+    // end into the stroke instead of stopping it — and on a big brush that thinning is a plain
+    // break in the shape, so the setting is mapped to nothing. With nothing to hold back, the tip
+    // has nothing to animate either: the lift lays no stamp at all.
+    brush.pen_taper = procraft_engine::brush::Taper::NONE;
+    brush.touch_taper = procraft_engine::brush::Taper::NONE;
+    brush.set_setting("pen_tip_animation", 0.0);
 
     // What leaning does: ProCraft's Tilt is the same three controls, and its dial is our tilt angle.
     brush.tilt.angle = settings.shape_dynamics.tilt_angle.clamp(0.0, 1.0);
@@ -438,9 +437,9 @@ mod tests {
         settings.wet_edges = true;
 
         let mapped = brush(&settings);
-        assert_eq!(mapped.pen_taper.end, 0.35);
-        assert_eq!(mapped.pen_taper.size, 0.6);
-        assert_eq!(mapped.pen_taper.start, 0.0);
+        assert_eq!(mapped.pen_taper, procraft_engine::brush::Taper::NONE, "a taper would thin the stroke");
+        assert_eq!(mapped.touch_taper, procraft_engine::brush::Taper::NONE);
+        assert_eq!(mapped.setting("pen_tip_animation"), 0.0, "nothing is held back for a tip to show");
         assert_eq!(mapped.tilt.angle, 0.4);
         assert_eq!(mapped.tilt.size, 1.2);
         assert_eq!(mapped.tilt.opacity, 0.5);
@@ -614,6 +613,8 @@ mod tests {
     fn the_lift_lays_the_tapers_tail_and_no_more() {
         use crate::brush::Taper;
 
+        // A taper is never mapped to ProCraft's brush (it would thin the stroke), so a brush that
+        // asks for one still ends at the pen's own lift and the lift lays nothing at all.
         let mut settings = BrushSettings::default();
         settings.size = 60.0;
         settings.spacing = 0.2;
@@ -623,13 +624,12 @@ mod tests {
         for i in 0..24 {
             laid += builder.add_tipped(&[sample(&StrokePoint::new(10.0 + f64::from(i) * 10.0, 40.0, 0.7))]).0.len();
         }
-        let whole = {
-            let mut probe = builder.clone();
-            probe.finish().len()
-        };
+        assert!(laid > 0, "the stroke laid stamps as it came");
         let tail = lift(&mut builder);
-        assert_eq!(laid + tail.len(), whole, "laid and lifted together are the stroke, once each");
-        assert!(tail.len() <= whole / 2, "the lift drew {} of {whole} stamps again", tail.len());
+        assert!(tail.is_empty(), "the lift drew {} more stamps on a stroke that was whole", tail.len());
+        for stamp in builder.stamps() {
+            assert!((stamp.radius - 30.0).abs() < 1e-3, "a stamp of this brush is one diameter, start to end");
+        }
     }
 
     #[test]
