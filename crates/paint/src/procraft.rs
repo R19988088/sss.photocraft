@@ -160,68 +160,24 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
     const MOST_TILE: usize = 2048;
     let step = w.max(h).div_ceil(MOST_TILE).max(1);
     let (tw, th) = (w.div_ceil(step), h.div_ceil(step));
-    let (mut tw, mut th) = (tw, th);
-    let mut pixels: Vec<[f32; 4]> = (0..th)
-        .flat_map(|y| {
-            (0..tw).map(move |x| {
-                let p = pattern.pixels[(y * step * w + x * step).min(pattern.pixels.len() - 1)];
-                let read = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
-                [read(p[0]), read(p[1]), read(p[2]), read(p[3])]
-            })
-        })
-        .collect();
-    // A sample is usually taken around a mark on the page, and the page's white is not part of the
-    // mark: kept, that white is what tiles as a band of gaps between the pattern's repeats. Trim
-    // the blank border off, so the mark alone repeats.
-    let (tw0, th0) = (tw, th);
-    let sw = tw0;
-    let white = |p: &[f32; 4]| p[3] >= 0.9 && p[0] >= 0.93 && p[1] >= 0.93 && p[2] >= 0.93 && (p[0] - p[2]).abs() <= 0.05;
-    let row_blank = |pixels: &[[f32; 4]], y: usize, x0: usize, w: usize| (x0..x0 + w).all(|x| white(&pixels[y * sw + x]));
-    let col_blank = |pixels: &[[f32; 4]], x: usize, y0: usize, h: usize| (y0..y0 + h).all(|y| white(&pixels[y * sw + x]));
-    let (mut ox, mut oy) = (0usize, 0usize);
-    loop {
-        let mut trimmed = false;
-        if th > 2 && row_blank(&pixels, oy, ox, tw) {
-            oy += 1;
-            th -= 1;
-            trimmed = true;
-        }
-        if th > 2 && row_blank(&pixels, oy + th - 1, ox, tw) {
-            th -= 1;
-            trimmed = true;
-        }
-        if tw > 2 && col_blank(&pixels, ox, oy, th) {
-            ox += 1;
-            tw -= 1;
-            trimmed = true;
-        }
-        if tw > 2 && col_blank(&pixels, ox + tw - 1, oy, th) {
-            tw -= 1;
-            trimmed = true;
-        }
-        if !trimmed {
-            break;
-        }
-    }
-    let (mut tw, mut th) = (tw, th);
-    if (tw, th) != (tw0, th0) {
-        let mut kept: Vec<[f32; 4]> = Vec::with_capacity(tw * th);
-        for y in 0..th {
-            for x in 0..tw {
-                kept.push(pixels[(oy + y) * sw + (ox + x)]);
+    let mut pixels: Vec<[f32; 4]> = Vec::with_capacity(tw * th);
+    let read = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    for y in 0..th {
+        for x in 0..tw {
+            let p = pattern.pixels[(y * step * w + x * step).min(pattern.pixels.len() - 1)];
+            let mut q = [read(p[0]), read(p[1]), read(p[2]), read(p[3])];
+            // The patch is the stamp's own graphic (a tip image drawn along the stroke), so the page
+            // around the mark is not part of it: the white is cut out and the mark keeps its own
+            // silhouette instead of stamping a square of page.
+            let page = q[3] >= 0.9 && q[0] >= 0.93 && q[1] >= 0.93 && q[2] >= 0.93 && (q[0] - q[2]).abs() <= 0.05;
+            if page {
+                q[3] = 0.0;
             }
-        }
-        // A sample of a blank area holds no mark to keep: it stays the size it was.
-        if kept.iter().any(|p| !white(p)) {
-            pixels = kept;
-        } else {
-            (tw, th) = (tw0, th0);
+            pixels.push(q);
         }
     }
-    // A canvas read of a layer that was empty in places hands over see-through texels — typically a
-    // margin around the sampled shape. The pattern is the stroke's paint, never a stencil, so the
-    // patch is cropped to the shape it actually holds and its holes are filled with the patch's own
-    // colour: tiling then leaves neither a grid of gaps nor a band of bare margin in the stroke.
+    // What is left is the graphic itself: crop to it so the stamp is the mark and not the square
+    // the sample was taken in.
     let (mut x0, mut y0, mut x1, mut y1) = (tw, th, 0usize, 0usize);
     for y in 0..th {
         for x in 0..tw {
@@ -244,24 +200,10 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
             cropped.push(pixels[(y + y0) * tw + (x + x0)]);
         }
     }
-    let mut weight = 0.0f32;
-    let mut mean = [0.0f32; 3];
-    for p in &cropped {
-        if p[3] > 0.05 {
-            weight += p[3];
-            for i in 0..3 {
-                mean[i] += p[i] * p[3];
-            }
-        }
-    }
-    for i in 0..3 {
-        mean[i] /= weight.max(0.0001);
-    }
-    let pixels: Vec<[f32; 4]> = cropped.into_iter().map(|p| if p[3] > 0.05 { [p[0], p[1], p[2], 1.0] } else { [mean[0], mean[1], mean[2], 1.0] }).collect();
     out.sampled_pattern = Some(crate::brush::ColorPattern {
         width: cw as u32,
         height: ch as u32,
-        pixels: std::sync::Arc::from(pixels),
+        pixels: std::sync::Arc::from(cropped),
     });
     out
 }

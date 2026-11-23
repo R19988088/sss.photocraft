@@ -48,72 +48,16 @@ fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
 }
 
 #[test]
-fn a_pattern_stays_where_it_is_when_the_dabs_shrink_at_pen_up() {
-    // The pattern fills the brush at the brush's size and keeps its place on the canvas. A dab's
-    // radius follows the pressure, so a scale read off a dab shrank with the stamps: the stroke
-    // changed pattern magnification from frame to frame, and the smallest stamps landing at pen-up
-    // rescaled the patch under the whole stroke — the paint then turned pale (white) wherever the
-    // magnified patch was pale.
-    let mut b = brush();
-    b.size = 40.0;
-    b.spacing = 0.05;
-    b.pressure_size = true;
-    b.texture.enabled = false;
-    b.pattern_enabled = true;
-    // eight columns, pale and dark: rescaling the patch moves the bands, so the colours on the
-    // canvas say where the pattern was read from.
-    let px: Vec<[f32; 4]> = (0..64).map(|i| if i % 8 < 4 { [0.15, 0.15, 0.15, 1.0] } else { [0.85, 0.85, 0.85, 1.0] }).collect();
-    let patch = ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) };
-    b.sampled_pattern = Some(patch.clone());
-    let eff = crate::procraft::effective(&b);
-    let ctx = BrushContext::new(&eff);
-    let scale = ctx.pattern_scale();
-    assert!((scale - 8.0 / 40.0).abs() < 1e-6, "the patch fills the brush, whatever a dab's radius is");
-
-    let mut s = Surface::new(PixelFormat::RGBA32F);
-    let pre = s.clone();
-    let mut r = StrokeRenderer::on_surface(&eff, &pre, 1.0);
-    r.use_procraft(true);
-    let pts: Vec<StrokePoint> = (0..=20).map(|i| StrokePoint::new(10.0 + i as f64 * 4.0, 30.0, (1.0 - (i as f64 / 20.0) * 0.9) as f32)).collect();
-    r.push(&pts);
-    r.finish();
-    r.composite(&pre, &mut s, None, false, true);
-    for (x, y) in [(20, 30), (50, 30), (84, 30)] {
-        let p = s.rgba(x, y);
-        assert!(p[3] > 0.1, "the stroke painted nothing at {x},{y}: {p:?}");
-        let want = patch.sample_pigment_tiled(scale * (x as f32 + 0.5), scale * (y as f32 + 0.5));
-        assert!((p[0] - want[0]).abs() < 0.06, "the pattern moved at {x},{y}: {p:?} instead of {want:?}");
-    }
-}
-
-#[test]
-fn a_tiled_pattern_has_no_seam_at_the_patch_border() {
-    // A ramp across the patch: a clamped tap at the border makes the repeat show a line where the
-    // pale side meets the dark one, so the colour has to run across the border.
-    let px: Vec<[f32; 4]> = (0..64).map(|i| { let v = (i % 8) as f32 / 7.0; [v, v, v, 1.0] }).collect();
-    let patch = ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) };
-    let scale = 8.0 / 40.0;
-    let mut last: Option<f32> = None;
-    for i in 0..2000 {
-        let x = i as f32 * 0.25;
-        let v = patch.sample_pigment_tiled(scale * x, 8.0)[0];
-        if let Some(prev) = last {
-            assert!((v - prev).abs() < 0.15, "the repeat shows a seam at x={x}: {prev} then {v}");
-        }
-        last = Some(v);
-    }
-}
-
-#[test]
-fn a_patch_with_see_through_texels_still_paints_the_whole_stroke() {
-    // A canvas read of a layer that was empty in places hands over alpha 0 texels — typically a
-    // margin around the sampled shape. The pattern is paint, not a stencil: the margin is cropped
-    // off and the shape's own holes take its colour, so tiling the patch leaves no gaps in the
-    // stroke and no band of bare margin either.
-    let px: Vec<[f32; 4]> = (0..64)
+fn a_sampled_mark_is_the_stamps_graphic() {
+    // The patch is the brush's tip graphic: the stamp takes the mark's own silhouette and the
+    // mark's own colours, so the stroke draws the graphic along the path instead of clipping a
+    // round stamp's worth of tiled pattern to the stroke's shape.
+    let px: Vec<[f32; 4]> = (0..144)
         .map(|i| {
-            let (x, y) = (i % 8, i / 8);
-            if (2..6).contains(&x) && (2..6).contains(&y) { [0.8, 0.2, 0.1, 1.0] } else { [0.0, 0.0, 0.0, 0.0] }
+            let (x, y) = (i % 12, i / 12);
+            // a diamond mark in the middle of the page
+            let d = (x as i32 - 5).abs() + (y as i32 - 5).abs();
+            if d <= 2 { [0.8, 0.2, 0.15, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }
         })
         .collect();
     let mut b = brush();
@@ -122,12 +66,12 @@ fn a_patch_with_see_through_texels_still_paints_the_whole_stroke() {
     b.color = [0.0, 0.0, 0.0, 1.0];
     b.texture.enabled = false;
     b.pattern_enabled = true;
-    b.sampled_pattern = Some(ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) });
+    b.sampled_pattern = Some(ColorPattern { width: 12, height: 12, pixels: std::sync::Arc::from(px) });
     let eff = crate::procraft::effective(&b);
     let patch = eff.sampled_pattern.as_ref().unwrap();
-    assert_eq!((patch.width, patch.height), (4, 4), "the margin around the shape is cropped");
-    assert!(patch.pixels.iter().all(|p| p[3] == 1.0), "a see-through texel is no stencil: every texel is opaque");
-    assert!((patch.pixels[0][0] - 0.8).abs() < 1e-3 && (patch.pixels[0][2] - 0.1).abs() < 1e-3, "and it carries the patch's own colour: {:?}", patch.pixels[0]);
+    assert_eq!((patch.width, patch.height), (5, 5), "the empty page around the mark is cropped");
+    let corners = patch.pixels.iter().filter(|p| p[3] < 0.05).count();
+    assert!(corners >= 8, "the graphic keeps its own silhouette, corners and all: {corners} empty texels");
 
     let mut s = Surface::new(PixelFormat::RGBA32F);
     let pre = s.clone();
@@ -136,11 +80,15 @@ fn a_patch_with_see_through_texels_still_paints_the_whole_stroke() {
     r.push(&line(12.0, 88.0, 30.0));
     r.finish();
     r.composite(&pre, &mut s, None, false, true);
-    for x in 14..86 {
-        let p = s.rgba(x, 30);
-        assert!(p[3] > 0.1, "the stroke has a gap at {x},30: {p:?}");
-        assert!(p[0] > 0.5, "the gap was painted black at {x},30: {p:?}");
-    }
+
+    // The diamond fills about half of its square, so the stroke covers markedly less than the
+    // square a stamp of the whole patch would lay, and what it covers is the mark's colour.
+    let painted = (12..88).flat_map(|x| (18..42).map(move |y| (x, y))).filter(|&(x, y)| s.rgba(x, y)[3] > 0.1).count();
+    let square = 76.0 * 40.0;
+    assert!(painted as f32 > 0.2 * square, "the stroke painted almost nothing: {painted}");
+    assert!((painted as f32) < 0.8 * square, "the stamp was not shaped by the graphic: {painted} of {square} square");
+    let p = s.rgba(50, 30);
+    assert!((p[0] - 0.8).abs() < 0.15 && (p[2] - 0.15).abs() < 0.15, "the mark's colour is not what the stamp paints: {p:?}");
 }
 
 #[test]
