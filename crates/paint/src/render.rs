@@ -1395,19 +1395,15 @@ impl LaneTransport {
 
     /// Whether the transport backend can take this lane's dabs at all: V1 only (the backend
     /// reproduces the reference's carrier feedback), no pigment branch, and pixels wide enough.
-    fn takes_backend(&self, ctx: &BrushContext) -> bool {
-        if ctx.transport().is_none() {
-            return false;
-        }
-        let m = &ctx.brush.mix_settings;
-        if !(m.smudge_enabled && m.algorithm == crate::transport::MixAlgorithm::V1) || m.blur_color_target.is_some() {
-            return false;
-        }
-        // `over_carried`'s pigment branch and the premultiplied-alpha maths are CPU-only for now.
-        if ctx.brush.pigment_mix_strength > 0.0 || self.mix.format().channels() != 4 || alpha_index(&self.mix.format()) != Some(3) {
-            return false;
-        }
-        true
+    ///
+    /// Off: mixing runs the lane the 0.23.5 brushes mixed with — every dab's paint taken up on the
+    /// CPU (`Transport::smudge_dab`) over the region the dabs actually cover. The backend hands a
+    /// dab's whole square to a rect-strength pass, and what it leaves beside the dab's own shape
+    /// reads as squares of the layer under the stroke (white patches in a smudge, dark ones where
+    /// two carriers met). The CPU lane is the one the early brushes proved out, and its cost is a
+    /// dab's own footprint, not a readback.
+    fn takes_backend(&self, _ctx: &BrushContext) -> bool {
+        false
     }
 
     /// Run this frame's queued dabs on the transport backend (or, when it refuses, on the CPU),
@@ -1842,7 +1838,10 @@ impl StrokeRenderer {
     pub fn new(brush: &BrushSettings, fmt: Option<PixelFormat>, zoom: f32) -> Self {
         // Under ProCraft's brush the pattern is grain, not a second colour lane: one pipeline for
         // it, and a textured stroke then costs what a solid one costs (see `procraft::effective`).
-        let effective = crate::procraft::enabled().then(|| crate::procraft::effective(brush));
+        // A stroke that mixes keeps the app's own dabs: ProCraft's brush lays paint and does not
+        // carry it, so its stamps cannot drive the mixing lane (see `procraft::draws`).
+        let procraft = crate::procraft::draws(brush);
+        let effective = procraft.then(|| crate::procraft::effective(brush));
         let brush = effective.as_ref().unwrap_or(brush);
         let single = brush.wet_edges
             && brush.wet_edge.as_ref().is_some_and(|w| w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
@@ -1859,7 +1858,7 @@ impl StrokeRenderer {
         Self {
             ctx: BrushContext::new(brush),
             generator: DabGenerator::new(brush, zoom),
-            procraft: crate::procraft::enabled().then(|| std::sync::Arc::new(std::sync::Mutex::new(ProCraftStroke::new(brush)))),
+            procraft: procraft.then(|| std::sync::Arc::new(std::sync::Mutex::new(ProCraftStroke::new(brush)))),
             cov: CoverageMap::new(nc),
             dual: brush
                 .dual_brush

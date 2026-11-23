@@ -120,6 +120,22 @@ pub fn enabled() -> bool {
     })
 }
 
+/// Whether this stroke is drawn by ProCraft's brush.
+///
+/// Not a stroke that mixes: a smudge or a mixer carries paint from dab to dab, which ProCraft's
+/// brush does not do — its mixing lives in its own smudge tool, on its own canvas. Driving this
+/// app's mixing lane with ProCraft's stamps put the two models at odds (square patches of the
+/// canvas restored over the stroke), so a mixing stroke keeps the app's own dabs, the way the
+/// 0.23.5 brushes did, and only a brush that lays paint comes from ProCraft.
+pub fn draws(brush: &crate::brush::BrushSettings) -> bool {
+    enabled() && !mixing(brush)
+}
+
+/// Whether the stroke takes paint up from the canvas as it goes.
+pub fn mixing(brush: &crate::brush::BrushSettings) -> bool {
+    brush.mix_settings.enabled || brush.pigment_mix_strength > 0.0
+}
+
 /// The finest spacing a smudge is drawn at, as a fraction of the stamp diameter.
 ///
 /// A smudge carries colour instead of laying it: its stamps smear the same paint along, so it needs
@@ -503,6 +519,20 @@ mod tests {
         assert_eq!(quiet.shape.count, 1);
         assert_eq!(quiet.shape.throw, 0.0);
         assert_eq!(quiet.rendering, procraft_engine::brush::Rendering::BuildUp);
+    }
+
+    #[test]
+    fn a_mixing_stroke_keeps_this_apps_own_dabs() {
+        let mut settings = BrushSettings::default();
+        assert!(mixing(&settings) == false);
+        assert!(draws(&settings) || !enabled());
+        settings.mix_settings.enabled = true;
+        assert!(mixing(&settings), "a smudge or a mixer takes paint up as it goes");
+        assert!(!draws(&settings), "ProCraft's brush cannot carry the paint a mixing lane needs");
+        settings.mix_settings.enabled = false;
+        settings.pigment_mix_strength = 0.4;
+        assert!(mixing(&settings), "a pigment response mixes with what is under it");
+        assert!(!draws(&settings));
     }
 
     #[test]

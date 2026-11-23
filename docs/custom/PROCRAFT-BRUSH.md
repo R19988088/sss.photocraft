@@ -90,6 +90,13 @@ own; done that way, pen-up is 0.19 ms.
 
 ## What is left
 
+0. **Which strokes ProCraft draws**: a brush that lays paint (`procraft::draws`). A stroke that mixes
+   — a smudge, a mixer, a pigment response — keeps this app's own dabs and its CPU transport lane
+   (`Transport::smudge_dab`, the lane the 0.23.5 brushes mixed with). ProCraft's brush lays stamps
+   and does not carry paint between them, and the GPU transport backend hands a dab's whole square
+   to a rect-strength pass: either one leaves squares of the layer under the stroke (white patches
+   in a smudge). `takes_backend` is off for the same reason.
+
 1. **The smudge lane**: ProCraft's `smudge.wgsl` (pigment lay/carry, the warped window) instead of
    this app's transport. That is the 44.55 ms. Measured on its own canvas
    (`cargo run --release -p procraft-gpu --example smudge_stroke`): the API drives, no GPU errors,

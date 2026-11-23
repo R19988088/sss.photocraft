@@ -290,7 +290,7 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let taper_lands = brush.taper.enabled
         && brush.taper.size > 0.0
         && !brush.paints_in_place()
-        && !photocraft_paint::procraft::enabled();
+        && !photocraft_paint::procraft::draws(&brush);
     let mut pts = pts;
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
