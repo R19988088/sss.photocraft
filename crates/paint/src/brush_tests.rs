@@ -2602,3 +2602,51 @@ fn a_dual_brush_can_have_a_smudge_of_its_own() {
     // The first half keeps its own rule, untouched.
     assert!(parent.mix_settings.strength <= 1.0);
 }
+
+#[test]
+#[ignore = "the second lane's transported colour never reaches the pixels: it has no colour composite"]
+fn the_second_half_pulls_canvas_colour_of_its_own() {
+    use crate::transport::{BrushMixSettings, MixAlgorithm};
+
+    // White canvas, blue stroke: with the second half mixing, it drags the canvas's white into the
+    // stroke where the first half laid paint; without it, it only adds coverage and nothing moves.
+    let run = |second_mixes: bool| {
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
+        let mut b = BrushSettings {
+            size: 40.0,
+            hardness: 1.0,
+            spacing: 0.25,
+            flow: 1.0,
+            opacity: 1.0,
+            color: [0.1, 0.3, 0.9, 1.0],
+            mix_settings: BrushMixSettings::default(),
+            ..brush()
+        };
+        b.dual_brush.enabled = true;
+        b.dual_brush.secondary_strength = 1.0;
+        b.dual_brush.mode = MaskMode::Normal;
+        b.dual_brush.size = 60.0;
+        b.dual_brush.spacing = 0.25;
+        b.dual_brush.flow = 1.0;
+        b.dual_brush.opacity = 1.0;
+        if second_mixes {
+            b.dual_brush.mix_settings = Some(Box::new(BrushMixSettings {
+                enabled: true,
+                smudge_enabled: true,
+                strength: 0.9,
+                algorithm: MixAlgorithm::V1,
+                ..Default::default()
+            }));
+        }
+        let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s
+    };
+
+    let plain = run(false).rgba(60, 60);
+    let mixing = run(true).rgba(60, 60);
+    assert!(
+        mixing[2] > plain[2] + 0.02,
+        "the second half's own smudge must pull the canvas into the stroke: {plain:?} vs {mixing:?}"
+    );
+}
