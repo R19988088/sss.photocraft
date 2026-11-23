@@ -1359,15 +1359,52 @@ impl ColorPattern {
     }
     /// As [`ColorPattern::sample_pigment`], with the patch repeating across the canvas: the
     /// coordinates wrap into the patch, so a stroke reads the same patch square at the same pixel
-    /// however many dabs cover it — no per-dab offsets to average into one muddy colour.
+    /// however many dabs cover it - no per-dab offsets to average into one muddy colour.
+    ///
+    /// Both the taps and their interpolation wrap, so the colours run across the patch border and
+    /// the repeat leaves no seam: `sample_pigment` clamps its taps to the edge, which puts a line
+    /// at every tile.
     pub fn sample_pigment_tiled(&self, x: f32, y: f32) -> [f32; 4] {
-        let (w, h) = (self.width as f32, self.height as f32);
-        if w <= 0.0 || h <= 0.0 {
+        let center = self.sample_wrapping(x, y);
+        if center[3] <= 0.0001 {
+            return center;
+        }
+        if self.width < 2 || self.height < 2 || self.pixels.len() < (self.width * self.height) as usize {
+            return center;
+        }
+        let mut sum = [center[0] * center[3] * 4.0, center[1] * center[3] * 4.0, center[2] * center[3] * 4.0];
+        let mut weight = center[3] * 4.0;
+        for (dx, dy) in [(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            let p = self.sample_wrapping(x + dx, y + dy);
+            weight += p[3];
+            for i in 0..3 {
+                sum[i] += p[i] * p[3];
+            }
+        }
+        [sum[0] / weight.max(0.0001), sum[1] / weight.max(0.0001), sum[2] / weight.max(0.0001), center[3]]
+    }
+
+    /// Bilinear sample of the patch seen as an endless plane: the texels behind the taps and behind
+    /// the interpolation wrap around the border instead of clamping.
+    pub fn sample_wrapping(&self, x: f32, y: f32) -> [f32; 4] {
+        let (w, h) = (self.width as usize, self.height as usize);
+        if w == 0 || h == 0 || self.pixels.len() < w * h {
             return [0.0; 4];
         }
-        let x = (x + w * 0.5).rem_euclid(w) - w * 0.5;
-        let y = (y + h * 0.5).rem_euclid(h) - h * 0.5;
-        self.sample_pigment(x, y)
+        let tx = x + w as f32 * 0.5 - 0.5;
+        let ty = y + h as f32 * 0.5 - 0.5;
+        let fx = tx.floor();
+        let fy = ty.floor();
+        let (ux, uy) = (tx - fx, ty - fy);
+        let ix = (fx as i64).rem_euclid(w as i64) as usize;
+        let iy = (fy as i64).rem_euclid(h as i64) as usize;
+        let (ix1, iy1) = ((ix + 1) % w, (iy + 1) % h);
+        let at = |xx: usize, yy: usize| self.pixels[yy * w + xx];
+        let a = at(ix, iy);
+        let b = at(ix1, iy);
+        let c = at(ix, iy1);
+        let d = at(ix1, iy1);
+        std::array::from_fn(|i| (a[i] + (b[i] - a[i]) * ux) * (1.0 - uy) + (c[i] + (d[i] - c[i]) * ux) * uy)
     }
 
     pub fn sample(&self, x: f32, y: f32) -> [f32; 4] {

@@ -87,6 +87,24 @@ fn a_pattern_stays_where_it_is_when_the_dabs_shrink_at_pen_up() {
 }
 
 #[test]
+fn a_tiled_pattern_has_no_seam_at_the_patch_border() {
+    // A ramp across the patch: a clamped tap at the border makes the repeat show a line where the
+    // pale side meets the dark one, so the colour has to run across the border.
+    let px: Vec<[f32; 4]> = (0..64).map(|i| { let v = (i % 8) as f32 / 7.0; [v, v, v, 1.0] }).collect();
+    let patch = ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) };
+    let scale = 8.0 / 40.0;
+    let mut last: Option<f32> = None;
+    for i in 0..2000 {
+        let x = i as f32 * 0.25;
+        let v = patch.sample_pigment_tiled(scale * x, 8.0)[0];
+        if let Some(prev) = last {
+            assert!((v - prev).abs() < 0.15, "the repeat shows a seam at x={x}: {prev} then {v}");
+        }
+        last = Some(v);
+    }
+}
+
+#[test]
 fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
     let mut b = brush();
     b.pattern_enabled = true;

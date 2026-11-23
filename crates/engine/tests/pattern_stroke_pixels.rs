@@ -9,11 +9,13 @@ fn session_with_patch() -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width":120,"height":80,"depth":8,"mode":"rgb","background":"white"})).unwrap();
     s.execute("layer.new.layer", json!({})).unwrap();
-    // A checkerboard of two colours nothing else in the stroke is: every dab shows both.
+    // Two bands of colours nothing else in the stroke is. Wide bands on purpose: the pattern sample
+    // is an alpha-weighted five-tap read, so a one-texel checkerboard would average into one grey
+    // and say nothing about whether the patch is what the stroke paints.
     let mut pixels = Vec::new();
-    for y in 0..8 {
+    for _y in 0..8 {
         for x in 0..8 {
-            pixels.push(if (x + y) % 2 == 0 { [0.1, 0.3, 0.9, 1.0] } else { [0.9, 0.8, 0.1, 1.0] });
+            pixels.push(if x < 4 { [0.1, 0.3, 0.9, 1.0] } else { [0.9, 0.8, 0.1, 1.0] });
         }
     }
     s.tools.brush.pattern_enabled = true;
@@ -30,11 +32,6 @@ fn a_sampled_pattern_stroke_paints_the_patch() {
     let st = s.active().unwrap();
     let surf = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
     let mut black = 0;
-    let mut blue = 0;
-    let mut yellow = 0;
-    for (x, y) in [(28, 40), (40, 40), (56, 40), (72, 40), (88, 40)] {
-        println!("at {x},{y}: {:?}", surf.rgba(x, y));
-    }
     let mut blue = 0;
     let mut yellow = 0;
     for y in 30..50 {
