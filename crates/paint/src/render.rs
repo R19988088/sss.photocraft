@@ -2289,9 +2289,9 @@ impl StrokeRenderer {
                         serial(row, out, alpha);
                     }
                 }
-                for (coverage, alpha) in self.scratch.iter_mut().zip(&self.pattern_alpha) {
-                    *coverage *= *alpha;
-                }
+                // The pattern is the stroke's paint, not its shape: its alpha does not scale the
+                // dab's coverage, or a patch read off a partly empty layer would cut a grid of
+                // gaps into the stroke (`procraft::effective` makes the patch opaque).
                 Some((colors.as_slice(), true))
             } else {
                 match (self.per_dab_color, self.fmt, single) {
@@ -2409,14 +2409,13 @@ impl StrokeRenderer {
                     colors.clear();
                     let width = rect.width() as usize;
                     let pattern_scale = ctx.pattern_scale();
-                    for (i, coverage) in self.scratch.iter_mut().enumerate() {
+                    for (i, _) in self.scratch.iter().enumerate() {
                         let mut rgba = if ctx.brush.pattern_enabled {
                             if let Some(p) = &ctx.brush.sampled_pattern {
                                 let rgba = p.sample_pigment_tiled(
                                     pattern_scale * (rect.x0 as f32 + (i % width) as f32 + 0.5),
                                     pattern_scale * (rect.y0 as f32 + (i / width) as f32 + 0.5),
                                 );
-                                *coverage *= rgba[3];
                                 rgba
                             } else {
                                 d.color

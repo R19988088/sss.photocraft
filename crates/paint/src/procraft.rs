@@ -169,9 +169,49 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
             })
         })
         .collect();
+    // A canvas read of a layer that was empty in places hands over see-through texels — typically a
+    // margin around the sampled shape. The pattern is the stroke's paint, never a stencil, so the
+    // patch is cropped to the shape it actually holds and its holes are filled with the patch's own
+    // colour: tiling then leaves neither a grid of gaps nor a band of bare margin in the stroke.
+    let (mut x0, mut y0, mut x1, mut y1) = (tw, th, 0usize, 0usize);
+    for y in 0..th {
+        for x in 0..tw {
+            if pixels[y * tw + x][3] > 0.05 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    if x0 >= x1 || y0 >= y1 {
+        plain(&mut out);
+        return out;
+    }
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    let mut cropped: Vec<[f32; 4]> = Vec::with_capacity(cw * ch);
+    for y in 0..ch {
+        for x in 0..cw {
+            cropped.push(pixels[(y + y0) * tw + (x + x0)]);
+        }
+    }
+    let mut weight = 0.0f32;
+    let mut mean = [0.0f32; 3];
+    for p in &cropped {
+        if p[3] > 0.05 {
+            weight += p[3];
+            for i in 0..3 {
+                mean[i] += p[i] * p[3];
+            }
+        }
+    }
+    for i in 0..3 {
+        mean[i] /= weight.max(0.0001);
+    }
+    let pixels: Vec<[f32; 4]> = cropped.into_iter().map(|p| if p[3] > 0.05 { [p[0], p[1], p[2], 1.0] } else { [mean[0], mean[1], mean[2], 1.0] }).collect();
     out.sampled_pattern = Some(crate::brush::ColorPattern {
-        width: tw as u32,
-        height: th as u32,
+        width: cw as u32,
+        height: ch as u32,
         pixels: std::sync::Arc::from(pixels),
     });
     out

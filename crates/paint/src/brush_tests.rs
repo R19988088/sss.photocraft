@@ -105,6 +105,45 @@ fn a_tiled_pattern_has_no_seam_at_the_patch_border() {
 }
 
 #[test]
+fn a_patch_with_see_through_texels_still_paints_the_whole_stroke() {
+    // A canvas read of a layer that was empty in places hands over alpha 0 texels — typically a
+    // margin around the sampled shape. The pattern is paint, not a stencil: the margin is cropped
+    // off and the shape's own holes take its colour, so tiling the patch leaves no gaps in the
+    // stroke and no band of bare margin either.
+    let px: Vec<[f32; 4]> = (0..64)
+        .map(|i| {
+            let (x, y) = (i % 8, i / 8);
+            if (2..6).contains(&x) && (2..6).contains(&y) { [0.8, 0.2, 0.1, 1.0] } else { [0.0, 0.0, 0.0, 0.0] }
+        })
+        .collect();
+    let mut b = brush();
+    b.size = 40.0;
+    b.spacing = 0.1;
+    b.color = [0.0, 0.0, 0.0, 1.0];
+    b.texture.enabled = false;
+    b.pattern_enabled = true;
+    b.sampled_pattern = Some(ColorPattern { width: 8, height: 8, pixels: std::sync::Arc::from(px) });
+    let eff = crate::procraft::effective(&b);
+    let patch = eff.sampled_pattern.as_ref().unwrap();
+    assert_eq!((patch.width, patch.height), (4, 4), "the margin around the shape is cropped");
+    assert!(patch.pixels.iter().all(|p| p[3] == 1.0), "a see-through texel is no stencil: every texel is opaque");
+    assert!((patch.pixels[0][0] - 0.8).abs() < 1e-3 && (patch.pixels[0][2] - 0.1).abs() < 1e-3, "and it carries the patch's own colour: {:?}", patch.pixels[0]);
+
+    let mut s = Surface::new(PixelFormat::RGBA32F);
+    let pre = s.clone();
+    let mut r = StrokeRenderer::on_surface(&eff, &pre, 1.0);
+    r.use_procraft(true);
+    r.push(&line(12.0, 88.0, 30.0));
+    r.finish();
+    r.composite(&pre, &mut s, None, false, true);
+    for x in 14..86 {
+        let p = s.rgba(x, 30);
+        assert!(p[3] > 0.1, "the stroke has a gap at {x},30: {p:?}");
+        assert!(p[0] > 0.5, "the gap was painted black at {x},30: {p:?}");
+    }
+}
+
+#[test]
 fn a_pattern_with_no_readable_pixels_leaves_the_brush_plain() {
     let mut b = brush();
     b.pattern_enabled = true;
