@@ -270,6 +270,39 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
   item / class 铺平 / list / 混入非画笔 / 无画笔报错 / version 3）。真实文件实测过
   `.abr`×2 与 `.brushset`（30 个预设）；其它格式（`kpp/.bundle/gbr/gih/.myb/.sai2/.gobrush/.mdp/.sut/`
   Painter 库）目前只有合成用例或完全没测，用户报障时优先要样本文件。
+- 2026-11-24 复核：`engine.commands` 里 `brush.presets.importAbr/importBrushFile/importImage`、
+  `gradient.presets.importGrd`、`style.presets.importAsl`、`pattern.import`、`swatches.import`、
+  `shape.presets.importCsh` 全部注册；`preset_files_ui.rs` 的扩展名表（`PRESET_EXTS` /
+  `BRUSH_FILE_EXTS`）与 `open()` 的 ext→命令表一一对上。`read_any` 实测：`0001.abr` → 1 个、
+  `书法笔刷发D大.abr` → 2 个（warnings：`phry` 文件夹里 0 个 → 退回顶层；`useBrushSize` 无对应项）、
+  `PW4-常用水彩2026(1).brushset` → 30 个；合成 `.gbr`/`.myb` 正常，垃圾字节给明确报错不 panic。
+  **注意**：控制通道的 `importAbr/importBrushFile` 只接受 `data`（base64），不接受 `path`
+  （automation 的 ambient-path 限制）；单行 payload 约 6 MB 以上会被断开，大文件只能走 UI 或库层测。
+
+## 5c. 混色笔：笔触必须能盖住旧的（`MIX_SHARE`，2026-11-24）
+
+用户口径：**混色可以，但新笔触必须能覆盖之前的内容**（「后来用力下笔的部分无法覆盖开始的部分」）。
+根因是 carried（吸起来的画布颜色）在满覆盖时整块替换像素（GPU `smudge.wgsl::deposit` 的
+`mix(w, moved, m*g)`、CPU `render.rs::transported_output::under` 的旧式 `above = out.a*(1-k)`），
+而混合强度 100 % 时 paint 根本进不了像素——实测「橙底上画白」白占比 0 %（强度 0.5 是 67 %）。
+
+现在的口径：**carried 与笔刷色共享像素，永不取代它**。两条管线同一个常量：
+
+- GPU：`smudge.wgsl` 的 `MIX_SHARE = 0.25` + `clamped_paint_share(laid)`；`deposit()` 在两个 mode
+  分支之后、`pigment_lay` 之前按 `share * paint_over` 混入画笔色；`paint_over` 由 `canvas.rs`
+  的 `smudge_uniform` 填（仅 `StrokeTool::Paint` 且 `wet_pull.is_none()`，即干性混色笔；
+  湿画 / Smudge / Erase / 预览不动）。
+- CPU（`photocraft-paint`，也是测试口径）：`render.rs::transported_output` 里
+  `const MIX_SHARE: f32 = 0.25`，`under(out, value, k, cover)` 的权重 = `k * (1 - (1-MIX_SHARE)*cover)`，
+  直接线性混合（alpha 仍取笔触自己那份）。
+- 实测（真实笔刷、画笔板、`paint.stroke` + `document.pixel`）：混合强度 1.0 时白占 75–80 %
+  （改前 0 %），0.5 时 88 %，0.25 时 93 %；旧的暗色笔迹上叠白 75 %。混色拖色仍在（换 `MIX_SHARE`
+  越小越偏覆盖，越大越偏混色）。
+- 单测口径改成新契约：`brush_tests::a_mixing_stroke_covers_what_was_under_it`（满覆盖要上色）、
+  `mixing_lays_the_carried_colour_under_the_strokes_own` 删掉，`mixing_drags_the_paint_under_the_stroke`
+  的强度改成 0.6/0.9（满覆盖时拖色被 `MIX_SHARE` 压到 1/4，低于这个强度就低于 0.05 的断言阈值）、
+  `low_mixing_keeps_...` 的边缘比较改成「开/关混色的像素差」，`the_live_renderer_only_mixes...`
+  从「拖色取代笔刷色」改成「笔刷色为主、拖色着色」。**改常量时这 5 条要一起看**。
 
 ## 6. 交付物
 

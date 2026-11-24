@@ -2403,26 +2403,32 @@ fn low_mixing_keeps_the_stroke_colour_and_drags_less_at_the_tip_edge() {
     assert!(light[2] > 0.9, "15% mixing must keep the stroke's own colour: {light:?}");
     let strong = run(0.9).rgba(60, 60);
     assert!(strong[2] > light[2], "more mixing must drag in more canvas colour: {light:?} vs {strong:?}");
-    // The tip's soft edge covers less, so the drag recorded there is weaker than in the body.
-    let b = BrushSettings {
-        size: 40.0,
-        hardness: 0.4,
-        spacing: 0.25,
-        flow: 0.6,
-        color: [0.1, 0.3, 0.9, 1.0],
-        mix_settings: BrushMixSettings { enabled: true, strength: 0.9, algorithm: MixAlgorithm::V1, ..Default::default() },
-        ..brush()
+    // The tip's soft edge covers less, so what the drag does there is weaker than in the body:
+    // compare the pixel with mixing on against the same pixel with it off.
+    let stroke = |mix: bool| {
+        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
+        let b = BrushSettings {
+            size: 40.0,
+            hardness: 0.4,
+            spacing: 0.25,
+            flow: 0.6,
+            color: [0.1, 0.3, 0.9, 1.0],
+            mix_settings: BrushMixSettings { enabled: mix, strength: 0.9, algorithm: MixAlgorithm::V1, ..Default::default() },
+            ..brush()
+        };
+        let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
+        render_stroke(&mut s, &b, &points, None, false, 1.0);
+        s
     };
-    let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
-    let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
-    render_stroke(&mut s, &b, &points, None, false, 1.0);
-    let weights = |y: i32| s.rgba(60, y)[2];
+    let on = stroke(true);
+    let off = stroke(false);
+    let drag = |y: i32| (0..3).map(|i| (on.rgba(60, y)[i] - off.rgba(60, y)[i]).abs()).fold(0.0, f32::max);
     // 60 is the stroke's centre; 41 sits in the nib's soft falloff.
     assert!(
-        weights(41) < weights(60),
+        drag(41) < drag(60),
         "the drag must be weaker at the nib's edge than in its body: {} vs {}",
-        weights(41),
-        weights(60)
+        drag(41),
+        drag(60)
     );
 }
 
@@ -2534,7 +2540,7 @@ fn mixing_smears_the_layer_across_a_soft_low_flow_seam() {
     // smear has to be strongest right at the seam. The colour-output pipeline still paints its own
     // colour over that layer, so the drag shows through the stroke's own translucency.
     assert!(on[1][1] < 0.8, "the seam colour must be carried past the boundary: {:?}", on[1]);
-    assert!(on[2][1] < 0.95 && on[2][0] > on[2][2], "the drag must keep trailing further out: {:?}", on[2]);
+    assert!(on[2][1] < 0.95 && on[2][0] > off[2][0] + 0.1, "the drag must keep trailing further out: {:?} vs {:?}", on[2], off[2]);
 }
 
 #[test]
@@ -2559,9 +2565,11 @@ fn mixing_drags_the_paint_under_the_stroke() {
     for algorithm in [MixAlgorithm::V1, MixAlgorithm::V2, MixAlgorithm::V3] {
         let plain = stroke(algorithm, false, 0.0, 0.0).rgba(32, 32);
         assert!(plain[2] < 0.05, "{algorithm:?}: without mixing the stroke is the brush colour: {plain:?}");
-        for strength in [0.3, 0.6] {
+        // The stroke keeps its own colour (the paint holds the pixel, MIX_SHARE in `render`), so
+        // more mixing shows as more of the canvas colour inside it, at 60 % and above.
+        for strength in [0.6, 0.9] {
             let mixed = stroke(algorithm, true, strength, 0.0).rgba(32, 32);
-            assert!(mixed[2] > 0.1, "{algorithm:?} at strength {strength}: mixing must pull the canvas colour into the stroke: {mixed:?}");
+            assert!(mixed[2] > 0.05, "{algorithm:?} at strength {strength}: mixing must pull the canvas colour into the stroke: {mixed:?}");
         }
         // Enabling the section with a still-zero strength is a legacy/preset state, not "off".
         let healed = stroke(algorithm, true, 0.0, 0.0).rgba(32, 32);
@@ -2819,43 +2827,55 @@ fn a_dual_brush_without_whole_parameters_has_no_second_half_of_its_own() {
     assert_eq!(second.color, parent.color);
 }
 
+
 #[test]
-fn mixing_lays_the_carried_colour_under_the_strokes_own() {
+fn a_mixing_stroke_covers_what_was_under_it() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
 
-    // C3's order: what the nib carried lies beneath the colour it lays, and the stroke's colour
-    // lets it through by the weight the transport recorded. The stroke never drops its own colour
-    // from the pixel; at a strong mix the carried colour simply shows through it.
-    let run = |mixing: bool| {
-        let mut s = Surface::with_default(PixelFormat::RGBA32F, &[1.0, 1.0, 1.0, 1.0]);
+    // The bug this pins: at a strong mix the nib carried the canvas colour and laid it whole, so
+    // the stroke's own colour never reached the pixel and no new stroke could cover an old one.
+    // The carried colour lies *under* the paint now: a full nib covers, and mixing shows only
+    // where the dab leaves the pixel part empty.
+    let orange = [0.82, 0.41, 0.12, 1.0];
+    let run = |flow: f32, mixing: bool| {
+        let mut s = Surface::new(PixelFormat::RGBA32F);
+        s.fill_rect(Rect::new(0, 0, 64, 64), &orange);
         let b = BrushSettings {
-            size: 40.0,
-            hardness: 0.5,
+            size: 24.0,
+            hardness: 0.7,
             spacing: 0.25,
-            flow: 1.0,
+            flow,
             opacity: 1.0,
-            color: [0.1, 0.3, 0.9, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             mix_settings: BrushMixSettings {
                 enabled: mixing,
                 smudge_enabled: true,
-                strength: 0.9,
+                strength: 1.0,
                 algorithm: MixAlgorithm::V1,
+                output_strength: 1.0,
                 ..Default::default()
             },
             ..brush()
         };
-        let points = [StrokePoint::new(10.0, 60.0, 1.0), StrokePoint::new(110.0, 60.0, 1.0)];
+        let points = [StrokePoint::new(8.0, 32.0, 1.0), StrokePoint::new(56.0, 32.0, 1.0)];
         render_stroke(&mut s, &b, &points, None, false, 1.0);
-        s
+        s.rgba(32, 32)
     };
 
-    let plain = run(false).rgba(60, 60);
-    let mixed = run(true).rgba(60, 60);
-    assert!(plain[2] > 0.85, "a plain stroke lays its own blue: {plain:?}");
-    assert!(mixed[3] > 0.99, "the pixel stays opaque: {mixed:?}");
+    let plain = run(1.0, false);
+    assert!(plain[1] > 0.95, "a plain stroke lays its white: {plain:?}");
+    let mixed = run(1.0, true);
     assert!(
-        mixed[0] > plain[0] + 0.005 && mixed[1] > plain[1] + 0.005,
-        "the carried white shows through the stroke's own colour: {plain:?} vs {mixed:?}"
+        mixed[1] > 0.7,
+        "at 100 % mixing the stroke still lays its own colour over the old orange instead of \
+         carrying it whole: {mixed:?}"
     );
-    assert!(mixed[2] > 0.3, "the stroke's own blue is still in the pixel: {mixed:?}");
+    assert!(mixed[3] > 0.99, "the pixel stays opaque: {mixed:?}");
+
+    // A thin dab (low flow) leaves the pixel part empty, and there the carried orange is mixed in.
+    let thin = run(0.25, true);
+    assert!(
+        thin[1] < 0.9 && thin[2] < plain[2] - 0.01,
+        "a thin dab still mixes the old paint in: {thin:?}"
+    );
 }

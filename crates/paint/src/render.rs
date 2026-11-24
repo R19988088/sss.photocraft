@@ -2782,27 +2782,24 @@ impl StrokeRenderer {
         // exactly; the two pipelines live on separate surfaces, so blurring never eats the drag and
         // the drag never samples a blurred layer.
         //
+        // The most of a pixel the carried colour keeps when the dab lays its paint full: a mixing
+        // brush mixes, it never paints over the stroke's own colour. Where the dab lays no paint
+        // the drag is the whole of the pixel, as it always was.
+        const MIX_SHARE: f32 = 0.25;
         // The mixed colour lies *under* the stroke's own: what the nib picked up and carried sits
-        // beneath the colour it lays, and the stroke's colour lets it through by the weight the
-        // pipeline recorded — C3's order, the mix below and the tip above. At a light mix the
-        // stroke's colour is nearly all of the pixel; at a strong one the carried colour shows
-        // through it, and the stroke's colour is never dropped from the pixel.
-        let under = |out: [f32; 4], value: [f32; 4], k: f32| {
+        // beneath the colour it lays — C3's order, the mix below and the tip above. The carried
+        // colour shares the pixel with the paint, it never stands in for it, so at 100 % mixing a
+        // stroke still lays its colour and covers what was under it; it used to lay nothing at all.
+        let under = |out: [f32; 4], value: [f32; 4], k: f32, cover: f32| {
             let k = k.clamp(0.0, 1.0);
-            let carried = (value[3] * k).clamp(0.0, 1.0);
-            if carried <= 0.0 {
+            if value[3] <= 0.0 {
                 return out;
             }
-            // The carried colour lies within the painted pixel, so the pixel keeps the alpha the
-            // stroke laid; only its colour is shared between the two.
-            let above = (out[3] * (1.0 - k)).clamp(0.0, 1.0);
-            let total = above + carried * (1.0 - above);
-            if total <= 0.000001 {
-                return out;
-            }
+            // The denser the dab lays its paint at this pixel, the smaller the part the mix keeps.
+            let share = (k * (1.0 - (1.0 - MIX_SHARE) * cover.clamp(0.0, 1.0))).clamp(0.0, 1.0);
             std::array::from_fn(|i| {
                 if i < 3 {
-                    (out[i] * above + value[i] * carried * (1.0 - above)) / total
+                    out[i] * (1.0 - share) + value[i] * share
                 } else {
                     out[3]
                 }
@@ -2810,19 +2807,20 @@ impl StrokeRenderer {
         };
         let pipelines = |map: &CoverageMap, t: &LaneTransport, base: [f32; 4]| {
             let weights = map.transport_weights(x, y);
+            let cover = map.get(x, y);
             let mut out = base;
             if weights[1] > 0.0
                 && let Some(blur) = t.blur.as_ref()
             {
                 let value = blur.rgba(x, y);
                 if value[3] > 0.0 {
-                    out = under(out, value, weights[1]);
+                    out = under(out, value, weights[1], cover);
                 }
             }
             if weights[0] > 0.0 {
                 let value = t.mix.rgba(x, y);
                 if value[3] > 0.0 {
-                    out = under(out, value, weights[0]);
+                    out = under(out, value, weights[0], cover);
                 }
             }
             out
@@ -3623,13 +3621,32 @@ mod material_regression {
         };
         let (unattached_has_lanes, plain) = render(false);
         assert!(!unattached_has_lanes, "`new` must not fake a transport lane");
-        // 100% mixing never paints the brush colour: every covered pixel carries the layer's own
-        // colour, dragged along the stroke (red inside the red half, red still trailing in white).
+        // 100% mixing lays the brush colour over the dragged one: every covered pixel keeps its own
+        // colour, tinted by the layer's colour dragged along the stroke (red inside the red half,
+        // red still trailing in white).
         assert!(plain[0][2] < 0.9, "without a transport the stroke is the brush colour: {:?}", plain[0]);
         let (attached_has_lanes, mixed) = render(true);
         assert!(attached_has_lanes, "attaching the start pixels must create the lane");
-        assert!(mixed[0][0] > 0.5 && mixed[0][2] < 0.6, "the dragged colour must replace the brush colour: {:?}", mixed[0]);
-        assert!(mixed[1][0] > 0.5 && mixed[1][1] < 0.6, "the drag must follow into the white half: {:?}", mixed[1]);
+        // At 100 % mixing the stroke lays its own colour and the carried red tints it: the drag
+        // shares the pixel, it does not stand in for the brush colour.
+        assert!(
+            mixed[0][2] > 0.4 && mixed[0][2] < plain[0][2],
+            "the brush colour must dominate the pixel, with the drag only tinting it: {:?} vs {:?}",
+            mixed[0],
+            plain[0]
+        );
+        assert!(
+            mixed[0][0] > plain[0][0] + 0.05,
+            "the carried red must show in the pixel: {:?} vs {:?}",
+            mixed[0],
+            plain[0]
+        );
+        assert!(
+            mixed[1][0] > plain[1][0] + 0.05 && mixed[1][1] < 0.6,
+            "the drag must follow into the white half: {:?} vs {:?}",
+            mixed[1],
+            plain[1]
+        );
     }
 
     #[test]

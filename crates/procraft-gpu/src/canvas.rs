@@ -1407,7 +1407,9 @@ fn smudge_uniform(
         // 颜料混合: the strength every canvas mixes by, 0 where the table isn't in the build or the
         // device can't hold it
         pigment: pigment_strength,
-        pigment_pad: [0.0; 3],
+        // our own dry mixing strokes paint as well as carry (see the shader's `deposit`): the
+        // carried colour lies under the stroke's own, so a full nib covers what was there
+        pigment_pad: [if style.tool == StrokeTool::Paint && style.wet_pull.is_none() { 1.0 } else { 0.0 }, 0.0, 0.0],
     }
 }
 

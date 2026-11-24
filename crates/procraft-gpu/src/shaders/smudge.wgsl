@@ -146,7 +146,9 @@ struct SmudgeStamp {
     sharpen: f32,
     // 颜料混合: how strongly the paint mixes with the layer as a pigment (0..1; 0 without the table)
     pigment: f32,
-    pigment_pad0: f32,
+    // whether the stroke lays its own paint over what the brush carries (1) or only carries it (0):
+    // see `deposit`, and the two words kept for the struct's alignment
+    paint_over: f32,
     pigment_pad1: f32,
     pigment_pad2: f32,
 }
@@ -521,6 +523,16 @@ fn carried(p: vec2<i32>) -> vec4<f32> {
 // how far a stamp's quad reaches past the stamp each way (pixels)
 const QUAD_REACH: f32 = 0.70710678;
 
+// the most of a pixel the carried colour keeps where the stamp lays its paint full: a mixing brush
+// mixes, it never paints over the stroke's own colour (see `deposit`)
+const MIX_SHARE: f32 = 0.25;
+
+// how much of a pixel the stroke's own paint takes where the stamp lays `laid` (0..1): the whole of
+// it at a thin stamp, less and less of the carried colour's room left as the stamp lays more paint
+fn clamped_paint_share(laid: f32) -> f32 {
+    return clamp(laid, 0.0, 1.0) * (1.0 - (1.0 - MIX_SHARE) * clamp(laid, 0.0, 1.0));
+}
+
 // half the stamp across each way (pixels)
 fn stamp_half() -> vec2<f32> {
     return vec2<f32>(st.radius, max(st.radius * st.roundness, 1e-3));
@@ -806,6 +818,16 @@ fn synthesized(p: vec2<i32>) -> vec4<f32> {
             let shown = toward + (1.0 - toward) * laid;
             out = over_layer(was, turned, min(a / max(shown, 1e-6), LAID_MOST_SCALE));
         }
+    }
+    if (st.paint_over > 0.0 && st.laid_apart == 0u) {
+        // A dry mixing stroke paints as well as carries: what the brush carried sits under the
+        // stroke's own colour, and the paint keeps the pixel — the carried colour may show beside
+        // it (at most MIX_SHARE of it where the nib is full), never instead of it. Before this the
+        // carried colour could take the pixel whole (100 % mixing laid no paint at all) and a new
+        // stroke could not cover an old one.
+        let laid_most = clamp(m * g, 0.0, 1.0);
+        let share = clamped_paint_share(laid_most);
+        out = mix(out, vec4<f32>(st.paint.rgb, out.a), clamp(share * st.paint_over, 0.0, 1.0));
     }
     // 颜料混合: the stroke's paint mixes with the layer as it was as a pigment
     out = pigment_lay(was, st.paint.rgb, a, out);
