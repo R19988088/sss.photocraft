@@ -24,11 +24,16 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Painting Color Source",
             menu: &[],
             shortcut: None,
-            params: r#"{"pattern":bool} → select solid colour or sampled pattern; pattern mode can be armed before sampling"#,
+            params: r#"{"pattern":bool,"solid":bool=false} → select solid colour or sampled pattern; pattern mode can be armed before sampling, and `"solid":true` keeps 图案 armed while the picked solid foreground paints (a monochrome stroke) instead of the patch"#,
             enabled: crate::commands::always,
             run: |s, p| {
                 let pattern = p.get("pattern").and_then(Value::as_bool).ok_or_else(|| bad("tools.setColorSource", "`pattern` must be a boolean"))?;
+                let solid = match p.get("solid") {
+                    None | Some(Value::Null) => false,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("tools.setColorSource", "`solid` must be a boolean"))?,
+                };
                 s.tools.brush.pattern_enabled = pattern;
+                s.tools.brush.pattern_solid = pattern && solid;
                 s.tools.brush_changed();
                 Ok(Value::Null)
             },
@@ -93,6 +98,7 @@ fn sample(s: &mut Session, p: &Value) -> crate::Result<Value> {
     }
     s.tools.brush.sampled_pattern = Some(pattern);
     s.tools.brush.pattern_enabled = true;
+    s.tools.brush.pattern_solid = false;
     s.tools.brush_changed();
     Ok(json!({"width":size,"height":size}))
 }

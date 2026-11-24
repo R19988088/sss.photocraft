@@ -73,6 +73,30 @@ pub(crate) fn display_image(display: Option<&photocraft_engine::display_color::C
     }
 }
 
+/// View › Desaturate Preview on a CPU canvas texture: every pixel shown with zero saturation.
+///
+/// This is Hue/Saturation's S = −100, which keeps a colour's **value** — its brightest channel —
+/// and only drops its hue (Photoshop's Hue/Saturation works in HSB). It is deliberately *not*
+/// Image › Adjustments › Desaturate (`image.adjustments.desaturate`), which weighs the luminosity
+/// (0.299/0.587/0.114) and so draws a saturated red or blue darker than this does; the two do not
+/// match and the view preview follows the former.
+///
+/// The texture is premultiplied, and every channel of one pixel is scaled by the same alpha, so
+/// the largest premultiplied channel is the largest straight channel: no unpremultiply needed.
+pub(crate) fn desaturate(img: &mut egui::ColorImage) {
+    let grey = |p: &mut Color32| {
+        let m = p.r().max(p.g()).max(p.b());
+        *p = Color32::from_rgba_premultiplied(m, m, m, p.a());
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        img.pixels.par_chunks_mut(16 * 1024).for_each(|c| c.iter_mut().for_each(grey));
+    }
+    #[cfg(target_arch = "wasm32")]
+    img.pixels.iter_mut().for_each(grey);
+}
+
 /// The canvas display of `doc` on `display` (`None`: the main window's) and a key that changes
 /// with it (folded into the canvas caches' preview keys, so a monitor or profile change
 /// re-renders).

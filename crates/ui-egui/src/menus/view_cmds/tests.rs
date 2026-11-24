@@ -73,6 +73,7 @@ fn show_snap_extras_and_screen_modes_are_state() {
         "view.extras",
         "view.screenMode.fullScreen",
         "view.flipHorizontal",
+        "view.desaturate",
         "window.arrange.fourUp",
         "type.fontPreviewSize.huge",
         "type.languageOptions.eastAsianFeatures",
@@ -102,6 +103,17 @@ fn show_snap_extras_and_screen_modes_are_state() {
     assert_eq!(checked(&app, "view.screenMode.fullScreen"), Some(true));
     menu(&mut app, &ctx, "view.pixelAspectRatio.anamorphic2To1", json!({})).unwrap();
     assert_eq!(pixel_aspect_ratio(&app.ui.view.pixel_aspect), 2.0);
+    // View › Desaturate Preview: a view-only toggle, off again on the second click, and the
+    // document's revision never moves.
+    let revision = app.session.active().unwrap().revision;
+    assert_eq!(checked(&app, "view.desaturate"), Some(false));
+    menu(&mut app, &ctx, "view.desaturate", json!({})).unwrap();
+    assert!(app.ui.view.desaturate);
+    assert_eq!(checked(&app, "view.desaturate"), Some(true));
+    menu(&mut app, &ctx, "view.desaturate", json!({})).unwrap();
+    assert!(!app.ui.view.desaturate);
+    assert_eq!(checked(&app, "view.desaturate"), Some(false));
+    assert_eq!(app.session.active().unwrap().revision, revision, "the document was not touched");
     // State serializes with the rest of the UI (control channel).
     let v = serde_json::to_value(&app.ui).unwrap();
     assert_eq!(v["view"]["screen_mode"], "fullScreen");

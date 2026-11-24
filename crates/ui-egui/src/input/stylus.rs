@@ -582,12 +582,17 @@ impl Stylus {
     }
 
     /// The released stroke's pressure: the reading the pen left with. A pen's lift has no force
-    /// of its own (Windows reports none, WinTab a 0), so the last real sample is the one the
-    /// stroke ends at — the pressure the user drew the tail with, never the mouse's full 1 that
-    /// a lost sample used to fall back to, and never the response's averaged or delayed value:
-    /// its window still holds the coarser samples just before the lift, so reading it here makes
-    /// the tail's pressure jump *up* as the pen thins away. The last reading goes through the
-    /// same calibration and elasticity as the stroke's samples (`mapped_pressure`), on its own.
+    /// of its own (Windows reports none, WinTab a 0), so the last real sample is the reading the
+    /// pen had while it was still down — never the mouse's full 1 that a lost sample used to fall
+    /// back to, and never the response's averaged or delayed value: its window still holds the
+    /// coarser samples just before the lift, so reading it here makes the tail's pressure jump
+    /// *up* as the pen thins away. The last reading goes through the same calibration and
+    /// elasticity as the stroke's samples (`mapped_pressure`), on its own.
+    ///
+    /// The stroke no longer ends at this reading: the lift draws no pressure of its own and the
+    /// canvas keeps the dabs the pen laid while down. Kept for callers that want the pen's own
+    /// last force (a stylus readout) and the behaviour tests around it.
+    #[allow(dead_code)]
     pub(crate) fn release_pressure(&self) -> f32 {
         let hold = self
             .held

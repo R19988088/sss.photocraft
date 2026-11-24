@@ -99,6 +99,9 @@ pub struct ViewOptions {
     pub snap_to: SnapTo,
     /// View › Flip Horizontal: mirror the view only (the document is untouched).
     pub flip_horizontal: bool,
+    /// View › Desaturate Preview: show the view with zero saturation, the document untouched.
+    /// Hue Saturation's S = −100, not Image › Adjustments › Desaturate's luminosity grey.
+    pub desaturate: bool,
     /// View › Pixel Aspect Ratio preset id ("square", "d1DvNtsc", …) and its correction toggle.
     pub pixel_aspect: String,
     pub pixel_aspect_correction: bool,
@@ -135,6 +138,7 @@ impl Default for ViewOptions {
             show: Show::default(),
             snap_to: SnapTo::default(),
             flip_horizontal: false,
+            desaturate: false,
             pixel_aspect: "square".into(),
             // Photoshop shows non-square pixels corrected until the user turns it off.
             pixel_aspect_correction: true,

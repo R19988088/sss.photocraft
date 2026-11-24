@@ -683,26 +683,12 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 }
                 return;
             }
-            // The lift carries the pressure the pen left with (the pen's own last reading, as
-            // ProCraft takes it): the stroke ends where the user lifted, at the pressure they
-            // lifted with — never the last move's stale one and never the mouse's full 1. Without
-            // the tablet optimization the release keeps the last move's pressure, as it did.
-            let lifted_pressure = app.stylus.optimized.then(|| app.stylus.release_pressure());
-            if let Some(lifted) = lifted_pressure {
-                if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
-                    d.points.push([x, y, f64::from(lifted)]);
-                    app.stylus.record_point();
-                } else if d.tool.is_brushlike()
-                    && d.points.len() > 1
-                    && let Some(p) = d.points.last_mut()
-                    && (p[2] - f64::from(lifted)).abs() > 1e-6
-                {
-                    // The pen thinned as it lifted without moving: the tail's last dab keeps the
-                    // pressure it left at (a tap keeps its peak, #1798).
-                    p[2] = f64::from(lifted);
-                }
-            } else if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
-                // The earlier release: the lift point at the last move's pressure.
+            // The lift draws no pressure of its own: every dab was laid at the pressure the pen
+            // had while it was down, and that is the stroke. Rewriting the last point's pressure
+            // here (the pen's final reading) made the commit lay the stroke again with a
+            // re-pressured tail — a block the pen never drew. The lift only closes the path at the
+            // last move's pressure when it moved.
+            if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
                 let last = d.points.last().map_or(1.0, |p| p[2]);
                 d.points.push([x, y, last]);
                 app.stylus.record_point();

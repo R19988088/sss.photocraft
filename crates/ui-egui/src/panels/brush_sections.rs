@@ -951,7 +951,7 @@ fn wet_settings(ui: &mut egui::Ui, settings: &mut Option<WetEdgeSettings>) {
             "wet-style",
             "",
             &mut w.style,
-            &[(WetStyle::Photoshop, "Photoshop"), (WetStyle::Watercolor, tl!("Watercolor")), (WetStyle::Watercolor2, tl!("Watercolor 2")), (WetStyle::V4, tl!("Wet Edge V4"))],
+            &[(WetStyle::Photoshop, "Photoshop"), (WetStyle::Watercolor, tl!("Watercolor")), (WetStyle::Watercolor2, tl!("Watercolor 2"))],
             140.0,
         );
     });

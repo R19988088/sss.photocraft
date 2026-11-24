@@ -1,4 +1,4 @@
-use super::display::{GPU_OUTPUT, cache_key, canvas_display, display_doc, display_image, texture_key};
+use super::display::{GPU_OUTPUT, cache_key, canvas_display, desaturate, display_doc, display_image, texture_key};
 use super::filter_preview::filter_channel_preview;
 use super::navigator::navigator_waits_for_drag;
 use super::strokes::live_stroke;
@@ -89,6 +89,20 @@ pub fn ensure_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, 
     ensure_texture_in_view(app, ctx, idx, display, None).map(|t| (t.texture, t.scale))
 }
 
+/// The canvas texture's bit of [`display_key`](super::display::canvas_display)'s: with it set,
+/// the texture holds the View › Desaturate Preview pixels (see [`desaturate`]).
+const DESAT_PREVIEW_KEY: u64 = 1 << 56;
+
+/// [`display_image`], plus View › Desaturate Preview when `desat`: exactly what a CPU canvas
+/// texture is made of.
+fn shown_image(display: Option<&photocraft_engine::display_color::CanvasDisplay>, buf: &photocraft_compose::Buffer, desat: bool) -> egui::ColorImage {
+    let mut img = display_image(display, buf);
+    if desat {
+        desaturate(&mut img);
+    }
+    img
+}
+
 /// The document area a filter preview of `preview` size covers, for a `doc` sized document
 /// previewed at proxy factor `k`: the document's bounds when it is the document's size (reduced by
 /// `k`), else its own size (times `k`) centred on the document's centre, as the GPU canvas centres
@@ -151,6 +165,11 @@ pub(crate) fn ensure_texture_in_view(
         (doc, preview_key) = (st.doc.clone(), 0);
     }
     let (display, display_key) = canvas_display(app, &doc, output);
+    // View › Desaturate Preview is baked into the CPU texture (the GPU canvas does it in its
+    // shader), so the flag folds into the display key: a toggle re-uploads once instead of
+    // leaving the old colours on screen.
+    let desat = app.ui.view.desaturate;
+    let display_key = display_key ^ if desat { DESAT_PREVIEW_KEY } else { 0 };
     let seen = app.canvases.get(&cache_key(id, output)).map(|c| (c.tex_revision, c.tex_preview_key));
     let damage = seen.and_then(|seen| damage_since(app, idx, seen, (revision, preview_key), display_key, last_damage)).filter(|_| !reduced);
     // The detail texture can lag the whole-document one (made or moved later): its own damage.
@@ -188,7 +207,7 @@ pub(crate) fn ensure_texture_in_view(
             let r = buf.rect;
             if !r.is_empty() {
                 let t1 = crate::gpu_canvas::now_ms();
-                let image = display_image(display.as_deref(), &buf);
+                let image = shown_image(display.as_deref(), &buf, desat);
                 // Partial uploads can disprove opacity. Once transparent, conservatively keep
                 // the checker until a full upload proves the whole texture opaque again.
                 cache.texture_opaque &= image.pixels.iter().all(|p| p.is_opaque());
@@ -200,7 +219,7 @@ pub(crate) fn ensure_texture_in_view(
             // Reduced in bands straight from the compositor: no full-size composite in memory.
             let full = photocraft_compose::render_reduced(&doc, w, h);
             let t1 = crate::gpu_canvas::now_ms();
-            let (img, scale) = (display_image(display.as_deref(), &full), 1.0 / factor as f32);
+            let (img, scale) = (shown_image(display.as_deref(), &full, desat), 1.0 / factor as f32);
             cache.texture_opaque = img.pixels.iter().all(|p| p.is_opaque());
             match cache.texture.as_mut() {
                 Some(t) if t.size() == img.size => t.set(img, canvas_texture_options(factor)),
@@ -222,7 +241,7 @@ pub(crate) fn ensure_texture_in_view(
     };
     let t0 = crate::gpu_canvas::now_ms();
     let name = format!("canvas-detail-{}-{}", id.0, cache_key(id, output).1);
-    let detail = update_detail(ctx, &doc, display.as_deref(), name, plan, old, detail_damage, (revision, preview_key));
+    let detail = update_detail(ctx, &doc, display.as_deref(), name, plan, old, detail_damage, (revision, preview_key), desat);
     if detail.as_ref().is_some_and(|d| d.rendered) {
         app.perf.span("canvas detail", crate::gpu_canvas::now_ms() - t0);
     }
@@ -257,6 +276,7 @@ fn update_detail(
     old: Option<DetailTexture>,
     damage: Option<DRect>,
     now: (u64, u64),
+    desat: bool,
 ) -> Option<DetailTexture> {
     let (w, h) = ((doc.size.width / plan.factor).max(1), (doc.size.height / plan.factor).max(1));
     let options = canvas_texture_options(plan.factor);
@@ -276,16 +296,16 @@ fn update_detail(
             if fits {
                 if let Some(b) = buf.filter(|b| !b.rect.is_empty()) {
                     let at = [b.rect.x0.abs_diff(d.out.x0) as usize, b.rect.y0.abs_diff(d.out.y0) as usize];
-                    d.texture.set_partial(at, display_image(display, &b), options);
+                    d.texture.set_partial(at, shown_image(display, &b, desat), options);
                     d.rendered = true;
                 }
                 (d.revision, d.preview_key) = now;
                 return Some(d);
             }
         }
-        return render_detail(ctx, doc, display, name, plan, Some(d.texture), now);
+        return render_detail(ctx, doc, display, name, plan, Some(d.texture), now, desat);
     }
-    render_detail(ctx, doc, display, name, plan, spare, now)
+    render_detail(ctx, doc, display, name, plan, spare, now, desat)
 }
 
 /// [`update_detail`]'s whole render of `plan`'s region, into `texture` when it is the same size.
@@ -297,6 +317,7 @@ fn render_detail(
     plan: DetailPlan,
     texture: Option<egui::TextureHandle>,
     now: (u64, u64),
+    desat: bool,
 ) -> Option<DetailTexture> {
     let (w, h) = ((doc.size.width / plan.factor).max(1), (doc.size.height / plan.factor).max(1));
     let options = canvas_texture_options(plan.factor);
@@ -305,7 +326,7 @@ fn render_detail(
     if out.is_empty() {
         return None;
     }
-    let img = display_image(display, &buf);
+    let img = shown_image(display, &buf, desat);
     let texture = match texture {
         Some(mut t) if t.size() == img.size => {
             t.set(img, options);

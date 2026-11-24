@@ -276,29 +276,14 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
     let (id, brush, zoom) = stroke_target(s, p, brush)?;
     let cmyk = doc_cmyk_space(s);
-    // The end taper is decided at the lift: the live preview laid the pen's own pressure all the
-    // way to the end, so its pixels can't stand for this stroke — the stroke renders again with its
-    // tail faded (ProCraft's classic taper lands when the stroke ends too). A stroke that paints in
-    // place (wet paint: a pigment response, a mixing transport) is laid for good as it comes, the
-    // way a smudge's is: what the canvas shows while drawing is what it leaves, and laying the
-    // whole stroke again as the pen lifts took a tenth of a second on a long one (ProCraft's
-    // `lay_stroke` after #288).
-    // ProCraft's brush has no taper to give (see `crate::procraft`'s unmapped `taper`): the stroke
-    // keeps the pen's own width and pressure to the lift. Landing this app's taper here would lay
-    // the whole stroke again with a faded, re-pressured end — the wait at pen-up — and its smaller
-    // end leaves the live stroke's own end, already on the canvas, sticking out as a broken scrap.
-    let taper_lands = brush.taper.enabled
-        && brush.taper.size > 0.0
-        && !brush.paints_in_place()
-        && !photocraft_paint::procraft::draws(&brush);
-    let mut pts = pts;
+    // The stroke has no pressure post-processing at the lift: the pen's own pressure shaped every
+    // dab the preview laid, and those pixels are the stroke. An end taper used to re-render the
+    // whole stroke at pen-up with the last stretch re-pressured, which showed as a block at the
+    // tail that the pen had never drawn (ProCraft's brush never tapered; this app no longer does).
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
-    let live = s.live_commit.take().filter(|l| !taper_lands && l.matches(s, cmd, p, &pts));
+    let live = s.live_commit.take().filter(|l| l.matches(s, cmd, p, &pts));
     let from_live = live.is_some();
-    if taper_lands {
-        photocraft_paint::dynamics::taper_end(&brush, &mut pts);
-    }
     let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
         s.edit(label, |doc, _| {
             if let Some(l) = live {

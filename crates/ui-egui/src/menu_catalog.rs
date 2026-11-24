@@ -693,6 +693,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["View"], "Print Size", None, "view.printSize"),
     (&["View"], "---", None, "---"),
     (&["View"], "Flip Horizontal", None, "view.flipHorizontal"),
+    (&["View"], "Desaturate Preview", None, "view.desaturate"),
     (&["View", "Screen Mode"], "Standard Screen Mode", None, "view.screenMode.standard"),
     (&["View", "Screen Mode"], "Full Screen Mode With Menu Bar", None, "view.screenMode.fullScreenWithMenuBar"),
     (&["View", "Screen Mode"], "Full Screen Mode", None, "view.screenMode.fullScreen"),

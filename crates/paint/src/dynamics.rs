@@ -53,6 +53,10 @@ const MOST_CURVE_PIECES: usize = 64;
 /// starts and 1 at the lift). Only pressure changes: a brush whose size follows pressure thins, a
 /// brush whose opacity follows it fades, and a brush that follows neither keeps its full size — a
 /// tap of a stroke (nothing moved) keeps its whole size too.
+///
+/// Nothing in the stroke path calls it any more: the lift keeps the dabs the pen laid while it
+/// was down (2026-11-23, no pressure post-processing at the lift), so a re-rendered, re-pressured
+/// tail cannot appear. Kept for the behaviour tests and any caller that wants the classic fade.
 pub fn taper_end(brush: &BrushSettings, pts: &mut [StrokePoint]) {
     let taper = brush.taper;
     if !taper.enabled || !(taper.size > 0.0) {

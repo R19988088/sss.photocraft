@@ -8,6 +8,7 @@ struct View {
     f: vec4<f32>, // checker dark rgb, 32-bit preview gain (2^exposure; 0 = off)
     g: vec4<f32>, // gamut warning rgb, 32-bit preview 1 / gamma
     h: vec4<f32>, // cos, sin, center_doc_x, center_doc_y
+    i: vec4<f32>, // desaturate (0 off, 1 on), -, -, -
 };
 struct Tile { r: vec4<f32>, core: vec4<f32> }; // x, y, w, h in doc px; drawn x0, y0, x1, y1
 
@@ -194,6 +195,14 @@ fn fs_tile(in: VOut) -> @location(0) vec4<f32> {
             shown = select(l.rgb, mix(l.rgb, view.g.xyz, view.e.w), view.d.z > 1.5 && l.a > 0.5);
         }
         col = vec4(shown * col.a, col.a);
+    }
+    if (view.i.x > 0.5 && col.a > 0.0) {
+        // View › Desaturate Preview: Hue/Saturation with S = −100, which keeps a colour's value —
+        // its brightest channel — where Image › Adjustments › Desaturate would weigh the
+        // luminosity (0.299/0.587/0.114) and darken saturated reds and blues. Only what the
+        // monitor shows; the document keeps its pixels.
+        let c = col.rgb / col.a;
+        col = vec4(vec3(max(c.x, max(c.y, c.z))) * col.a, col.a);
     }
     var rgb = col.rgb + checker(d) * (1.0 - col.a);
     // The pixel grid is drawn over pixels with content, not over empty checker.

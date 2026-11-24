@@ -108,17 +108,14 @@ pub(crate) fn active(app: &PhotocraftApp) -> [f32; 3] {
 /// Set the background colour, or the foreground and recolour what is selected as the tool in hand
 /// says (`apply_color`); the picks of one drag or typed value are one history step.
 ///
-/// Picking a solid colour also leaves the 图案 source, as the reference application's field does
-/// (its `set_color` clears the pattern): what the brush paints next is the colour just picked, not
-/// the pattern sampled earlier. The pattern itself is kept, so 图案 brings it back.
+/// Picking a solid colour while 图案 is armed keeps 图案 on: the picked colour paints the stroke
+/// instead of the patch sampled earlier, so the mode can output a single colour too. 图案 itself
+/// (or a new sample) brings the patch back.
 pub(crate) fn set_color(app: &mut PhotocraftApp, ctx: &egui::Context, background: bool, rgb: [f32; 3]) {
     let c = [rgb[0], rgb[1], rgb[2], 1.0];
     if background {
         app.session.tools.background = c;
     } else {
-        if app.session.tools.brush.pattern_enabled {
-            let _ = app.run("tools.setColorSource", json!({"pattern": false}));
-        }
         app.session.tools.foreground = c;
         crate::apply_color::foreground_changed(app, crate::apply_color::gesture(ctx));
     }

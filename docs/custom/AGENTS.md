@@ -246,18 +246,11 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
      自己的 dynamics。taps（总长 0）和 `Taper::NONE` 原样返回。
    - `DabGenerator` 里**没有** hold / tail 机制：`walk` / `walk_dual` / `push` / `finish` 都是直接
      append，实时路径零额外开销（第一版每帧跑 `tail_preview` 生成器 + 区域回读，用户判定「非常卡」）。
-   - 锥度在**抬笔时**落（`cmd/brush_cmds.rs::stroke_with` 在 filter 之后调 `taper_end`）：预览按笔
-     自己的压力画到末尾，所以锥度开启的笔画不再吃 `live_commit` 的预览像素（`!taper_lands`），而是整笔
-     重渲染一次——代价是收笔那一下（与参考 classic 锥度「收笔才落锥」一致）。`end_shows()` 那套
-     非 classic 的实时锥度没照搬。
-   - **湿笔（读画布颜色的笔）不落锥、直接吃实时像素**（2026-11-21，按 ProCraft PR #288 的
-     `paints_in_place()` 口径）：`BrushSettings::paints_in_place()` = `pigment_mix_strength > 0`
-     / 可见 pigment / `mix_settings.enabled` / 单 dab 湿边读画布的彩色模式。这些笔的 dab 边画边改
-     图层（水彩套组、C3 混色多半在此），整笔重渲染只是把画布上已经有的东西再算一遍：实测
-     `examples/bench_stroke_lift`（2520×1575、480 点）收笔 **280–300 ms**，吃实时像素后 **1.2–1.5 ms**。
-     这类笔的收尾因此不再收细（预览画到末尾的粗细就是留下的粗细，与参考一致：「预览怎样，落笔怎样」）。
-     普通实色笔仍按 classic 锥度整笔重落。`render_stroke` 这条重渲染路径的判据在 `stroke_with` 的
-     `taper_lands`，别把湿笔重新塞回整笔重渲染（那是「收尾变慢」的直接来源）。
+   - ~~锥度在**抬笔时**落~~（2026-11-23 用户要求去掉压力的后处理）：`taper_end` 不再在
+     `stroke_with` 里调用，抬笔不再整笔重渲染。原因是重渲染会在笔画尾部留下一块「压力重新计算」
+     的痕迹，和预览画出来的尾巴对不上；现在**预览怎样，落笔怎样**，所有笔（实色或湿笔）都吃
+     `live_commit` 的像素，`taper_lands` 判据删除。`Taper` 字段仍保留在笔刷/预设里（旧预设兼容），
+     但不再生效；`dynamics::taper_end` 只剩单测在用。别再把它接回抬笔路径。
    - 还没照搬的参考项（用户没要求，别顺手加）：`taper.start`（起笔 0.15 渐显）、`opacity` 锥度、
      `tip_animation`、classic taper 的 `run_on`（`RUN_ON_PEN=1` / `RUN_ON_SHRINK=0.66`）。
 

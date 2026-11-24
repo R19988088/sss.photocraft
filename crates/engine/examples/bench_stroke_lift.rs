@@ -5,8 +5,9 @@
 //!
 //! 2026-11-21 (CPU path, no GPU masker; the app's folded GPU path is cheaper per dab): a 480-point
 //! stroke cost 19 ms (40 px round) to 280-300 ms (200 px soft / wet) to lay again, and 1.2-1.5 ms
-//! to take the live pixels. The wet brush now takes the live pixels (see
-//! `BrushSettings::paints_in_place`); the plain ones still lay the stroke again for the taper.
+//! to take the live pixels. Since 2026-11-23 every stroke takes the live pixels: the lift lays no
+//! end taper (no pressure post-processing), so the "lay again" column is what the app no longer
+//! does at pen-up.
 use std::time::Instant;
 
 use photocraft_engine::{Session, brush_cmds::LiveStroke, paint::StrokePoint};

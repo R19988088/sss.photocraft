@@ -687,20 +687,26 @@ fn the_c2_source_switch_tops_the_panel() {
     assert!(!h.state().session.tools.brush.pattern_enabled, "实线 turns it off");
 }
 
-/// Picking a solid colour leaves 图案 (the brush paints what was just picked) but keeps the
-/// sampled patch, so 图案 brings it back.
+/// Picking a solid colour keeps 图案 on: the picked colour paints the stroke (a monochrome
+/// stroke) instead of the patch, and 图案 brings the patch back.
 #[test]
-fn picking_a_solid_colour_leaves_the_pattern_source() {
+fn picking_a_solid_colour_keeps_pattern_and_paints_it() {
     let mut h = color_tab_with_a_shape(ColorPanelMode::C2, false);
     h.state_mut().session.tools.foreground = [1.0, 0.0, 0.0, 1.0];
     h.state_mut().run("document.samplePattern", json!({"x": 4, "y": 4, "size": 4})).unwrap();
     h.run_steps(2);
     assert!(h.state().session.tools.brush.pattern_enabled);
+    assert!(!h.state().session.tools.brush.pattern_solid, "图案 paints the patch at first");
     let patch = h.state().session.tools.brush.sampled_pattern.clone();
     let field = h.get_by_label("Saturation / Brightness").rect().center();
     press(&mut h, field, Modifiers::NONE);
-    assert!(!h.state().session.tools.brush.pattern_enabled, "a solid pick leaves the pattern source");
-    assert_eq!(h.state().session.tools.brush.sampled_pattern, patch, "and the patch is kept");
+    assert!(h.state().session.tools.brush.pattern_enabled, "a solid pick stays in 图案");
+    assert!(h.state().session.tools.brush.pattern_solid, "and the picked colour paints, not the patch");
+    assert_eq!(h.state().session.tools.brush.sampled_pattern, patch, "the patch is kept");
+    // 图案 again (the button, or a new sample) brings the patch back.
+    h.get_by_label("Pattern").click();
+    h.run_steps(2);
+    assert!(!h.state().session.tools.brush.pattern_solid, "图案 paints the patch again");
 }
 
 /// 混合强度 lives in the Color tab's panel menu and drives the brush's pigment response

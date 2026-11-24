@@ -57,6 +57,41 @@ fn display_image_matches_egui_unmultiplied_conversion() {
 /// #7490: the inline (web) preview path composites and uploads each changed preview once, as
 /// the background worker does. It used to flatten and upload it twice and record it twice,
 /// so the frame's refresh time counted the preview twice.
+/// View › Desaturate Preview on the CPU canvas: zero saturation keeps a colour's value — its
+/// brightest channel, as Hue/Saturation's S = −100 does — not Image › Adjustments › Desaturate's
+/// luminosity (0.299/0.587/0.114), which would darken this red. Toggling it off gives the
+/// document's own colours back, and the document never changed.
+#[test]
+fn the_cpu_canvas_desaturates_the_view() {
+    let pixels = |ctx: &egui::Context, id: egui::TextureId| {
+        let mut delta = ctx.tex_manager().write().take_delta();
+        let egui::ImageData::Color(image) = &delta.set.get(&id).and_then(|d| d.last()).expect("the canvas texture was written").image;
+        let px = image.pixels.clone();
+        delta.clear();
+        px
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.background_jobs = false;
+    app.run("file.new", json!({"width": 16, "height": 16, "background": "white"})).unwrap();
+    app.run("edit.fill", json!({"color": "#cc3333"})).unwrap();
+    let revision = app.session.active().unwrap().revision;
+    let ctx = egui::Context::default();
+    let (tex, _) = ensure_texture(&mut app, &ctx, 0, None).unwrap();
+    let plain = pixels(&ctx, tex);
+    assert_eq!((plain[0].r(), plain[0].g(), plain[0].b()), (0xcc, 0x33, 0x33), "colours while the preview is off");
+    app.ui.view.desaturate = true;
+    let (tex, _) = ensure_texture(&mut app, &ctx, 0, None).unwrap();
+    let grey = pixels(&ctx, tex);
+    // Hue/Saturation's S = −100 (HSB): the value, 0xcc, not the luma, 0x54.
+    assert_eq!((grey[0].r(), grey[0].g(), grey[0].b(), grey[0].a()), (0xcc, 0xcc, 0xcc, 0xff));
+    let luma = (0.299 * 0xcc as f32 + 0.587 * 0x33 as f32 + 0.114 * 0x33 as f32).round() as u8;
+    assert_ne!(grey[0].r(), luma, "not Image › Adjustments › Desaturate's luminosity grey");
+    app.ui.view.desaturate = false;
+    let (tex, _) = ensure_texture(&mut app, &ctx, 0, None).unwrap();
+    assert_eq!(pixels(&ctx, tex)[0], plain[0], "switching it off shows the colours again");
+    assert_eq!(app.session.active().unwrap().revision, revision, "no edit was recorded");
+}
+
 /// The CPU canvas (no usable GPU; a flipped or pixel-aspect-corrected view, or a GPU fallback,
 /// on a GPU machine) shows a filter dialog's live preview. It showed the document unfiltered.
 #[test]

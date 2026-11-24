@@ -103,6 +103,7 @@ pub fn preview_sig(b: &BrushSettings) -> u64 {
             b.saturation_preserve_output,
             b.saturation_record_strength,
             b.pattern_enabled,
+            b.pattern_solid,
         ),
     );
     js(&mut h, &(&b.pigment, &b.contour, &b.mix_settings, &b.motion, &b.inertia, &b.color_attributes));

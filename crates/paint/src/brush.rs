@@ -794,6 +794,9 @@ pub struct BrushSettings {
     pub color_attributes: ColorAttributes,
     pub pattern_enabled: bool,
     pub sampled_pattern: Option<ColorPattern>,
+    /// 图案 stays on while the solid foreground paints instead of the patch: a colour picked in
+    /// the palette keeps the mode (and gives a monochrome stroke) instead of leaving it.
+    pub pattern_solid: bool,
     /// Diameter in pixels.
     pub size: f32,
     /// 0 (soft) ..1 (hard). Computed tips only.
@@ -899,6 +902,7 @@ impl Default for BrushSettings {
             color_attributes: ColorAttributes::default(),
             pattern_enabled: false,
             sampled_pattern: None,
+            pattern_solid: false,
             size: 20.0,
             hardness: 1.0,
             hardness_dynamic: Dynamic::default(),
@@ -953,6 +957,12 @@ impl Default for BrushSettings {
 }
 
 impl BrushSettings {
+    /// Whether the stroke paints the sampled patch: 图案 is on, no solid colour was picked since
+    /// it was armed, and a patch was sampled. The brush's own tip still shapes every stamp.
+    pub fn paints_pattern(&self) -> bool {
+        self.pattern_enabled && !self.pattern_solid && self.sampled_pattern.is_some()
+    }
+
     /// Whether the stroke paints in place: its dabs take colour from the layer beneath as they
     /// come (a pigment response, a smudging or mixing transport, a single-dab wet rim tinted by
     /// the canvas under it). Such a stroke is laid as it is drawn — the canvas already shows its
@@ -1104,6 +1114,7 @@ impl BrushSettings {
         let mut b = self.with_protected_texture(current);
         b.smoothing = current.smoothing.clone();
         b.pattern_enabled = current.pattern_enabled;
+        b.pattern_solid = current.pattern_solid;
         b.sampled_pattern = current.sampled_pattern.clone();
         let l = &current.locks;
         if l.shape_dynamics {
@@ -1548,6 +1559,7 @@ impl DualBrush {
         // C3's sampled colour patch belongs to the primary lane.
         b.pattern_enabled = false;
         b.sampled_pattern = None;
+        b.pattern_solid = false;
         b.erase = parent.erase;
         Some(b)
     }

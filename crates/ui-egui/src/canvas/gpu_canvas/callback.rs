@@ -141,6 +141,11 @@ fn uniforms_of(p: &ViewParams, rect: egui::Rect, screen: [u32; 2], ppp: f32, out
             },
             p.center[0],
             p.center[1],
+            // View › Desaturate Preview (1 = on).
+            if p.desaturate { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+            0.0,
         ]
 }
 

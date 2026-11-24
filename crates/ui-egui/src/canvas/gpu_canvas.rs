@@ -97,8 +97,8 @@ const FORMAT_HIGH: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// documents (a 14000² one would need 2.1 GB) use `Rgba8Unorm`, so they stay on the GPU like
 /// 8-bit ones. `PHOTOCRAFT_CANVAS_F16=0` turns the float canvas off, `=1` ignores this budget.
 pub const F16_BUDGET_PX: u64 = 100_000_000;
-const VIEW_UNIFORM_SIZE: u64 = 128;
-const VIEW_FLOATS: usize = 32;
+const VIEW_UNIFORM_SIZE: u64 = 144;
+const VIEW_FLOATS: usize = 36;
 const TILE_UNIFORM_SIZE: u64 = 32;
 
 /// Whether this view can use the GPU canvas. Flip and non-square pixel aspect correction are
@@ -140,6 +140,9 @@ pub struct ViewParams {
     /// document, a whole number of widths and heights for a View › Pattern Preview copy (#1067).
     /// A copy samples the same texture, so nothing is composited again.
     pub offset: [f32; 2],
+    /// View › Desaturate Preview: show zero saturation — Hue/Saturation's S = −100, a colour's
+    /// value (its brightest channel), not Image › Adjustments › Desaturate's luminosity grey.
+    pub desaturate: bool,
 }
 
 /// When high-bit documents get an `Rgba16Float` canvas texture.

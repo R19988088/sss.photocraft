@@ -330,8 +330,8 @@ fn canvas_texture_bytes_price_every_tile_and_mip_level() {
 
 #[test]
 fn view_uniform_packs_rotation() {
-    assert_eq!(VIEW_FLOATS, 32);
-    assert_eq!(VIEW_UNIFORM_SIZE, 128);
+    assert_eq!(VIEW_FLOATS, 36);
+    assert_eq!(VIEW_UNIFORM_SIZE, 144);
     assert_eq!(VIEW_FLOATS * 4, VIEW_UNIFORM_SIZE as usize);
     assert!(gpu_view_ok(false, 0.0, 1.0));
     assert!(gpu_view_ok(false, 45.0_f32.to_radians(), 1.0));

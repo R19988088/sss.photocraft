@@ -78,17 +78,29 @@ pub fn track_focus(ctx: &Context) {
     });
 }
 
+/// A colour picked while 图案 is armed keeps the mode on and paints that solid colour instead of
+/// the sampled patch: 图案 can output a single colour too. 图案 itself (or a new sample) brings
+/// the patch back (`tools.setColorSource` with `solid`).
+fn keep_pattern_solid(app: &mut PhotocraftApp) {
+    let b = &app.session.tools.brush;
+    if b.pattern_enabled && !b.pattern_solid {
+        let _ = app.run("tools.setColorSource", json!({"pattern": true, "solid": true}));
+    }
+}
+
 /// The foreground colour just changed through the Color panel, the Swatches panel or the Color
 /// Picker: recolour what is selected, as the tool in hand says (see the module docs).
 /// Picks of one `gesture` (a Color panel drag or typed value, see [`gesture`]) share one history
 /// step; `None` (a swatch, the Color Picker, a click) is a step of its own.
 pub fn foreground_changed(app: &mut PhotocraftApp, gesture: Option<String>) {
+    keep_pattern_solid(app);
     recolour(app, gesture, false);
 }
 
 /// A swatch just set the foreground: recolour the selected characters while editing type, else
 /// every selected type layer and shape fill, whatever the tool (see the module docs).
 pub fn swatch_picked(app: &mut PhotocraftApp) {
+    keep_pattern_solid(app);
     recolour(app, None, true);
 }
 

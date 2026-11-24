@@ -156,7 +156,7 @@ pub fn effective(settings: &BrushSettings) -> BrushSettings {
     if tool(settings) == Tool::Smudge {
         out.spacing = out.spacing.max(SMUDGE_SPACING);
     }
-    if !settings.pattern_enabled {
+    if !settings.pattern_enabled || settings.pattern_solid {
         return out;
     }
     // A pattern read off the canvas is the stroke's *paint*: its colours are what the stroke shows,

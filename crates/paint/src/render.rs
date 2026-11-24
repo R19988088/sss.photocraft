@@ -314,29 +314,6 @@ pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
     Rect::new(cx.saturating_sub(rr), cy.saturating_sub(rr), cx.saturating_add(rr).saturating_add(1), cy.saturating_add(rr).saturating_add(1))
 }
 
-/// A brush's sampled pattern as the stamp's graphic: the patch's alpha, which is the mark's own
-/// silhouette (the page around it was cut out when the pattern was taken).
-fn pattern_silhouette(b: &BrushSettings) -> Option<crate::tile::GrayTile> {
-    if !b.pattern_enabled {
-        return None;
-    }
-    let p = b.sampled_pattern.as_ref()?;
-    let (w, h) = (p.width as usize, p.height as usize);
-    if w == 0 || h == 0 || p.pixels.len() < w * h {
-        return None;
-    }
-    const MOST: usize = 256;
-    let step = w.max(h).div_ceil(MOST).max(1);
-    let (tw, th) = (w.div_ceil(step), h.div_ceil(step));
-    if tw < 2 || th < 2 {
-        return None;
-    }
-    Some(crate::tile::GrayTile::from_fn(tw as u32, th as u32, |x, y| {
-        let p = p.pixels[(y as usize * step * w + x as usize * step).min(p.pixels.len() - 1)];
-        p[3].clamp(0.0, 1.0)
-    }))
-}
-
 impl BrushContext {
     /// Texels of the sampled pattern per canvas pixel: the patch fills the brush at the brush's
     /// own size, and stays that size for the whole stroke.
@@ -457,10 +434,11 @@ impl BrushContext {
             Some(g) if g.is_valid() => Some(crate::mip_cache::tip_mips(g)),
             _ => None,
         };
-        // A sampled pattern is the brush's tip graphic: the stamp takes the graph's silhouette as
-        // its shape, so the stroke draws the mark itself rather than a round stamp clipped to it.
-        let pattern_tip = pattern_silhouette(&brush).map(|t| crate::mip_cache::tip_mips(&t));
-        let tip = pattern_tip.or_else(|| mips(&brush.tip));
+        // A sampled pattern is the stroke's paint, not its tip: the stamp keeps the brush's own
+        // tip shape and the patch supplies the colour inside it (a patch taken from a page with
+        // its mark cut out used to replace the tip with the patch's rectangle, so every brush
+        // stamped squares).
+        let tip = mips(&brush.tip);
         let tip_mask = tip.as_deref().and_then(mask_tip_of);
         Self {
             texture_origin: None,
@@ -1848,7 +1826,7 @@ impl StrokeRenderer {
         let per_dab_color = (brush.saturation_record_strength > 0.0
             || brush.saturation_preserve_output > 0.0
             || brush.color_dynamics.enabled
-            || brush.pattern_enabled
+            || brush.paints_pattern()
             || brush.canvas_material.is_some()
             || brush.pigment.as_ref().is_some_and(|p| p.may_be_visible())
             || single)
@@ -2020,7 +1998,7 @@ impl StrokeRenderer {
         // A pattern's colour is sampled per pixel (dab-local), so it is recomputed over the
         // union; colour dynamics instead needs the backend's colour lane (every dab keeps its
         // own colour, and the lane averages them under the folded coverage).
-        let wants_pattern = |wb: &BrushSettings| wb.pattern_enabled && wb.sampled_pattern.is_some();
+        let wants_pattern = |wb: &BrushSettings| wb.paints_pattern();
         if wants_pattern(b) {
             // The pattern is the stamp's own graphic: neighbouring stamps read different parts of
             // it, so no single colour stands for the frame's union.
@@ -2131,7 +2109,7 @@ impl StrokeRenderer {
         // channels per pixel (10 MB at this size), and reallocating + zeroing that every frame
         // costs more than the sampling itself.
         let mut colors = std::mem::take(&mut self.colour_scratch);
-        let pattern = b.pattern_enabled.then(|| b.sampled_pattern.as_ref()).flatten();
+        let pattern = b.paints_pattern().then(|| b.sampled_pattern.as_ref()).flatten();
         let rgb: &[f32] = if pattern.is_none() { &out.color } else { &[] };
         let t_col = profiling().then(std::time::Instant::now);
         let col = lane_col(pattern, frame.lane.union, first, rgb, &mut colors);
@@ -2173,7 +2151,7 @@ impl StrokeRenderer {
             let mut colors2 = Vec::new();
             let reference2 = duals.first().copied().unwrap_or(*first);
             let col2 = ctx.and_then(|c| {
-                let pattern2 = c.brush.pattern_enabled.then(|| c.brush.sampled_pattern.as_ref()).flatten();
+                let pattern2 = c.brush.paints_pattern().then(|| c.brush.sampled_pattern.as_ref()).flatten();
                 let rgb2: &[f32] = if pattern2.is_none() { &back.color } else { &[] };
                 lane_col(pattern2, lane2.union, &reference2, rgb2, &mut colors2)
             });
@@ -2254,7 +2232,7 @@ impl StrokeRenderer {
             }
             let single =
                 self.ctx.brush.wet_edge.as_ref().filter(|w| wet && w.outline == WetOutline::Single && w.color_mode != crate::material::WetColorMode::Normal);
-            let pattern = self.ctx.brush.pattern_enabled.then_some(self.ctx.brush.sampled_pattern.as_ref()).flatten();
+            let pattern = self.ctx.brush.paints_pattern().then_some(self.ctx.brush.sampled_pattern.as_ref()).flatten();
             let t_c = profiling().then(std::time::Instant::now);
             let col = if let (Some(pattern), Some(f)) = (pattern, self.fmt) {
                 let width = rect.width() as usize;
@@ -2440,7 +2418,7 @@ impl StrokeRenderer {
                 let col = if let (Some(ctx), Some(f)) = (secondary, self.fmt) {
                     colors.clear();
                     let width = rect.width() as usize;
-                    let dual_pattern = ctx.brush.pattern_enabled.then(|| ctx.brush.sampled_pattern.as_ref()).flatten();
+                    let dual_pattern = ctx.brush.paints_pattern().then(|| ctx.brush.sampled_pattern.as_ref()).flatten();
                     let pattern_scale = dual_pattern.map_or(1.0, |p| dab_pattern_scale(p, d));
                     for (i, _) in self.scratch.iter().enumerate() {
                         let mut rgba = match dual_pattern {
@@ -3763,15 +3741,15 @@ mod material_regression {
     }
 
     #[test]
-    fn wet_v4_pools_the_coverage_like_the_studio() {
-        // ProCraft's wet edge: a = a·(1−s) + s·(1 − |sin(4.5a)/(4.5a)|). At full strength paint
-        // laid at 1.0 settles to about 0.78 (pooling), and where it thins out at about 0.7 it comes
-        // back to full — the rim.
+    fn wet_procraft_pools_the_coverage_like_the_studio() {
+        // ProCraft's wet edge (the first style, once the V4 style): a = a·(1−s) + s·(1 −
+        // |sin(4.5a)/(4.5a)|). At full strength paint laid at 1.0 settles to about 0.78 (pooling),
+        // and where it thins out at about 0.7 it comes back to full — the rim.
         let pooled = |a: f32| {
             let x = 4.5 * a.max(1e-4);
             1.0 - (x.sin() / x).abs()
         };
-        let settings = WetEdgeSettings { style: WetStyle::V4, strength: 2.0, ..Default::default() };
+        let settings = WetEdgeSettings { style: WetStyle::Photoshop, strength: 2.0, ..Default::default() };
         let wet = settings.resolve(1.0, 40.0);
         let full = settings.alpha(1.0, 1.0, wet);
         assert!((full - pooled(1.0)).abs() < 1e-3, "{full}");
@@ -3795,7 +3773,7 @@ mod material_regression {
 
     #[test]
     fn material_single_filters_each_dab_before_accumulating_color() {
-        for style in [WetStyle::Photoshop, WetStyle::Watercolor, WetStyle::Watercolor2, WetStyle::V4] {
+        for style in [WetStyle::Photoshop, WetStyle::Watercolor, WetStyle::Watercolor2] {
             let settings = WetEdgeSettings { style, outline: WetOutline::Single, color_mode: WetColorMode::Hsl, ..Default::default() };
             let brush = BrushSettings { hardness: 0.2, wet_edges: true, wet_edge: Some(settings.clone()), ..Default::default() };
             let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::F32, true);

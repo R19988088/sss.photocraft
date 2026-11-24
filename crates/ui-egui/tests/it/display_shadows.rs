@@ -255,6 +255,7 @@ fn compare_display_paths_24mp() {
         output: 1,
         hdr: None,
         offset: [0.0, 0.0],
+        desaturate: false,
     };
     let mut harness =
         egui_kittest::Harness::builder().with_size(egui::vec2(SIZE[0] as f32, SIZE[1] as f32)).with_pixels_per_point(1.0).renderer(renderer).build_ui_state(

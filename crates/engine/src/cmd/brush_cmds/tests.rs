@@ -1255,8 +1255,8 @@ fn live_and_commit(s: &Session, cmd: &str, base: Value, pts: &[[f64; 3]]) -> (Li
 #[test]
 fn a_commit_takes_the_live_strokes_pixels_and_they_equal_a_fresh_render() {
     let pts = [[10.0, 50.0, 1.0], [60.0, 30.0, 0.7], [120.0, 60.0, 0.9], [180.0, 40.0, 0.4], [150.0, 80.0, 1.0]];
-    // With the end taper off: a tapered stroke is decided at the lift, so it renders again there
-    // (`the_end_taper_fades_the_pressure_over_the_last_stretch_and_nothing_else` covers the taper).
+    // Every stroke is decided as it is drawn: the commit takes the live pixels (there is no end
+    // taper to land at the lift).
     let no_taper = json!({"taper": {"enabled": false}});
     for (cmd, base) in [
         ("paint.stroke", json!({"brush": {"size": 18, "hardness": 0.0, "flow": 0.5, "taper": {"enabled": false}}, "smoothing": 0.5, "target": "pixels"})),
@@ -1523,23 +1523,21 @@ fn mixer_load_fills_the_reservoir_from_the_canvas_and_keeps_the_foreground() {
 
 
 #[test]
-fn a_stroke_that_paints_in_place_takes_the_live_pixels_and_skips_the_taper_lay() {
-    // PR #288 (ProCraft): wet paint is laid for good as it comes, so laying the whole stroke again
-    // as the pen lifts only redoes work the canvas already shows — a tenth of a second on a long
-    // watercolour stroke, measured with `examples/bench_stroke_lift`. It now takes the live pixels
-    // and leaves its end as it was drawn; a plain brush still lays the stroke again for the end
-    // taper (its brush default has the taper on).
+fn every_stroke_takes_the_live_pixels_and_the_lift_lays_no_taper() {
+    // PR #288 (ProCraft): what the preview laid is the stroke, wet paint or not — the lift draws
+    // no re-pressured tail at all (`taper_end` is never applied: that block at the stroke's end
+    // was the pen's lift re-pressuring the last stretch the preview had already laid).
     let pts = [[10.0, 50.0, 1.0], [60.0, 30.0, 0.7], [120.0, 60.0, 0.9], [180.0, 40.0, 0.4], [150.0, 80.0, 1.0]];
     let plain = json!({"brush": {"size": 18, "hardness": 0.0}, "smoothing": 0.5, "target": "pixels"});
     let wet = json!({"brush": {"size": 18, "hardness": 0.0, "pigmentMixStrength": 0.6}, "smoothing": 0.5, "target": "pixels"});
-    for (base, laid_again) in [(plain, true), (wet, false)] {
+    for base in [plain, wet] {
         let mut s = session(200, 100);
         let (live, p) = live_and_commit(&s, "paint.stroke", base, &pts);
         s.offer_live_stroke(live).unwrap();
         let r = s.execute("paint.stroke", p.clone()).unwrap();
         s.clear_live_stroke();
-        assert_eq!(r.get("fromLive").is_none(), laid_again, "{p}: fromLive {:?}", r.get("fromLive"));
-        // The journal's replay renders the same pixels: it skips the taper's lay for wet paint too.
+        assert_eq!(r["fromLive"], true, "{p}: the commit took the live pixels");
+        // The journal's replay renders the same pixels: no taper is laid at the lift.
         let mut fresh = session(200, 100);
         fresh.execute("paint.stroke", p.clone()).unwrap();
         assert!(same_pixels(&surface(&s), &surface(&fresh), Rect::new(0, 0, 200, 100)), "{p}");

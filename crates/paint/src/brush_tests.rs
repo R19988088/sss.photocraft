@@ -48,47 +48,155 @@ fn a_sampled_pattern_stroke_under_procraft_paints_the_brush_colour() {
 }
 
 #[test]
-fn a_sampled_mark_is_the_stamps_graphic() {
-    // The patch is the brush's tip graphic: the stamp takes the mark's own silhouette and the
-    // mark's own colours, so the stroke draws the graphic along the path instead of clipping a
-    // round stamp's worth of tiled pattern to the stroke's shape.
-    let px: Vec<[f32; 4]> = (0..144)
-        .map(|i| {
-            let (x, y) = (i % 12, i / 12);
-            // a diamond mark in the middle of the page
-            let d = (x as i32 - 5).abs() + (y as i32 - 5).abs();
-            if d <= 2 { [0.8, 0.2, 0.15, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }
-        })
-        .collect();
+fn a_sampled_pattern_paints_inside_the_brushs_own_tip() {
+    // The patch is the stroke's paint, not its tip: the stamp keeps the brush's own tip, so a
+    // round brush stays round however square the patch sampled from the page is. (A patch used
+    // to replace the tip with its own alpha, which stamped squares of page.)
+    let px: Vec<[f32; 4]> = (0..144).map(|_| [0.6, 0.6, 0.6, 1.0]).collect();
     let mut b = brush();
     b.size = 40.0;
     b.spacing = 0.1;
+    b.hardness = 1.0;
     b.color = [0.0, 0.0, 0.0, 1.0];
     b.texture.enabled = false;
     b.pattern_enabled = true;
     b.sampled_pattern = Some(ColorPattern { width: 12, height: 12, pixels: std::sync::Arc::from(px) });
-    let eff = crate::procraft::effective(&b);
-    let patch = eff.sampled_pattern.as_ref().unwrap();
-    assert_eq!((patch.width, patch.height), (5, 5), "the empty page around the mark is cropped");
-    let corners = patch.pixels.iter().filter(|p| p[3] < 0.05).count();
-    assert!(corners >= 8, "the graphic keeps its own silhouette, corners and all: {corners} empty texels");
 
     let mut s = Surface::new(PixelFormat::RGBA32F);
     let pre = s.clone();
-    let mut r = StrokeRenderer::on_surface(&eff, &pre, 1.0);
-    r.use_procraft(true);
-    r.push(&line(12.0, 88.0, 30.0));
+    let mut r = StrokeRenderer::on_surface(&b, &pre, 1.0);
+    r.push(&[StrokePoint::new(40.0, 30.0, 1.0)]);
     r.finish();
     r.composite(&pre, &mut s, None, false, true);
 
-    // The diamond fills about half of its square, so the stroke covers markedly less than the
-    // square a stamp of the whole patch would lay, and what it covers is the mark's colour.
-    let painted = (12..88).flat_map(|x| (18..42).map(move |y| (x, y))).filter(|&(x, y)| s.rgba(x, y)[3] > 0.1).count();
-    let square = 76.0 * 40.0;
-    assert!(painted as f32 > 0.2 * square, "the stroke painted almost nothing: {painted}");
-    assert!((painted as f32) < 0.8 * square, "the stamp was not shaped by the graphic: {painted} of {square} square");
-    let p = s.rgba(50, 30);
-    assert!((p[0] - 0.8).abs() < 0.15 && (p[2] - 0.15).abs() < 0.15, "the mark's colour is not what the stamp paints: {p:?}");
+    // The dab's own corners stay empty: the page's rectangle did not become the stamp. (Off the
+    // diagonal by 16 px each way is inside a 40 px square's corner but outside its circle.)
+    for (x, y) in [(56, 46), (24, 46), (56, 14), (24, 14)] {
+        assert!(s.rgba(x, y)[3] < 0.01, "the stamp is square at {x},{y}: {:?}", s.rgba(x, y));
+    }
+    // Inside the tip the patch's plain grey is the paint.
+    for (x, y) in [(30, 30), (25, 30), (35, 30)] {
+        let p = s.rgba(x, y);
+        assert!(p[3] > 0.5, "the tip painted nothing at {x},{y}: {p:?}");
+        assert!((p[0] - 0.6).abs() < 0.06, "the patch's grey is not the paint at {x},{y}: {p:?}");
+    }
+}
+
+#[test]
+fn tmp_pressure_mix_sim() {
+    // A pen pressure ramp, lightest to hardest, drawing one stroke of a mixing brush across
+    // colour bands: what the stroke takes up and what colour it puts down, as the pen presses.
+    let (w, h) = (1400usize, 560usize);
+    let mut pre = Surface::new(PixelFormat::RGBA32F);
+    pre.fill_rect(Rect::new(0, 0, 1400, 560), &[0.12, 0.12, 0.12, 1.0]);
+    let bands = [
+        (0, 470, [0.85, 0.48, 0.16, 1.0]),
+        (470, 470, [0.18, 0.55, 0.55, 1.0]),
+        (940, 460, [0.10, 0.14, 0.25, 1.0]),
+    ];
+    for (x0, wd, col) in bands {
+        pre.fill_rect(Rect::new(x0, 0, x0 + wd, 560), &col);
+    }
+    // Something for the brush to take up and carry: stripes and a pale patch.
+    for i in 0..6 {
+        let x = 120 + i * 210;
+        pre.fill_rect(Rect::new(x, 60, x + 60, 500), &[0.95, 0.93, 0.88, 1.0]);
+    }
+    pre.fill_rect(Rect::new(0, 430, 1400, 560), &[0.62, 0.62, 0.60, 1.0]);
+
+    let mut b = brush();
+    b.size = 150.0;
+    b.spacing = 0.05;
+    b.hardness = 0.7;
+    b.flow = 1.0;
+    b.opacity = 1.0;
+    b.color = [0.78, 0.10, 0.22, 1.0]; // a saturated crimson the brush puts down
+    b.pressure_size = true;
+    b.pressure_opacity = false;
+    b.mix_settings.enabled = true;
+    b.mix_settings.strength = 0.85;
+    b.mix_settings.length = 0.3;
+    b.mix_settings.color_output = true;
+    b.mix_settings.output_strength = 1.0;
+    b.mix_settings.concentration = 1.0;
+    b.pigment_mix_strength = 0.0;
+
+    let pts: Vec<StrokePoint> = (0..110)
+        .map(|i| {
+            let t = i as f64 / 109.0;
+            let x = 70.0 + 1270.0 * t;
+            let y = 290.0 + (t * std::f64::consts::TAU).sin() * 70.0;
+            // lightest to hardest, the pen's own pressure
+            StrokePoint::new(x, y, (0.02 + 0.98 * t as f32).min(1.0))
+        })
+        .collect();
+
+    let mut s = pre.clone();
+    let mut r = StrokeRenderer::on_surface(&b, &pre, 1.0);
+    r.push(&pts);
+    r.finish();
+    r.composite(&pre, &mut s, None, false, true);
+    let s = s;
+
+    // 24-bit BMP, bottom-up, so the picture can be looked at as it comes out.
+    let out = "E:/000 app/s.PhotoCraft/dist/pen-pressure-mix.bmp";
+    let row = (w * 3 + 3) & !3;
+    let row_u = row as u32;
+    let mut bytes = vec![0u8; 54 + row * h];
+    let (fw, fh) = (w as u32, h as u32);
+    bytes[0..2].copy_from_slice(b"BM");
+    let size = bytes.len() as u32;
+    bytes[2..6].copy_from_slice(&size.to_le_bytes());
+    bytes[10..14].copy_from_slice(&54u32.to_le_bytes());
+    bytes[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bytes[18..22].copy_from_slice(&(fw as i32).to_le_bytes());
+    bytes[22..26].copy_from_slice(&(fh as i32).to_le_bytes());
+    bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bytes[28..30].copy_from_slice(&24u16.to_le_bytes());
+    bytes[34..38].copy_from_slice(&(row_u * fh).to_le_bytes());
+    for y in 0..h {
+        let dst = 54 + (h - 1 - y) * row;
+        for x in 0..w {
+            let c = s.rgba(x as i32, y as i32);
+            let o = dst + x * 3;
+            bytes[o] = (c[2].clamp(0.0, 1.0) * 255.0) as u8;
+            bytes[o + 1] = (c[1].clamp(0.0, 1.0) * 255.0) as u8;
+            bytes[o + 2] = (c[0].clamp(0.0, 1.0) * 255.0) as u8;
+        }
+    }
+    std::fs::write(out, &bytes).unwrap();
+    println!("wrote {out}");
+}
+
+#[test]
+fn tmp_smear_pickup_probe() {
+    let mut pre = Surface::new(PixelFormat::RGBA32F);
+    pre.fill_rect(Rect::new(0, 0, 200, 120), &[0.8, 0.1, 0.1, 1.0]);
+    pre.fill_rect(Rect::new(200, 0, 400, 120), &[0.1, 0.2, 0.8, 1.0]);
+    for color_output in [true, false] {
+        let mut b = brush();
+        b.size = 80.0;
+        b.spacing = 0.1;
+        b.color = [0.0, 0.0, 0.0, 1.0];
+        b.pressure_size = false;
+        b.mix_settings.enabled = true;
+        b.mix_settings.strength = 1.0;
+        b.mix_settings.length = 0.9;
+        b.mix_settings.output_strength = 1.0;
+        b.mix_settings.color_output = color_output;
+        b.mix_settings.outputs_smudge = !color_output;
+        let pts: Vec<StrokePoint> = (0..60).map(|i| StrokePoint::new(60.0 + 270.0 * f64::from(i) / 59.0, 60.0, 1.0)).collect();
+        let mut s = pre.clone();
+        let mut r = StrokeRenderer::on_surface(&b, &pre, 1.0);
+        r.push(&pts);
+        r.finish();
+        r.composite(&pre, &mut s, None, false, true);
+        let at = |x: i32, y: i32| {
+            let c = s.rgba(x, y);
+            ((c[0] * 100.0).round(), (c[1] * 100.0).round(), (c[2] * 100.0).round(), (c[3] * 100.0).round())
+        };
+        println!("color_output={color_output}: start {:?} mid {:?} end {:?} pre-mid {:?}", at(120, 60), at(200, 60), at(300, 60), pre.rgba(300, 60));
+    }
 }
 
 #[test]

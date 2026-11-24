@@ -427,3 +427,28 @@ Ctrl+S 都会再弹一次文件选择框。改动三处：
 
 2026-11-14 换版本时，被替换的上一版 0.23.6 WinTab 工作树整目录留档在工作区
 `backup/photocraft-winTab-source-20261114-1442/`（约 16.9 GB，含 `target/`，不入库）。
+
+## 10. 自研改动：标题栏两个视图预览开关（2026-11-24）
+
+标题栏右端（主题图标左侧）加两枚方形图标按钮，都是**只改视图、不改文档**的开关，点一次开、
+再点一次关，开启时按钮走强调色：
+
+- 左：`contrast` 图标 —— View › Desaturate Preview（`view.desaturate`）。把显示饱和度降到 0，
+  算法是 **HSB 的 S = −100**（取最亮通道作灰度 = 明度/Value），**不是** Image › Adjustments ›
+  Desaturate 的亮度加权（0.299/0.587/0.114），两者对饱和红/蓝的明暗不一样，用户明确要前者。
+- 右：`arrow-left-right` 图标 —— 复用已有的 View › Flip Horizontal（`view.flipHorizontal`），
+  水平镜像视图（`ViewXform.flip` 早已贯穿输入映射、绘制、滚动条、标尺）。
+
+实现要点：
+
+- `menus/view_cmds.rs`：`ViewOptions::desaturate`（`serde(default)`，旧 ui.ron 可读）。
+- `menus/view_cmds/dispatch.rs`：`view.desaturate` 进 `handles` / `checked` / 命令分支，无参取反、
+  `{"on": bool}` 显式设置；`menu_catalog.rs` 在 View › Flip Horizontal 之后加同名菜单项。
+- GPU 画布：`ViewParams::desaturate` → `View` uniform 增加第 9 个 `vec4`（`VIEW_UNIFORM_SIZE`
+  128 → 144，`VIEW_FLOATS` 32 → 36），`CANVAS_WGSL::fs_tile` 在显示 LUT 之后、棋盘格之前取
+  `max(r,g,b)` 作灰度。
+- CPU 画布：`canvas/display.rs::desaturate` 对已合成的 `ColorImage` 取最大的（预乘）通道，
+  `canvas/textures.rs` 的 `shown_image` 在整张/局部/细节纹理上传前应用；开关本身折进
+  `display_key`（`1 << 56`），切换时纹理重传一次。
+- 窄窗口：两枚按钮各占一个 `ICON_SLOT`，只有四个图标都放得下时才显示（否则仍在 View 菜单里）。
+
