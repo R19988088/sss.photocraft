@@ -207,14 +207,18 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
      （125 px/帧）满 1，`over.sqrt()`；`SPEED_FRAMES=3` 帧加权平滑，首点直取。`StepInput.speed`
      的语义因此是 0..1，不再是 px/ms —— 别再按 `distance/elapsed` 算，那会让 dab 间距
      （5px 级）永远测不到速度。
-   - 压力 = `SOFTEN_FRAMES=2`：`held = 2/frames`、`ramp = min(points/held,1)*held`、
-     `soft = (p + ramp*before)/(ramp+1)`，首点直通。作用在 `StrokePoint.pressure` 上（各 dynamics
-     都从压力派生），头几个点渐入、之后是按帧计的低通（240Hz 笔约 9 点、约 40 ms）。`frames`
-     取相邻输入点的时间差 `dt*0.06`，没有时间时按笔 0.25 / 手指 0.5 帧。
-   - 没位移的点（抬笔、原地加压）不软化、不改速度：ProCraft 的 lift 事件不进 `pressed_on`，
-     我们的抬笔点也不该被拖高。
+   - 压力 = **不做任何软化，笔在哪一点报多少就用多少**（2026-11-24 改；原先是
+     `SOFTEN_FRAMES=2` 的按帧低通：`held = 2/frames`，240Hz 笔约 9 点/40ms 滞后）。
+     理由是参照项目（`sssp_c3_bucket_params_20261114` 的 `ContentView.stampSegment`）里压力
+     只有 `c2ProcessedPressure`（恒等映射）+ 段内线性插值，**stroke 路径上没有按点的低通**；
+     用户实测「结尾的部分压力完全拒绝接收真实变化」就是那条低通把抬笔前的最后十来个样本
+     压在旧值上，尾巴收不下去。`PathWalker::soften` / `soft_pressure` / `soft_points` /
+     `SOFTEN_FRAMES` 已删，**别再按 ProCraft 的 `soften` 加回来**。
+   - 速度仍按上一项（`note_speed`）结算；`frames` 取相邻输入点的时间差 `dt*0.06`，
+     没有时间时按笔 0.25 / 手指 0.5 帧。
+   - 没位移的点（抬笔、原地加压）不改压力、不改速度：ProCraft 的 lift 事件不进 `pressed_on`。
    - `pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins` 的时间戳按 240Hz（4ms）
-     且压力末段保持 0.2：软化让压力滞后几帧，这是行为不是 bug，别把断言改回去。
+     且压力末段保持 0.2：现在压力直通，末段 dab 立刻就是 0.2 的尺寸（断言已按直通改过）。
 
 12. **笔迹的点来自笔本身，不是系统光标**（2026-11-19，「速度还是影响了距离」的根因）：
    ProCraft 的 `desktop/src/pen/windows*.rs` 读 WinTab 包的 `PK_X`/`PK_Y`，位置按笔的采样率到；
@@ -269,6 +273,15 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
      传 `None` 等于抬笔样本整个丢掉。
    - 仍然成立：`d.points` 里抬笔点的压力是**末次读数**（`ToolEvent::Up`），别改成 0 或
      `release_pressure()` 那张表——2026-11-23 试过改末点压力，尾部会出现「压力重新计算」的块。
+   - 2026-11-24 第二轮（用户「结尾的部分压力完全拒绝接收真实变化」+「看 mac 那边的真实代码，
+     只看压力部分」）：真正把尾巴压住的是 `dynamics.rs` 里按点跑的压力低通（`soften`），
+     不是这个 Filter —— 已删（见第 11 条）。核对参照项目
+     `~/Documents/sssp_c3_bucket_params_20261114/Sources/App/ContentView.swift` 的
+     `consumeStabilizedSamples` → `stampSegment`：压力一路直传到 `c2ProcessedPressure`
+     （恒等）+ 段内 `previousPressure → currentPressure` 线性插值，stroke 路径上没有低通。
+     它的 `SaiStrokeInputStabilizer`（`Sources/Pressure/`）与本仓库 `TabletPressureFilter`
+     是同一份代码（同样有 `result.count <= 4` 的收笔门槛，同样 `finish(at:)` 只调 `end()`），
+     所以「mac 那边尾巴好看」不是因为它做了额外处理，而是因为它**没有那层低通**。
 
 ## 5b. 笔刷文件导入（`.abr/.tpl/.gbr/…`，`crates/io/src/brush_import`）
 

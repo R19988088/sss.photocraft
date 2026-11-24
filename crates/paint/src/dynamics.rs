@@ -31,9 +31,6 @@ const SPEED_FRAMES: f32 = 3.0;
 /// finger's at 120 (ProCraft's `sample_frames`).
 const PEN_SAMPLE_FRAMES: f32 = 0.25;
 const FINGER_SAMPLE_FRAMES: f32 = 0.5;
-/// How many frames the pressure each dynamic follows is evened out over (ProCraft's `soften`,
-/// `2.0 / frames`): eased in over the stroke's first points, a low pass after.
-const SOFTEN_FRAMES: f32 = 2.0;
 
 // The path between two input points bends along a Centripetal Catmull–Rom stretch (ProCraft's
 // `walk_curve`), walked in chords of at most `CURVE_STEP` pixels. This is what makes a stroke
@@ -317,11 +314,6 @@ pub struct PathWalker {
     speed_known: bool,
     /// The speed the last input point went at, for the dabs between the last two points.
     last_speed: f32,
-    /// The pressure each dynamic follows at the last input point (ProCraft's `soften`). None at a
-    /// stroke's first point, which is taken as it is.
-    soft_pressure: Option<f32>,
-    /// How many input points the stroke has had, for the soften's ease-in over its first ones.
-    soft_points: u32,
     sensor_distance: f32,
     /// The point the path ran through before `last`: the bend of the curve between `last` and the
     /// point coming in (see [`curve_pieces`]).
@@ -350,8 +342,6 @@ impl PathWalker {
             sensor_speed: 0.0,
             speed_known: false,
             last_speed: 0.0,
-            soft_pressure: None,
-            soft_points: 0,
             sensor_distance: 0.0,
             before: None,
             release_reference: 1.0,
@@ -443,24 +433,6 @@ impl PathWalker {
         self.sensor_speed
     }
 
-    /// The pressure each dynamic follows (ProCraft's `soften`): the point's pace eases in over the
-    /// stroke's first points — both are evened out with the last one, more so the more they are
-    /// apart — and a low pass after, whose weight follows how many samples a frame carries (a pen
-    /// reports several, so each point moves the value less and pressure changes over two frames).
-    fn soften(&mut self, mut p: StrokePoint, frames: f32) -> StrokePoint {
-        let held = SOFTEN_FRAMES / frames;
-        let Some(before) = self.soft_pressure else {
-            self.soft_pressure = Some(p.pressure);
-            self.soft_points = 1;
-            return p;
-        };
-        let ramp = (self.soft_points as f32 / held).clamp(0.0, 1.0) * held;
-        p.pressure = ((p.pressure + ramp * before) / (ramp + 1.0)).clamp(0.0, 1.0);
-        self.soft_pressure = Some(p.pressure);
-        self.soft_points = self.soft_points.saturating_add(1);
-        p
-    }
-
     fn emit(&mut self, point: StrokePoint, speed: f32, out: &mut impl FnMut(StepInput)) {
         if let Some(previous) = self.sensor_point {
             self.sensor_distance += (point.x - previous.x).hypot(point.y - previous.y) as f32;
@@ -480,22 +452,20 @@ impl PathWalker {
 
     pub fn push(&mut self, mut p: StrokePoint, step_len: &impl Fn(&StepInput) -> f64, out: &mut impl FnMut(StepInput)) {
         // ProCraft's `pressed_on` settles each input point before its dabs: its speed (so a dab's
-        // Speed dial reads in 0..1 of a fast stroke, not pixels a millisecond), and the pressure
-        // the dynamics follow (eased in at the start, a low pass after). A point that did not
-        // move is a lift or a press in place: it keeps the pressure it reports.
+        // Speed dial reads in 0..1 of a fast stroke, not pixels a millisecond). The pressure is
+        // **not** evened out: it is the pen's at that point, so the stroke's tail follows the pen
+        // to its lift. A low pass here (the old `soften`, two frames — about nine samples at a
+        // pen's 240 Hz) held the last stretch at the coarser pressure before the lift, which reads
+        // as a tail that refuses to thin. A point that did not move is a lift or a press in place:
+        // it keeps the pressure it reports.
         let mut speed = self.sensor_speed;
         if let Some(a) = self.last {
             let distance = (p.x - a.x).hypot(p.y - a.y);
             let frames = self.frames_since(&p);
             speed = self.note_speed(distance, frames);
-            if distance > 1e-9 {
-                p = self.soften(p, frames);
-            }
         }
         let Some(a) = self.last else {
-            // The stroke's first point is taken as it is; the ones after it are evened out with it.
-            self.soft_pressure = Some(p.pressure);
-            self.soft_points = 1;
+            // The stroke's first point is taken as it is.
             self.last = Some(p);
             self.last_speed = speed;
             self.pending_first = Some(p);

@@ -1614,11 +1614,11 @@ fn pitch_follows_the_stamp_so_the_overlap_holds_as_the_pen_thins() {
 }
 
 #[test]
-fn the_pressure_the_dynamics_follow_eases_in_and_settles_behind_the_pen() {
-    // ProCraft's `soften`: a stroke's first point is taken as it comes, then each moves the value
-    // less, a low pass over two frames (a pen's samples are a quarter of one), so a step in the
-    // pen's own pressure reaches the dabs over a few tens of centimetres of path rather than at
-    // once. The panel's Pressure→Size shows it as the stamp's size.
+fn the_pressure_the_dynamics_follow_is_the_pens_own_at_every_point() {
+    // Pressure reaches the dabs as the pen reports it, the way ProCraft and Photoshop do it: no
+    // low pass at the stroke level (the old `soften` held each point two frames back — about nine
+    // samples at 240 Hz — so the last stretch before the lift kept the coarser pressure before it
+    // and the tail refused to thin). The panel's Pressure→Size shows it as the stamp's size.
     let b = BrushSettings { size: 100.0, spacing: 1.0, pressure_size: true, ..brush() };
     let pts: Vec<StrokePoint> = (0..=24)
         .map(|i| StrokePoint { time: i as f64 * 4.0, ..StrokePoint::new(i as f64 * 100.0, 10.0, if i == 0 { 1.0 } else { 0.2 }) })
@@ -1628,8 +1628,8 @@ fn the_pressure_the_dynamics_follow_eases_in_and_settles_behind_the_pen() {
         d.iter().min_by(|a, b| (a.center.x - x).abs().total_cmp(&(b.center.x - x).abs())).unwrap().radius
     };
     assert!(radius_at(0.0) > 45.0, "the first dab carries the pen's own pressure");
-    assert!(radius_at(100.0) > 24.0, "the second dab jumped to the step at once: {}", radius_at(100.0));
-    assert!(radius_at(2400.0) < 12.0, "the pressure did not settle: {}", radius_at(2400.0));
+    assert!(radius_at(100.0) < 12.0, "the second dab kept the step at bay: {}", radius_at(100.0));
+    assert!(radius_at(200.0) < 12.0, "the step settled after one point: {}", radius_at(200.0));
 }
 
 #[test]
