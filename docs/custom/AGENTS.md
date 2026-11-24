@@ -253,6 +253,22 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
      但不再生效；`dynamics::taper_end` 只剩单测在用。别再把它接回抬笔路径。
    - 还没照搬的参考项（用户没要求，别顺手加）：`taper.start`（起笔 0.15 渐显）、`opacity` 锥度、
      `tip_animation`、classic taper 的 `run_on`（`RUN_ON_PEN=1` / `RUN_ON_SHRINK=0.66`）。
+14. **压力当帧直取：不许被延迟线或窗口拖着走，收笔把抬笔的 0 送进管线**（2026-11-24，
+   用户给的是 PS/Procreate 口径：「压力是当帧直取，延迟只来自坐标平滑；抬笔那几枚 dab 立刻呈现真实
+   低压」）。三条在 `tablet_pressure.rs` + `input/stylus.rs` 落地，改回去会立刻退回「末端压力卡在中段、
+   然后突然停住」：
+   - `TabletPressureFilter::pressure_now()` 读 **`last_pressure`**（最新样本自己映射出来的压力），
+     不再读 `last_emitted`——那是坐标稳定线延迟一段之后的节点，笔压会整整晚一段样本，
+     抬笔前最后几个真实低压永远追不上笔迹。`last_pressure` 是这次新增的字段。
+   - `push` 拆成 `push_with(sample, unfiltered)`；`filtered_node_now()` 走同一份
+     `calibrated`（死区/满压/弹性）但**不进 `Filter16` 窗口**。`finish` 的收笔样本一律
+     `unfiltered = true`：窗口里还留着前面几个较粗的样本，均值会让尾巴变粗。
+   - `finish` 的排空**无条件执行**（旧的 `output.len() <= 4` 门槛只对「点一下」这种短笔画成立，
+     长笔画压住的那段真实压力根本排不出去）；`Stylus::finish_pressure_filter` 用
+     `finish(Some(pressure = 0.0))` 而不是 `finish(None)`——抬笔的 0 是结束尾巴的那一帧，
+     传 `None` 等于抬笔样本整个丢掉。
+   - 仍然成立：`d.points` 里抬笔点的压力是**末次读数**（`ToolEvent::Up`），别改成 0 或
+     `release_pressure()` 那张表——2026-11-23 试过改末点压力，尾部会出现「压力重新计算」的块。
 
 ## 5b. 笔刷文件导入（`.abr/.tpl/.gbr/…`，`crates/io/src/brush_import`）
 

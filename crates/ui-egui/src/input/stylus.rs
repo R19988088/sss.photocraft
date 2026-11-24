@@ -746,10 +746,14 @@ impl Stylus {
         sample_at(&self.filtered, t).map(|s| s.pressure)
     }
 
-    /// Flush the tablet response at the end of a stroke.
+    /// Flush the tablet response at the end of a stroke. The lift's own reading goes in as the
+    /// stroke's last sample: the pen's force is already falling in its last readings, and its zero
+    /// is the sample that ends the tail. Handing the response `None` dropped the lift entirely, so
+    /// the delay line's last segment — the stroke's real final pressure — never left the filter.
     pub(crate) fn finish_pressure_filter(&mut self) {
         if self.tablet_response.is_some() {
-            let _ = self.pressure_filter.finish(None);
+            let lift = photocraft_paint::StrokePoint { is_pen: true, x: 0.0, y: 0.0, pressure: 0.0, ..Default::default() };
+            let _ = self.pressure_filter.finish(Some(lift));
         }
         self.filtered.clear();
         self.filter_open = false;

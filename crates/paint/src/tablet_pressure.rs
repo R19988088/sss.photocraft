@@ -194,6 +194,9 @@ pub struct TabletPressureFilter {
     curve: Option<Curve>,
     last_raw: Option<StrokePoint>,
     last_emitted: Option<Node>,
+    /// The pressure the latest sample mapped to, before the coordinate delay line: the brush
+    /// reads this, never the delayed point's own.
+    last_pressure: Option<i64>,
     pressure_active: bool,
     pressure_activated: bool,
 }
@@ -221,6 +224,13 @@ impl TabletPressureFilter {
     }
 
     pub fn push(&mut self, sample: StrokePoint) -> Vec<StrokePoint> {
+        self.push_with(sample, false)
+    }
+
+    /// Whether the sample's pressure goes through the averaging window. The lift's own reading
+    /// goes in unfiltered: the window still holds the coarser samples just before it, and that
+    /// mean is exactly the pressure the tail must not keep.
+    fn push_with(&mut self, sample: StrokePoint, unfiltered: bool) -> Vec<StrokePoint> {
         let Some(settings) = self.settings else {
             return Vec::new();
         };
@@ -228,7 +238,7 @@ impl TabletPressureFilter {
         if !settings.enabled {
             return vec![sample];
         }
-        let node = self.filtered_node(sample, settings);
+        let node = if unfiltered { self.filtered_node_now(sample, settings) } else { self.filtered_node(sample, settings) };
         if self.pressure_activated || settings.coordinate_window == 1 {
             self.pressure_activated = false;
             self.last_emitted = Some(node);
@@ -254,9 +264,12 @@ impl TabletPressureFilter {
     }
 
     /// The response's pressure for the latest sample, without the coordinate delay line: the
-    /// brush uses this while the delayed points catch up.
+    /// brush uses this while the delayed points catch up. Reading the last *emitted* point here
+    /// instead put the pressure a whole segment of the stability line behind the pen, so the
+    /// stroke's last readings — the ones the pen thins with as it lifts — never reached a dab and
+    /// the tail stopped at the coarser pressure before them.
     pub fn pressure_now(&self) -> f32 {
-        self.last_emitted.map_or(1.0, |node| node.sample.pressure)
+        self.last_pressure.map_or(1.0, pressure_value)
     }
 
     /// This filter's pressure for one reading on its own: the dead zone, full-press calibration
@@ -281,15 +294,19 @@ impl TabletPressureFilter {
             let same =
                 self.last_raw.is_some_and(|last| last.x == sample.x && last.y == sample.y && last.pressure == sample.pressure && last.time == sample.time);
             if !same {
-                output.extend(self.push(sample));
+                // The stroke's last sample is read as it is: the window would hold the tail up
+                // at the coarser readings behind it.
+                output.extend(self.push_with(sample, true));
             }
         }
+        // Drain the delay line, whatever the stroke's length: the segment it still holds is the
+        // stroke's last real pressure. The old length test only ran for a tap, so every longer
+        // stroke kept its tail in the curve state and ended where the last emitted sample stopped.
         if settings.enabled
             && settings.coordinate_window > 1
-            && output.len() <= 4
             && let Some(last) = self.last_raw
         {
-            output.extend(self.push(StrokePoint { pressure: 0.0, ..last }));
+            output.extend(self.push_with(StrokePoint { pressure: 0.0, ..last }, true));
         }
         self.reset();
         output
@@ -312,6 +329,30 @@ impl TabletPressureFilter {
                 PRESSURE_FLOOR
             }
         };
+        let x = self.x.apply(coordinate(sample.x), settings.coordinate_window);
+        let y = self.y.apply(coordinate(sample.y), settings.coordinate_window);
+        self.last_pressure = Some(pressure);
+        Node { x, y, pressure, sample: StrokePoint { x: x as f64 / 256.0, y: y as f64 / 256.0, pressure: pressure_value(pressure), ..sample } }
+    }
+
+    /// [`Self::filtered_node`] with this reading's own pressure: no averaging window, so the
+    /// pressure a sample maps to is the pen's at that sample. The lift reads its own zero
+    /// through this, and the delay line's drain keeps the stroke's final segment.
+    fn filtered_node_now(&mut self, sample: StrokePoint, settings: TabletPressureSettings) -> Node {
+        let curved = calibrated(sample.pressure, &settings);
+        let pressure = if curved == 0 {
+            self.pressure = Filter16::default();
+            self.pressure_active = false;
+            self.pressure_activated = false;
+            0
+        } else if self.pressure_active {
+            curved.max(PRESSURE_FLOOR)
+        } else {
+            self.pressure_active = true;
+            self.pressure_activated = true;
+            PRESSURE_FLOOR
+        };
+        self.last_pressure = Some(pressure);
         let x = self.x.apply(coordinate(sample.x), settings.coordinate_window);
         let y = self.y.apply(coordinate(sample.y), settings.coordinate_window);
         Node { x, y, pressure, sample: StrokePoint { x: x as f64 / 256.0, y: y as f64 / 256.0, pressure: pressure_value(pressure), ..sample } }
@@ -388,6 +429,53 @@ mod tests {
         filter.begin(StrokePoint::new(0.0, 0.0, 0.3), settings);
         let next = filter.push(StrokePoint::new(10.0, 0.0, 0.6));
         assert!((next[0].pressure - 0.237).abs() < 0.01, "elasticity 6 maps 0.6 to about 0.24, got {}", next[0].pressure);
+    }
+
+    #[test]
+    fn the_pressure_is_read_when_the_sample_comes_not_a_segment_later() {
+        // The stability line holds coordinates back a segment; the pressure must not travel with
+        // them. Reading the delayed point made the stroke's last readings — the pen thinning
+        // away — arrive after the stroke had already ended, and the tail stopped coarse.
+        let mut filter = TabletPressureFilter::default();
+        filter.begin(StrokePoint::new(0.0, 0.0, 0.9), settings());
+        for p in [0.8, 0.7, 0.2] {
+            filter.push(StrokePoint::new(0.0, 0.0, p));
+        }
+        let now = filter.pressure_now();
+        let own = filter.mapped_pressure(0.2, settings());
+        assert!((now - own).abs() < 0.01, "the latest reading maps to {own}, the brush read {now}");
+    }
+
+    #[test]
+    fn the_strokes_last_sample_reads_its_own_pressure_not_the_window() {
+        // A five-sample window still holds the coarser readings behind the last one; the stroke's
+        // final sample goes in unfiltered so the tail keeps the pen's own last reading.
+        let settings = TabletPressureSettings { pressure_window: 5, ..settings() };
+        let mut filter = TabletPressureFilter::default();
+        filter.begin(StrokePoint::new(0.0, 0.0, 0.8), settings);
+        for i in 1..=6 {
+            filter.push(StrokePoint::new(f64::from(i) * 2.0, 0.0, 0.8));
+        }
+        let tail = filter.finish(Some(StrokePoint::new(14.0, 0.0, 0.2)));
+        let own = TabletPressureFilter::default().mapped_pressure(0.2, settings);
+        let last = tail.last().expect("the last sample and the drain both emit");
+        assert!((last.pressure - own).abs() < 0.02, "the last sample maps to {own}, the stroke kept {}", last.pressure);
+    }
+
+    #[test]
+    fn a_long_stroke_still_drains_its_last_segment() {
+        // Every stroke longer than a tap used to skip the drain, so the segment the curve still
+        // held never reached the stroke.
+        let mut filter = TabletPressureFilter::default();
+        filter.begin(StrokePoint::new(0.0, 0.0, 0.2), settings());
+        for i in 1..=30 {
+            filter.push(StrokePoint::new(f64::from(i), 0.0, 0.2));
+        }
+        let tail = filter.finish(None);
+        assert!(!tail.is_empty(), "the last segment was dropped");
+        // The coordinate line smooths the drain's own position too, so the tail ends within
+        // the window of the stroke's last sample instead of exactly on it.
+        assert!((tail.last().unwrap().x - 30.0).abs() <= 1.0, "the tail ends at {:?}", tail.last());
     }
 
     #[test]
