@@ -304,6 +304,34 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
   `low_mixing_keeps_...` 的边缘比较改成「开/关混色的像素差」，`the_live_renderer_only_mixes...`
   从「拖色取代笔刷色」改成「笔刷色为主、拖色着色」。**改常量时这 5 条要一起看**。
 
+## 5d. 笔刷设置里的曲线 = 两端点 + 两拖拽手柄（2026-11-24）
+
+用户口径：**把所有曲线的中间三个点去掉，只留左右两个端点和两个拖拽手柄**
+（截图是 Brush Settings › 混合 › 混合强度 的曲线框，7 个白点被红框圈住中间 3 个）。
+
+模型（`crates/paint/src/pigment_material.rs::SignedCurve`）从「两端点 + 中间锚点的双段三次
+贝塞尔（7 点）」改成**单段三次贝塞尔**：
+
+- 字段 `anchors: [[f32; 2]; 4]`，顺序 = 起点、起点手柄、终点手柄、终点；`enabled` 不变。
+  起点 x 恒 0、终点 x 恒 1，两个手柄只在 x∈(0,1) 内、且彼此有序（`normalize_handles*`），
+  所以曲线永远还是「输入 → 值」的函数。手柄默认落在 1/3、2/3。
+- `line()` = 对角直线（未设置时的默认形状，代替旧的 `[x,x]` 七点）；
+  `from_points` / `from_legacy` 把任意点列（含旧预设的 7 点）**最小二乘拟合**成这条单段曲线，
+  旧预设的形状基本保留（不再有平台段，坡度会略柔）。
+- 序列化：新的存 `"anchors"`；读的时候 `Deserialize` 先认 `anchors`，再认旧 `"points"`
+  （7 点走 `from_legacy`、其它点数走 `from_points`），两者都没有才用默认。**旧笔刷文件不用手动迁移。**
+  控制通道 `paint.stroke` 的 brush 里仍可传 7 点 `points`（走同一条兼容路径）。
+- UI（`crates/ui-egui/src/panels/brush_sections.rs::effect_curve_graph`）只画 4 个点：
+  两端点画大点、两手柄画小点并用细线连到各自端点；拖动时端点只改 y，手柄在邻居之间夹紧。
+  `signed_curve`（混合强度/厚度/模糊强度…）与 `reference_effect_curve`（默认钟形）同此；
+  画布材质曲线（`canvas_edit_curve`）也换成这套，写回时存 `anchors`。
+- **不动**：动态里的「响应曲线」（`crates/ui-egui/src/pressure_curve_ui.rs::edit_points` 的
+  点击加点 / 右键删点 + Preferences 压感曲线），那是变长点列的另一个模型。
+- 参考钟形（`transport::pressure_value` 无曲线时）直接用单段 cubic：手柄高度取 `strength / 0.75`
+  让峰值正好落在强度值上；鼠标笔（无压感）直接取强度，不再读曲线最大值。
+  单测口径：`pigment_material` 的 `handles_keep_their_order…` / `a_seven_point_preset_is_read_as_the_nearest_cubic`，
+  `transport` 的钟形断言从「0.3 压力 ≥0.69」放宽到「0.3 > 0.5、0.5 > 0.65」（单段没有平台段）。
+
 ## 6. 交付物
 
 - `dist/release/PhotoCraft.app`、`dist/release/PhotoCraft-0.24.0-arm64.zip`（`custom-merged` 的构建产物）。

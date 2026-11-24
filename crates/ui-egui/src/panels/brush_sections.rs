@@ -1094,13 +1094,7 @@ pub(crate) fn section_body_with_canvas(
 }
 
 fn signed_curve(ui: &mut egui::Ui, id: &str, curve: &mut Option<paint::pigment_material::SignedCurve>) {
-    let mut value = curve.clone().unwrap_or(paint::pigment_material::SignedCurve {
-        points: std::array::from_fn(|i| {
-            let x = i as f32 / 6.0;
-            [x, x]
-        }),
-        enabled: true,
-    });
+    let mut value = curve.clone().unwrap_or_else(paint::pigment_material::SignedCurve::line);
     if effect_curve_graph(ui, id, &mut value, true) {
         *curve = Some(value);
     }
@@ -1126,8 +1120,17 @@ fn effect_curve_graph(ui: &mut egui::Ui, id: &str, curve: &mut paint::pigment_ma
             })
             .collect();
         ui.painter().add(egui::Shape::line(points, Stroke::new(1.5, t.accent)));
-        for p in curve.points {
-            ui.painter().circle_filled(to_pos(p), 3.5, t.text);
+        // The curve is one cubic: only its two ends and the two handles that shape it are shown,
+        // each handle joined to the end it pulls on by a thin line.
+        let [start, handle_start, handle_end, end] = curve.anchors;
+        for (from, to) in [(start, handle_start), (end, handle_end)] {
+            ui.painter().line_segment([to_pos(from), to_pos(to)], Stroke::new(1.0, t.text_dim));
+        }
+        for p in [start, end] {
+            ui.painter().circle_filled(to_pos(p), 4.0, t.text);
+        }
+        for p in [handle_start, handle_end] {
+            ui.painter().circle_filled(to_pos(p), 3.0, t.accent);
         }
         if (response.dragged() || response.clicked())
             && let Some(pos) = response.interact_pointer_pos()
@@ -1135,7 +1138,7 @@ fn effect_curve_graph(ui: &mut egui::Ui, id: &str, curve: &mut paint::pigment_ma
             let key = ui.id().with("signed-curve-point");
             let selected = (if response.drag_started() || response.clicked() {
                 let nearest = curve
-                    .points
+                    .anchors
                     .iter()
                     .enumerate()
                     .min_by(|(_, a), (_, b)| to_pos(**a).distance_sq(pos).total_cmp(&to_pos(**b).distance_sq(pos)))
@@ -1145,19 +1148,20 @@ fn effect_curve_graph(ui: &mut egui::Ui, id: &str, curve: &mut paint::pigment_ma
             } else {
                 ui.data(|d| d.get_temp::<usize>(key)).unwrap_or(0)
             })
-            .min(6);
+            .min(3);
             let y = ((graph.bottom() - pos.y) / graph.height() * (1.0 - minimum) + minimum).clamp(minimum, 1.0);
-            let x = if selected == 0 {
-                0.0
-            } else if selected == 6 {
-                1.0
-            } else {
-                let lo = curve.points[selected - 1][0];
-                let hi = curve.points[selected + 1][0];
-                let margin = ((hi - lo) * 0.1).min(0.001);
-                ((pos.x - graph.left()) / graph.width()).clamp(lo + margin, hi - margin)
+            // The ends keep their x; the handles keep their side of each other (and of the ends).
+            let x = match selected {
+                0 => 0.0,
+                3 => 1.0,
+                _ => {
+                    let lo = curve.anchors[selected - 1][0];
+                    let hi = curve.anchors[selected + 1][0];
+                    let margin = ((hi - lo) * 0.1).min(0.001);
+                    ((pos.x - graph.left()) / graph.width()).clamp(lo + margin, hi - margin)
+                }
             };
-            curve.points[selected] = [x, y];
+            curve.anchors[selected] = [x, y];
             curve.normalize_handles_with_minimum(minimum);
         }
     });
@@ -1221,9 +1225,8 @@ fn mix_settings(ui: &mut egui::Ui, m: &mut paint::transport::BrushMixSettings) {
 }
 
 fn reference_effect_curve(ui: &mut egui::Ui, id: &str, label: &str, curve: &mut Option<paint::pigment_material::SignedCurve>, strength: f32) {
-    let mut value = curve.clone().unwrap_or(paint::pigment_material::SignedCurve {
-        points: [[0.0, 0.0], [0.1, 0.0], [0.2, strength], [0.3, strength], [0.53, strength], [0.77, 0.0], [1.0, 0.0]],
-        enabled: true,
+    let mut value = curve.clone().unwrap_or_else(|| {
+        paint::pigment_material::SignedCurve::from_legacy([[0.0, 0.0], [0.1, 0.0], [0.2, strength], [0.3, strength], [0.53, strength], [0.77, 0.0], [1.0, 0.0]])
     });
     let before = value.clone();
     ui.push_id(id, |ui| {
@@ -1379,28 +1382,12 @@ fn canvas_settings(ui: &mut egui::Ui, b: &mut BrushSettings, presets: &[BrushPre
     widgets::dropdown(ui, "canvas-material-mode", "", &mut m.blend_mode, &modes, 160.0);
     let mut curve = canvas_edit_curve(&m.curve);
     if effect_curve_graph(ui, "canvas-color-curve", &mut curve, false) {
-        m.set_curve(curve.points.to_vec());
+        m.set_curve(curve.anchors.to_vec());
     }
 }
 
 fn canvas_edit_curve(points: &[[f32; 2]]) -> paint::pigment_material::SignedCurve {
-    let points = if let Ok(points) = <[[f32; 2]; 7]>::try_from(points) {
-        points
-    } else {
-        let at = |x: f32| {
-            points.windows(2).find(|p| x <= p[1][0]).map_or(x, |p| {
-                let t = ((x - p[0][0]) / (p[1][0] - p[0][0]).max(f32::EPSILON)).clamp(0.0, 1.0);
-                p[0][1] + (p[1][1] - p[0][1]) * t
-            })
-        };
-        let anchors = [[0.0, points.first().map_or(0.0, |p| p[1])], [0.5, at(0.5)], [1.0, points.last().map_or(1.0, |p| p[1])]];
-        std::array::from_fn(|i| {
-            let lane = usize::from(i > 3);
-            let t = (i - lane * 3) as f32 / 3.0;
-            std::array::from_fn(|axis| anchors[lane][axis] + (anchors[lane + 1][axis] - anchors[lane][axis]) * t)
-        })
-    };
-    paint::pigment_material::SignedCurve { points, enabled: true }
+    paint::pigment_material::SignedCurve::from_points(points)
 }
 
 #[cfg(test)]

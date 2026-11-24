@@ -77,10 +77,17 @@ impl CanvasMaterial {
         std::array::from_fn(|i| lerp(pigment[i], blended[i].clamp(0., 1.), weight))
     }
 }
-/// C3's 256-entry natural spline, or the seven-node pressure Bézier representation.
+/// C3's 256-entry natural spline, or the four-node (ends + handles) cubic representation.
 pub fn curve_lut(points: &[[f32; 2]]) -> Vec<f32> {
     if points.len() == 7 {
-        let c = SignedCurve { points: std::array::from_fn(|i| points[i]), enabled: true };
+        let c = SignedCurve::from_legacy(std::array::from_fn(|i| points[i]));
+        if c.is_valid() {
+            return (0..256).map(|i| c.value(i as f32 / 255.).clamp(0., 1.)).collect();
+        }
+    }
+    if points.len() == 4 {
+        let mut c = SignedCurve { anchors: std::array::from_fn(|i| points[i]), enabled: true };
+        c.normalize_handles_with_minimum(0.);
         if c.is_valid() {
             return (0..256).map(|i| c.value(i as f32 / 255.).clamp(0., 1.)).collect();
         }

@@ -692,44 +692,25 @@ pub fn effective_strength(enabled: bool, strength: f32) -> f32 {
     if enabled && strength <= 0.0 { 0.5 } else { strength }
 }
 
-/// C3's absolute two-segment pressure curve; mouse strokes use its maximum.
+/// The reference bell a mixing section starts from; mouse strokes use the flat strength.
 pub fn pressure_value(curve: Option<&crate::pigment_material::SignedCurve>, strength: f32, pressure: f32, is_pen: bool) -> f32 {
     // The tick on the curve panel means "let pressure drive this". Unticked, the section keeps its
     // flat strength: a disabled curve must not switch the whole effect off.
     if let Some(c) = curve {
         return if c.enabled { c.value(pressure).clamp(0.0, 1.0) } else { strength.clamp(0.0, 1.0) };
     }
+    // A mouse has no pressure, so the unticked bell has to read as the section's own percentage.
+    if !is_pen {
+        return strength.clamp(0.0, 1.0);
+    }
+    // The reference bell as one cubic: rises, touches its peak at the middle, falls back to zero.
+    // Its handles are raised so the peak lands on the section's strength instead of 3/4 of it.
+    let handle = (strength / 0.75).clamp(0.0, 1.0);
     let bell = crate::pigment_material::SignedCurve {
-        points: [[0.0, 0.0], [0.1, 0.0], [0.2, strength], [0.3, strength], [0.53, strength], [0.77, 0.0], [1.0, 0.0]],
+        anchors: [[0.0, 0.0], [1.0 / 3.0, handle], [2.0 / 3.0, handle], [1.0, 0.0]],
         enabled: true,
     };
-    let curve = curve.unwrap_or(&bell);
-    if is_pen { curve.value(pressure).clamp(0.0, 1.0) } else { curve_maximum(curve).clamp(0.0, 1.0) }
-}
-
-fn curve_maximum(curve: &crate::pigment_material::SignedCurve) -> f32 {
-    let mut maximum = curve.points[0][1].max(curve.points[3][1]).max(curve.points[6][1]);
-    for start in [0, 3] {
-        let [a, b, c, d] = [curve.points[start][1], curve.points[start + 1][1], curve.points[start + 2][1], curve.points[start + 3][1]];
-        let q = -a + 3.0 * b - 3.0 * c + d;
-        let l = 2.0 * (a - 2.0 * b + c);
-        let k = b - a;
-        let discriminant = l * l - 4.0 * q * k;
-        let roots = if q.abs() < 1e-12 {
-            if l.abs() < 1e-12 { [f32::NAN; 2] } else { [-k / l, f32::NAN] }
-        } else if discriminant < 0.0 {
-            [f32::NAN; 2]
-        } else {
-            [(-l - discriminant.sqrt()) / (2.0 * q), (-l + discriminant.sqrt()) / (2.0 * q)]
-        };
-        for t in roots {
-            if t > 0.0 && t < 1.0 {
-                let u = 1.0 - t;
-                maximum = maximum.max(u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d);
-            }
-        }
-    }
-    maximum
+    bell.value(pressure).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -797,7 +778,9 @@ mod tests {
     #[test]
     fn c3_pressure_curves_are_absolute_and_nonmonotone() {
         assert!((pressure_value(None, 0.7, 1., false) - 0.7).abs() < 1e-6);
-        assert!(pressure_value(None, 0.7, 0.3, true) > 0.69);
+        // One cubic instead of two segments: no flat top any more, but a firm mid-pressure response.
+        assert!(pressure_value(None, 0.7, 0.3, true) > 0.5, "{}", pressure_value(None, 0.7, 0.3, true));
+        assert!(pressure_value(None, 0.7, 0.5, true) > 0.65, "{}", pressure_value(None, 0.7, 0.5, true));
         assert_eq!(pressure_value(None, 0.7, 1., true), 0.);
         // An unticked curve means "no pressure response", not "off": the flat strength still drives
         // the effect, which is what the section's percentage says.

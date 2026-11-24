@@ -2474,10 +2474,7 @@ fn a_descending_mixing_curve_smudges_on_light_pressure_only() {
     use crate::transport::{BrushMixSettings, MixAlgorithm};
     // The user's request: light pressure smudges, heavy pressure does not. The curve is the smudge
     // lane's own strength, so a descending curve must do exactly that.
-    let curve = SignedCurve {
-        points: [[0.0, 0.8], [0.1, 0.8], [0.2, 0.8], [0.3, 0.6], [0.53, 0.25], [0.77, 0.02], [1.0, 0.0]],
-        enabled: true,
-    };
+    let curve = SignedCurve::from_legacy([[0.0, 0.8], [0.1, 0.8], [0.2, 0.8], [0.3, 0.6], [0.53, 0.25], [0.77, 0.02], [1.0, 0.0]]);
     let drag = |pressure: f32| {
         let b = BrushSettings {
             size: 24.0,
@@ -2584,10 +2581,7 @@ fn the_three_mixing_algorithms_produce_three_different_strokes() {
     // A hard red/blue seam and one low-flow white stroke across it: mixing drags both plateaus into
     // the stroke. V1, V2 and V3 are three separate drag implementations, so their results must
     // differ pairwise — identical output would be the user's "all three modes do nothing".
-    let flat = SignedCurve {
-        points: [[0.0, 1.0], [0.1, 1.0], [0.2, 1.0], [0.3, 1.0], [0.53, 1.0], [0.77, 1.0], [1.0, 1.0]],
-        enabled: true,
-    };
+    let flat = SignedCurve { anchors: [[0.0, 1.0], [1.0 / 3.0, 1.0], [2.0 / 3.0, 1.0], [1.0, 1.0]], enabled: true };
     let run = |algorithm: MixAlgorithm| {
         let b = BrushSettings {
             size: 30.0,
