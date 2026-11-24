@@ -155,8 +155,14 @@ pub fn preview_pixels(b: &BrushSettings, w: u32, h: u32, color: [f32; 4]) -> Vec
     brush.dual_brush.size = (brush.dual_brush.size * k).max(1.0);
     brush.color = color;
     brush.erase = false;
+    // The preview paints on an empty surface, so mixing has nothing to mix with: running the
+    // wet-brush simulation here only burned time (400 ms of the strip's 410 ms with a mixing brush
+    // like the imported 勾线 preset) without changing what the strip shows — the tip shape, the
+    // spacing, the texture. `color_output` still stands so a Mixer Brush's strip shows its colour.
+    brush.mix_settings.enabled = false;
     brush.mix_settings.color_output = true;
     if let Some(secondary) = brush.dual_brush.full_parameters.as_mut() {
+        secondary.mix_settings.enabled = false;
         secondary.mix_settings.color_output = true;
     }
     brush.seed = 7;

@@ -131,6 +131,11 @@ pub fn merge_brush(base: &BrushSettings, patch: &Value, cmd: &str) -> Result<Bru
     let tip = (!touches(&["tip"])).then(|| std::mem::take(&mut light.tip));
     let dual_tip = (!touches(&["dualBrush", "tip"])).then(|| std::mem::take(&mut light.dual_brush.tip));
     let pattern = (!touches(&["texture", "pattern"])).then(|| std::mem::take(&mut light.texture.pattern));
+    // The colour pattern and the canvas material's pattern are bitmaps too (megabytes): a panel drag
+    // touching neither must not serialise them.
+    let sampled_pattern = (!touches(&["sampledPattern"])).then(|| light.sampled_pattern.take());
+    let canvas_pattern = (!touches(&["canvasMaterial", "pattern"]))
+        .then(|| light.canvas_material.as_mut().map(|m| std::mem::take(&mut m.pattern)));
     let mut v = serde_json::to_value(&light).map_err(|e| bad(cmd, e.to_string()))?;
     merge(&mut v, patch);
     // A legacy command sets both axes. The base JSON already has the new keys,
@@ -154,6 +159,14 @@ pub fn merge_brush(base: &BrushSettings, patch: &Value, cmd: &str) -> Result<Bru
     }
     if let Some(p) = pattern {
         out.texture.pattern = p;
+    }
+    if let Some(p) = sampled_pattern {
+        out.sampled_pattern = p;
+    }
+    if let Some(Some(p)) = canvas_pattern
+        && let Some(m) = out.canvas_material.as_mut()
+    {
+        m.pattern = p;
     }
     if patch.get("size").is_some() && !touches(&["dualBrush", "size"]) {
         let new_size = out.size;
@@ -1111,6 +1124,10 @@ pub(crate) fn sampled_brush(cmd: &str, v: &[f32], w: usize, h: usize) -> Result<
 
 pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tools.setBrush";
+    // `quiet` is for the Brush Settings panel, which edits this brush on every frame of a drag and
+    // throws the reply away: serialising the brush's bitmaps back (megabytes of base64) was half of
+    // the stutter.
+    let quiet = flag(p, "quiet", false);
     let mut b = s.tools.brush.clone();
     let mut picked = None;
     let mut picked_color = None;
@@ -1126,7 +1143,7 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut patch = p.clone();
     if let Some(o) = patch.as_object_mut() {
-        for k in ["preset", "reset", "coalesce"] {
+        for k in ["preset", "reset", "coalesce", "quiet"] {
             o.remove(k);
         }
         if let Some(inner) = o.remove("brush") {
@@ -1170,6 +1187,9 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // The one accepted brush change everyone (UI sliders, control channel, presets) lands here.
     s.tools.brush_changed();
+    if quiet {
+        return Ok(Value::Null);
+    }
     Ok(brush_json(&s.tools.brush))
 }
 
@@ -1257,16 +1277,24 @@ fn ref_pattern(p: &Pattern) -> Option<Pattern> {
 
 /// The brush as JSON with the bitmaps (sampled tips, pattern tiles) that `skip` names replaced by
 /// placeholders: they can be megabytes of base64, and skipped ones are equal on both sides.
-fn light_json(b: &BrushSettings, skip: (bool, bool, bool)) -> Value {
+fn light_json(b: &BrushSettings, skip: [bool; 5]) -> Value {
     let mut c = b.clone();
-    if skip.0 {
+    if skip[0] {
         c.tip = TipShape::Round;
     }
-    if skip.1 {
+    if skip[1] {
         c.dual_brush.tip = TipShape::Round;
     }
-    if skip.2 {
+    if skip[2] {
         c.texture.pattern = photocraft_paint::Pattern::default();
+    }
+    if skip[3] {
+        c.sampled_pattern = None;
+    }
+    if skip[4]
+        && let Some(m) = c.canvas_material.as_mut()
+    {
+        m.pattern = photocraft_paint::Pattern::default();
     }
     serde_json::to_value(&c).unwrap_or(Value::Null)
 }
@@ -1274,7 +1302,16 @@ fn light_json(b: &BrushSettings, skip: (bool, bool, bool)) -> Value {
 /// Fields of `new` that differ from `old`, nested objects diffed key by key: the minimal
 /// `tools.setBrush` `brush` patch that turns `old` into `new` (`{}` when nothing changed).
 pub fn brush_patch(old: &BrushSettings, new: &BrushSettings) -> Value {
-    let skip = (old.tip == new.tip, old.dual_brush.tip == new.dual_brush.tip, old.texture.pattern == new.texture.pattern);
+    // Bitmaps carry megabytes of base64 and a curve drag diffs the brush on every frame, so the ones
+    // that did not change are swapped for placeholders before serialising (a few hundred KB of JSON
+    // instead of tens of MB).
+    let skip = [
+        old.tip == new.tip,
+        old.dual_brush.tip == new.dual_brush.tip,
+        old.texture.pattern == new.texture.pattern,
+        old.sampled_pattern == new.sampled_pattern,
+        old.canvas_material.as_ref().map(|m| &m.pattern) == new.canvas_material.as_ref().map(|m| &m.pattern),
+    ];
     fn diff(a: &Value, b: &Value) -> Option<Value> {
         match (a, b) {
             (Value::Object(ao), Value::Object(bo)) => {

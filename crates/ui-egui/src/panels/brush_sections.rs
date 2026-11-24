@@ -1113,13 +1113,20 @@ fn effect_curve_graph(ui: &mut egui::Ui, id: &str, curve: &mut paint::pigment_ma
         ui.painter().rect_filled(rect, t.radius_sm, t.field);
         ui.painter().line_segment([pos2(graph.left(), graph.center().y), pos2(graph.right(), graph.center().y)], Stroke::new(1.0, t.field_border));
         let to_pos = |p: [f32; 2]| pos2(graph.left() + p[0] * graph.width(), graph.bottom() - (p[1] - minimum) / (1.0 - minimum) * graph.height());
+        // `value` is 0 for a curve that is switched off, and drawing that would show a flat line at
+        // the bottom while the ends and handles stay where the brush has them: the same box then
+        // looks like two different curves. Sample the shape anyway and just dim it, as the section
+        // already greys out its other controls.
+        let mut shown = curve.clone();
+        shown.enabled = true;
+        let line = if curve.enabled { t.accent } else { t.text_dim };
         let points: Vec<_> = (0..=128)
             .map(|i| {
                 let x = i as f32 / 128.0;
-                to_pos([x, curve.value(x)])
+                to_pos([x, shown.value(x)])
             })
             .collect();
-        ui.painter().add(egui::Shape::line(points, Stroke::new(1.5, t.accent)));
+        ui.painter().add(egui::Shape::line(points, Stroke::new(1.5, line)));
         // The curve is one cubic: only its two ends and the two handles that shape it are shown,
         // each handle joined to the end it pulls on by a thin line.
         let [start, handle_start, handle_end, end] = curve.anchors;

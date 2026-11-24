@@ -222,6 +222,10 @@ fn send(app: &mut PhotocraftApp, before: &BrushSettings, after: &BrushSettings, 
     if let Some(k) = key {
         p["coalesce"] = json!(k);
     }
+    // A drag edits the brush several times per frame and never reads the reply: skip the
+    // serialisation of the brush's bitmaps (megabytes on an imported tip), which was the cost
+    // behind a stuttering curve drag.
+    p["quiet"] = json!(true);
     if let Err(e) = app.run("tools.setBrush", p) {
         app.ui.status = e;
     }
@@ -685,9 +689,20 @@ fn lane_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings, o
 }
 
 /// The panel's title row: the name centred across the panel, the close button at the row's end.
+/// Dragging the row is the one way to move the panel — the window itself is pinned (`movable(false)`)
+/// so a drag that starts on a control, a slider or the curve graph never shifts the whole panel.
 fn panel_title(ui: &mut egui::Ui, t: &Tokens, open: &mut bool, width: f32) {
     let bar = row_rect(ui, width, 22.0);
-    ui.allocate_rect(bar, Sense::hover());
+    let grab = ui.allocate_rect(bar, Sense::click_and_drag());
+    if grab.dragged() {
+        let delta = ui.ctx().input(|i| i.pointer.delta());
+        let pos_id = egui::Id::new("brush-settings-pos");
+        let pos = ui.ctx().data(|d| d.get_temp::<egui::Pos2>(pos_id)).unwrap_or(bar.left_top());
+        ui.ctx().data_mut(|d| d.insert_temp(pos_id, pos + delta));
+    }
+    if grab.hovered() || grab.dragged() {
+        ui.ctx().set_cursor_icon(if grab.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+    }
     let galley = ui.painter().layout_no_wrap(tl!("Brush Settings").to_string(), theme::medium(12.5), t.text);
     ui.painter().galley(egui::pos2(bar.center().x - galley.size().x / 2.0, bar.center().y - galley.size().y / 2.0), galley, t.text);
     let close = egui::Rect::from_center_size(egui::pos2(bar.right() - 10.0, bar.center().y), vec2(20.0, 20.0));
@@ -720,14 +735,26 @@ pub fn window(app: &mut PhotocraftApp, ctx: &egui::Context) {
         .data(|d| d.get_temp::<f32>(height_id))
         .unwrap_or(DEFAULT_HEIGHT)
         .clamp(MIN_HEIGHT, (canvas.height() - 40.0).max(MIN_HEIGHT));
+    // The window never moves by itself: only the title row (see `panel_title`) drags it, so a drag
+    // on a slider, the curve graph or the preview strip stays inside the panel. Its position lives
+    // in this context, clamped so the title row always stays reachable.
+    let pos_id = egui::Id::new("brush-settings-pos");
+    let default_pos = egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0);
+    let stored = ctx.data(|d| d.get_temp::<egui::Pos2>(pos_id)).unwrap_or(default_pos);
+    let pos = egui::pos2(
+        stored.x.clamp(canvas.left() - (WIDTH + 20.0) + 90.0, canvas.right() - 90.0),
+        stored.y.clamp(canvas.top(), canvas.bottom() - 40.0),
+    );
+    ctx.data_mut(|d| d.insert_temp(pos_id, pos));
     egui::Window::new(tl!("Brush Settings"))
         .id(egui::Id::new("brush-settings"))
         .title_bar(false)
+        .movable(false)
         .resizable(false)
         .scroll(false)
         .fixed_size([WIDTH + 20.0, panel_height])
         .frame(frame)
-        .default_pos(egui::pos2((canvas.right() - WIDTH - 30.0).max(canvas.left() + 8.0), canvas.top() + 24.0))
+        .current_pos(pos)
         .show(ctx, |ui| {
             // Fill the window's inner width rather than forcing WIDTH: the contents then end at the
             // panel's own margin on both sides instead of leaving a gutter on the right.

@@ -1282,12 +1282,23 @@ impl ColorAttributes {
 }
 
 /// An RGBA patch sampled from the canvas. Its longest side scales to each dab diameter.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColorPattern {
     pub width: u32,
     pub height: u32,
     pub pixels: std::sync::Arc<[[f32; 4]]>,
+}
+
+impl PartialEq for ColorPattern {
+    /// Compares the pixels only when the two do not share one buffer: the pattern is up to 2048²
+    /// pixels and the Brush Settings panel compares the brush on every frame of a drag, where the
+    /// two sides are clones of the same settings.
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && (std::sync::Arc::ptr_eq(&self.pixels, &other.pixels) || self.pixels == other.pixels)
+    }
 }
 impl ColorPattern {
     pub fn is_valid(&self) -> bool {

@@ -332,6 +332,36 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
   单测口径：`pigment_material` 的 `handles_keep_their_order…` / `a_seven_point_preset_is_read_as_the_nearest_cubic`，
   `transport` 的钟形断言从「0.3 压力 ≥0.69」放宽到「0.3 > 0.5、0.5 > 0.65」（单段没有平台段）。
 
+### 5d.1 拖拽手感：`tools.setBrush` 的 `quiet`、位图不进 JSON、面板只能拖标题栏（2026-11-24）
+
+- 曲线一次拖拽 = 每帧一次 `tools.setBrush`。实测（`PHOTOCRAFT_PROFILE_SETBRUSH` 打点，release）
+  一次调用 ~28 ms，其中 **`merge_brush` 占 ~20 ms**：它把整把笔刷 `to_value` 后再深度合并，
+  而 `touches()` 只摘掉了 `tip` / `dualBrush.tip` / `texture.pattern` 三个位图，
+  `sampled_pattern`（`ColorPattern`，最长边 2048，RGBA f32）与 `canvas_material.pattern` 照样
+  被序列化。现在 `merge_brush` 把这两个也摘出/回填；`brush_patch`（面板每帧算 patch）的
+  `light_json` 同样跳过五个位图（只在真的改变时才进 patch）。
+- 回执也不再白造：`set_brush` 认 `quiet: true`，成功时不回传整把笔刷（返回 `null`），
+  **Brush Settings 面板的 `send()` 一律带上**（它从不读回执）。控制通道 / 其它调用方不传，
+  行为不变。想测真实耗时别从控制通道看：那条路的 `quiet` 不保证透传，看 `build\logs` 的
+  frame log 里 `command … (tools.setBrush)` 或开 `PHOTOCRAFT_PROFILE_SETBRUSH=1`。
+- `ColorPattern` / `GrayTile` 的 `PartialEq` 改成手写，先 `Arc::ptr_eq` 再比内容：面板每帧
+  `before == after` 与 `brush_patch` 都会比较这两张图，比 2048² 的像素本身是白白几十毫秒。
+- 面板预览条（`panels/brush_preview.rs::preview_pixels`）里**关掉混合模拟**：命令降到 1 ms 后
+  剩下的卡顿全在它身上——680×120、65 个笔尖，开混合的笔刷（如导入的 `勾线` 预设）一次重画
+  `apply_stroke` 就要 ~400 ms，而面板里任何一处拖动都会触发一次重画（滑块、曲线、预览全都一样）。
+  关掉混合后同一次重画 ~9 ms，预览跟着拖动实时更新。预览画在空白面上，混合本来也无画布可混，
+  笔尖形状/间距/纹理都照旧，`color_output` 仍保留（Mixer Brush 的预览还显示它的颜色）。
+  别再把它改回 `enabled = true`，否则整块面板的每个拖动都会回到 400 ms/帧。
+- 面板（`panels/brush_panel.rs::window`）改成 `.movable(false)` + 每帧 `current_pos`：
+  egui 在没有标题栏时默认"任意处可拖窗"（`WindowDrag::Anywhere`），所以在面板上拖滑块、
+  拖曲线、拖预览条都会把整个面板拖走。现在只有 `panel_title` 那一行（22 pt）带
+  `Sense::click_and_drag()`，按下即按指针位移改 `brush-settings-pos`，并在 canvas 内夹紧。
+  改这一段时别把 `Sense::hover()` 还给标题行，也别开 `movable(true)`。
+- 曲线框（`brush_sections.rs::effect_curve_graph`）画的是**形状**，不是取值：`SignedCurve::value`
+  对 `enabled == false` 的曲线返回 0，直接画会得到"底部一条平线 + 左端点还在高处"的怪样子
+  （同一个面板里勾选的曲线有弧度、没勾的是直线，看起来像两种控件）。现在画之前复制一份把
+  `enabled` 置真再取样，只把线条颜色改成灰（和该区块其它被禁用的控件一致）。
+
 ## 6. 交付物
 
 - `dist/release/PhotoCraft.app`、`dist/release/PhotoCraft-0.24.0-arm64.zip`（`custom-merged` 的构建产物）。

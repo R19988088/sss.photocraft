@@ -9,12 +9,25 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///
 /// The samples are shared: cloning a tile (brush settings are cloned on every pointer event of a
 /// stroke, #4534) copies a pointer, not a sampled tip that may be thousands of pixels across.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct GrayTile {
     pub width: u32,
     pub height: u32,
     pub data: std::sync::Arc<[u16]>,
 }
+
+impl PartialEq for GrayTile {
+    /// Compares the samples only when the two tiles do not share one buffer: brush settings are
+    /// compared on every frame of a Brush Settings drag, where both sides are clones of the same
+    /// tile.
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && (std::sync::Arc::ptr_eq(&self.data, &other.data) || self.data == other.data)
+    }
+}
+
+impl Eq for GrayTile {}
 
 impl GrayTile {
     /// Build from a function returning 0..1 values.
