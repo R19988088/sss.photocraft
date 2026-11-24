@@ -397,7 +397,9 @@ pub fn commit_crop(app: &mut PhotocraftApp) {
     if app.run("image.crop", p).is_err() {
         crate::crop_ui::restore(app, kept);
     } else if let Some(i) = app.session.active_index() {
-        app.ui.views[i].fit_pending = true;
+        if let Some(view) = app.command_view_mut(i) {
+            view.fit_pending = true;
+        }
         crate::crop_ui::hide_frame(app);
     }
 }

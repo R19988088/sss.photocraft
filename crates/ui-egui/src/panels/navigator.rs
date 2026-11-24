@@ -49,7 +49,9 @@ pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if resp.drag_stopped() {
                 let doc_rect = Rect::from_min_max(((r.min - rect.min) / s).to_pos2(), ((r.max - rect.min) / s).to_pos2());
                 let (canvas, ppp, aspect) = (app.last_canvas_rect, app.canvas_ppp(), app.ui.view.display_aspect());
-                navigator_zoom_to(&mut app.ui.views[idx], doc_rect, [size.width, size.height], canvas.size(), ppp, aspect);
+                if let Some(view) = app.command_view_mut(idx) {
+                    navigator_zoom_to(view, doc_rect, [size.width, size.height], canvas.size(), ppp, aspect);
+                }
             }
         }
         if resp.drag_stopped() || !resp.dragged() {
@@ -59,10 +61,12 @@ pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         && let Some(pp) = resp.interact_pointer_pos()
     {
         let d = (pp - rect.min) / s;
-        app.ui.views[idx].center = [d.x.clamp(0.0, size.width as f32), d.y.clamp(0.0, size.height as f32)];
-        app.ui.views[idx].zoom_animating = false;
-        app.ui.views[idx].zoom_anchor = None;
-        app.ui.views[idx].fit_pending = false;
+        if let Some(view) = app.command_view_mut(idx) {
+            view.center = [d.x.clamp(0.0, size.width as f32), d.y.clamp(0.0, size.height as f32)];
+            view.zoom_animating = false;
+            view.zoom_anchor = None;
+            view.fit_pending = false;
+        }
     }
     if command && resp.hovered() {
         ctx.set_cursor_icon(egui::CursorIcon::ZoomIn);
@@ -79,20 +83,21 @@ pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         && let Some(crate::wheel_nav::Wheel::Zoom(factor)) =
             crate::wheel_nav::read_with(&ctx, true, pinch_zooms, animated_zoom, navigator_wheel, true, true, touch_gestures)
     {
-        let view = &mut app.ui.views[idx];
-        let next = crate::zoom_levels::clamp(view.zoom * factor, view.doc_size);
-        if next != view.zoom * factor {
-            crate::wheel_nav::settle(&ctx, navigator_wheel);
-        }
-        if next != view.zoom {
-            view.zoom = next;
-            view.zoom_animating = false;
-            view.zoom_anchor = None;
-            view.fit_pending = false;
+        if let Some(view) = app.command_view_mut(idx) {
+            let next = crate::zoom_levels::clamp(view.zoom * factor, view.doc_size);
+            if next != view.zoom * factor {
+                crate::wheel_nav::settle(&ctx, navigator_wheel);
+            }
+            if next != view.zoom {
+                view.zoom = next;
+                view.zoom_animating = false;
+                view.zoom_anchor = None;
+                view.fit_pending = false;
+            }
         }
     }
     // Visible-area rectangle.
-    let v = app.ui.views[idx].clone();
+    let v = app.command_view(idx).cloned().unwrap_or_default();
     let canvas = app.last_canvas_rect;
     let (zoom, center) =
         if v.zoom_animating && app.session.prefs().general.animated_zoom { v.display_camera.unwrap_or((v.zoom, v.center)) } else { (v.zoom, v.center) };
@@ -111,18 +116,23 @@ pub(super) fn navigator(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.x = 4.0;
             let set = |app: &mut PhotocraftApp, zoom: f32, animate: bool| {
                 let target = crate::zoom_levels::clamp(zoom, v.doc_size);
-                if target != app.ui.views[idx].zoom {
-                    app.ui.views[idx].zoom = target;
-                    app.ui.views[idx].request_zoom_animation(animate && app.session.prefs().general.animated_zoom);
+                let animated = animate && app.session.prefs().general.animated_zoom;
+                if let Some(view) = app.command_view_mut(idx) {
+                    if target != view.zoom {
+                        view.zoom = target;
+                        view.request_zoom_animation(animated);
+                    }
+                    view.fit_pending = false;
                 }
-                app.ui.views[idx].fit_pending = false;
             };
             let mut pct = v.zoom * 100.0;
-            let field = widgets::compact_wrapping_value_field(ui, &mut pct, crate::zoom_levels::percent_range(&app.ui.views[idx]), "%", vec2(64.0, NAV_ROW_H))
+            let field = widgets::compact_wrapping_value_field(ui, &mut pct, crate::zoom_levels::percent_range(&v), "%", vec2(64.0, NAV_ROW_H))
                 .accessible_name(tl!("Zoom"));
             if field.changed() {
                 let animated = app.session.prefs().general.animated_zoom;
-                crate::zoom_levels::set_from_field(&mut app.ui.views[idx], field.dragged() || field.drag_started(), pct, animated);
+                if let Some(view) = app.command_view_mut(idx) {
+                    crate::zoom_levels::set_from_field(view, field.dragged() || field.drag_started(), pct, animated);
+                }
             }
             let out = crate::brush_picker::named(icons::button(ui, "minus", NAV_ROW_H, false, tl!("Zoom Out")), "Zoom Out");
             if out.clicked() {

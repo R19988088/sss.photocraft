@@ -1,10 +1,11 @@
 use super::PhotocraftApp;
 
 impl PhotocraftApp {
-    /// Zoom of the active document's main view: screen (device) pixels per document pixel, the
+    /// Zoom of the view the user is working in — the focused document window's own, else the
+    /// active document's on the main canvas: screen (device) pixels per document pixel, the
     /// user-facing factor (`100%` is `1.0`).
     pub fn current_zoom(&self) -> f32 {
-        self.session.active_index().and_then(|i| self.ui.views.get(i)).map_or(1.0, |v| v.zoom)
+        self.session.active_index().and_then(|i| self.command_view(i)).map_or(1.0, |v| v.zoom)
     }
 
     /// Screen (device) pixels per egui point of the canvas (`ctx.pixels_per_point`), as of the

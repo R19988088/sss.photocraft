@@ -277,6 +277,11 @@ pub struct DocWindow {
     /// A tab dragged off the tab strip opens its window where it was dropped (#3733).
     #[serde(default)]
     pub position: Option<[f32; 2]>,
+    /// This view's own View › Flip Horizontal, the way Photoshop's document windows mirror one
+    /// view at a time: `None` follows the app-wide option (the main canvas's) until this window
+    /// is flipped on its own. It is never written back over another view's.
+    #[serde(default)]
+    pub flip_horizontal: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -162,13 +162,16 @@ pub fn status_bar_pro(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &profile_name(&st.doc),
         &app.session.prefs().units_and_rulers,
     );
-    let mut pct = app.ui.views[i].zoom * 100.0;
+    let view = app.command_view(i).cloned().unwrap_or_default();
+    let mut pct = view.zoom * 100.0;
     let control_h = crate::panels::status_bar_heights(&t).1;
-    let field = widgets::compact_wrapping_value_field(ui, &mut pct, crate::zoom_levels::percent_range(&app.ui.views[i]), "%", vec2(64.0, control_h))
+    let field = widgets::compact_wrapping_value_field(ui, &mut pct, crate::zoom_levels::percent_range(&view), "%", vec2(64.0, control_h))
         .accessible_name(tl!("Zoom"));
     if field.changed() {
         let animated = app.session.prefs().general.animated_zoom;
-        crate::zoom_levels::set_from_field(&mut app.ui.views[i], field.dragged() || field.drag_started(), pct, animated);
+        if let Some(view) = app.command_view_mut(i) {
+            crate::zoom_levels::set_from_field(view, field.dragged() || field.drag_started(), pct, animated);
+        }
     }
     ui.add_space(12.0);
     ui.label(RichText::new(tl!(&text)).color(t.text_dim).size(12.0));

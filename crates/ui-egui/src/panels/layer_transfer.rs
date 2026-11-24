@@ -197,7 +197,7 @@ fn target_at(app: &PhotocraftApp, p: egui::Pos2) -> Option<(usize, Option<[f64; 
                 rect: crate::rulers::content_rect(app, r.shrink(1.0)),
                 zoom: view.zoom / ppp,
                 center: view.center,
-                flip: app.ui.view.flip_horizontal,
+                flip: app.command_flip(d),
                 rotation: view.rotation,
                 aspect: app.ui.view.display_aspect(),
             }

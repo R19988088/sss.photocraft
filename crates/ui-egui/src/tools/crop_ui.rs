@@ -647,7 +647,7 @@ pub(crate) struct Kept {
 }
 
 pub(crate) fn keep(app: &PhotocraftApp) -> Kept {
-    let view = app.session.active_index().and_then(|i| app.ui.views.get(i)).map(|v| (v.rotation, v.center));
+    let view = app.session.active_index().and_then(|i| app.command_view(i)).map(|v| (v.rotation, v.center));
     Kept { step: step_of(app), undo: app.crop.undo.clone(), redo: app.crop.redo.clone(), view }
 }
 
@@ -655,7 +655,7 @@ pub(crate) fn restore(app: &mut PhotocraftApp, k: Kept) {
     apply_step(app, k.step);
     (app.crop.undo, app.crop.redo) = (k.undo, k.redo);
     if let Some((rotation, center)) = k.view
-        && let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i))
+        && let Some(v) = app.session.active_index().and_then(|i| app.command_view_mut(i))
     {
         (v.rotation, v.center) = (rotation, center);
     }
@@ -716,7 +716,7 @@ fn step(app: &mut PhotocraftApp, redo: bool) -> serde_json::Value {
     if let (true, Some(a), Some(b)) = (crate::crop_mode::moves_image(app), now.rect, s.rect) {
         let (a, b) = (center(a), center(b));
         let d = [(b[0] - a[0]) as f32, (b[1] - a[1]) as f32];
-        if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+        if let Some(v) = app.session.active_index().and_then(|i| app.command_view_mut(i)) {
             let c = [v.center[0] + d[0], v.center[1] + d[1]];
             if c.iter().all(|x| x.is_finite()) {
                 v.center = c;
@@ -793,7 +793,7 @@ pub fn cancel_stale(app: &mut PhotocraftApp) {
             let doc = app.crop.doc;
             let synced = app.view_docs.iter().position(|d| Some(*d) == doc);
             let i = synced.or_else(|| app.session.documents().iter().position(|st| Some(st.doc.id) == doc));
-            if let Some(v) = i.and_then(|i| app.ui.views.get_mut(i)) {
+            if let Some(v) = i.and_then(|i| app.command_view_mut(i)) {
                 v.rotation = 0.0;
             }
         }
@@ -1288,7 +1288,7 @@ pub fn cursor(app: &PhotocraftApp, p: [f64; 2]) -> Option<CursorIcon> {
     Some(match h {
         // The arrow as the handle faces on screen: the frame's turn plus the view's, mirrored when
         // the view is flipped.
-        Hit::Handle(hx, hy) => resize_icon(hx, hy, deg + f64::from(crate::crop_mode::view_rotation(app)), app.ui.view.flip_horizontal),
+        Hit::Handle(hx, hy) => resize_icon(hx, hy, deg + f64::from(crate::crop_mode::view_rotation(app)), crate::crop_mode::current_flip(app)),
         // Inside the untouched default frame a drag draws a new one (`pointer`), so nothing moves (#4461).
         Hit::Inside if app.crop.default_frame => CursorIcon::Crosshair,
         Hit::Inside => CursorIcon::Move,

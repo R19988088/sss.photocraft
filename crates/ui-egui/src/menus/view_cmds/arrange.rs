@@ -48,7 +48,9 @@ pub(crate) fn float_window(app: &mut PhotocraftApp, doc: usize, offset: usize, f
     view.zoom_transition = None;
     view.display_camera = None;
     view.fit_pending = offset > 0 || view.fit_pending;
-    app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, floating, focused: false, position: None });
+    // Opens flipped the way the view it was opened from is, then keeps its own flip.
+    let flip_horizontal = Some(app.command_flip(doc));
+    app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, floating, focused: false, position: None, flip_horizontal });
     wid
 }
 

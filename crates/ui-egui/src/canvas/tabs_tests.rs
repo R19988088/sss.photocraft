@@ -30,6 +30,7 @@ fn a_document_window_keeps_its_own_camera() {
         floating,
         focused: false,
         position: None,
+        flip_horizontal: None,
     };
     let beside = window(false, 3.0);
     assert_eq!(extra_window_view(&beside, None).zoom, 3.0, "the window's own camera, not the 600% on the main canvas");
@@ -44,6 +45,19 @@ fn a_document_window_keeps_its_own_camera() {
     app.run("view.zoomIn", json!({})).unwrap();
     assert_eq!(app.ui.views[0].zoom, 6.0, "the main canvas keeps its zoom");
     assert!(app.ui.windows[0].view.zoom > 3.0, "the focused window zooms: {}", app.ui.windows[0].view.zoom);
+    // The angle is per view as well: rotating in the window leaves the main canvas upright.
+    crate::rotate_view::command(&mut app, &json!({"angle": 15.0})).unwrap();
+    assert_eq!(app.ui.views[0].rotation, 0.0, "the main canvas stays upright");
+    assert!((app.ui.windows[0].view.rotation - 15.0).abs() < 1e-4, "the focused window turns: {}", app.ui.windows[0].view.rotation);
+    // View › Reset View is the same camera.
+    crate::rotate_view::reset(&mut app).unwrap();
+    assert_eq!(app.ui.views[0].rotation, 0.0);
+    assert_eq!(app.ui.windows[0].view.rotation, 0.0, "the window straightens, not another view");
+    // Flip is per view too (Photoshop's document windows mirror one at a time).
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "view.flipHorizontal", json!({"on": true})).unwrap();
+    assert!(!app.ui.view.flip_horizontal, "the main canvas is not mirrored");
+    assert_eq!(app.ui.windows[0].flip_horizontal, Some(true), "the focused window is mirrored");
 }
 
 /// A real app window with `docs` documents named "ch1-pNN.png".

@@ -322,8 +322,7 @@ impl PhotocraftApp {
     /// window the user is working in — each document window has its own camera and never moves
     /// another's.
     pub fn command_view_mut(&mut self, doc: usize) -> Option<&mut crate::state::View> {
-        let focused = self.ui.windows.iter().find(|w| w.open && w.focused && w.document == doc).map(|w| w.id);
-        match focused {
+        match self.focused_doc_window(doc).map(|w| w.id) {
             Some(id) => self.ui.windows.iter_mut().find(|w| w.id == id).map(|w| &mut w.view),
             None => self.ui.views.get_mut(doc),
         }
@@ -331,9 +330,50 @@ impl PhotocraftApp {
 
     /// [`Self::command_view_mut`], read-only.
     pub fn command_view(&self, doc: usize) -> Option<&crate::state::View> {
-        match self.ui.windows.iter().find(|w| w.open && w.focused && w.document == doc) {
+        match self.focused_doc_window(doc) {
             Some(w) => Some(&w.view),
             None => self.ui.views.get(doc),
+        }
+    }
+
+    /// The document window showing `doc` that has focus, if any. A view command, the View menu and
+    /// the zoom controls of the panels act on this window's view — never on another canvas's.
+    pub fn focused_doc_window(&self, doc: usize) -> Option<&crate::state::DocWindow> {
+        self.ui.windows.iter().find(|w| w.open && w.focused && w.document == doc)
+    }
+
+    /// [`Self::focused_doc_window`], mutable.
+    pub fn focused_doc_window_mut(&mut self, doc: usize) -> Option<&mut crate::state::DocWindow> {
+        self.ui.windows.iter_mut().find(|w| w.open && w.focused && w.document == doc)
+    }
+
+    /// View › Flip Horizontal for the canvas that draws `doc`: a document window's own flip while
+    /// its canvas is the one being drawn (`drawing_window`), else the main canvas's app-wide option.
+    /// Only the canvas that asks changes; no other view is read or written.
+    pub fn canvas_flip(&self, doc: usize) -> bool {
+        match self.drawing_window {
+            Some(id) => self
+                .ui
+                .windows
+                .iter()
+                .find(|w| w.id == id && w.document == doc)
+                .map_or(self.ui.view.flip_horizontal, |w| w.flip_horizontal.unwrap_or(self.ui.view.flip_horizontal)),
+            None => self.ui.view.flip_horizontal,
+        }
+    }
+
+    /// View-only flip of the view the user is working in: the focused document window's own, else
+    /// the main canvas's (View › Flip Horizontal, the title bar's toggle, pointer-mapping tools).
+    pub fn command_flip(&self, doc: usize) -> bool {
+        self.focused_doc_window(doc).map_or(self.ui.view.flip_horizontal, |w| w.flip_horizontal.unwrap_or(self.ui.view.flip_horizontal))
+    }
+
+    /// Set the view-only flip of the view the user is working in: the focused document window's
+    /// own, else the main canvas's. A flip in one window leaves every other view as it was.
+    pub fn set_flip(&mut self, doc: usize, on: bool) {
+        match self.focused_doc_window_mut(doc) {
+            Some(w) => w.flip_horizontal = Some(on),
+            None => self.ui.view.flip_horizontal = on,
         }
     }
 

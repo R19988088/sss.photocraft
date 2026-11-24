@@ -120,7 +120,11 @@ fn update(app: &mut PhotocraftApp, r: Resize, x: f64, y: f64) {
             (f64::from(d.x / xf.zoom), f64::from(d.y / xf.zoom), xf.zoom)
         }
         // No view: document axes, mirrored by View › Flip Horizontal.
-        _ => ((x - r.anchor[0]) * if app.ui.view.flip_horizontal { -1.0 } else { 1.0 }, y - r.anchor[1], app.point_zoom()),
+        _ => (
+            (x - r.anchor[0]) * if app.session.active_index().is_some_and(|i| app.command_flip(i)) { -1.0 } else { 1.0 },
+            y - r.anchor[1],
+            app.point_zoom(),
+        ),
     };
     let (size, v) = resized(r.start, dx, dy, zoom);
     // "Vary Round Brush Hardness on HUD" (Preferences ▸ Tools, on by default): off, the vertical

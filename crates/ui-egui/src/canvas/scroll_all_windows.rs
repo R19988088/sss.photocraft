@@ -148,6 +148,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         // The dragged 400 × 300 view's center moved 50 document pixels left and 20 down.
         follow(&mut app, Source::Main(0), [-50.0, 20.0]);
@@ -175,6 +176,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         app.ui.windows.push(DocWindow {
             id: 4,
@@ -184,6 +186,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         // The window's 800 × 600 view moved its center 100 document pixels right and 75 up.
         follow(&mut app, Source::Window(3), [100.0, -75.0]);
@@ -228,6 +231,7 @@ mod tests {
                 floating: false,
                 focused: false,
                 position: None,
+                flip_horizontal: None,
             });
             app.ui.windows.push(DocWindow {
                 id: 4,
@@ -237,6 +241,7 @@ mod tests {
                 floating: false,
                 focused: false,
                 position: None,
+                flip_horizontal: None,
             });
             if home {
                 app.ui.chrome.home = Some(app.session.documents().len());
@@ -295,6 +300,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         let mut v = if in_window { view(0.5, [500.0, 375.0], 0.0) } else { view(1.0, [1000.0, 750.0], 0.0) };
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
@@ -393,6 +399,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         // A 400 × 300 canvas at 100 % keeps the center 200 px or more inside the left edge.
         let mut v = view(1.0, [220.0, 750.0], 0.0);
@@ -440,6 +447,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         let mut v = view(1.0, [1000.0, 750.0], 0.0);
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
@@ -518,6 +526,7 @@ mod tests {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         });
         let mut h = Harness::builder().with_size(egui::vec2(1400.0, 60.0)).build_ui_state(
             |ui, app: &mut PhotocraftApp| {

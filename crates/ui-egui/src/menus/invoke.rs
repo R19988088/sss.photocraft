@@ -744,8 +744,11 @@ fn invoke_window_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str)
         "window.newWindowForDocument" => Some((|| {
             let doc = app.session.active_index().ok_or("no document")?;
             let wid = app.ui.alloc_id();
-            let view = app.ui.views[doc].clone();
-            app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, floating: false, focused: false, position: None });
+            // Opens on the camera of the view it was asked from — a document window's own when
+            // that one has focus — and from there keeps its own zoom, turn and flip.
+            let view = app.command_view(doc).cloned().ok_or("no document")?;
+            let flip_horizontal = Some(app.command_flip(doc));
+            app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, floating: false, focused: false, position: None, flip_horizontal });
             Ok(json!({"window": wid}))
         })()),
         "window.theme.toggle" => {

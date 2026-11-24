@@ -724,44 +724,20 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
             widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, tl!("Scrubby Zoom"))
                 .on_hover_text(tl!("Click and move left or right to scale using the Zoom Tool (OpenGL only)"));
             // The same three buttons as the Hand bar, with the reference tooltips (#12068).
-            if widgets::secondary_button(ui, "100%", 0.0).on_hover_text(tl!("Zoom current window to 1:1")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].zoom = 1.0;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fit_pending = false;
-                app.ui.views[i].fill_pending = false;
-            }
-            if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).on_hover_text(tl!("Zoom current window to screen size")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].fit_pending = true;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fill_pending = false;
-            }
-            if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).on_hover_text(tl!("Zoom current window to fill the screen")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].fill_pending = true;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fit_pending = false;
-            }
+            zoom_screen_buttons(app, ui);
         }
         Tool::RotateView => {
             hint(ui, tl!("Drag around the center to rotate the view  ·  Shift constrains to 15°"));
             if let Some(i) = app.session.active_index() {
                 ui.label(tl!("Angle"));
-                let mut angle = app.ui.views.get(i).map(|v| v.rotation).unwrap_or(0.0);
+                let mut angle = app.command_view(i).map(|v| v.rotation).unwrap_or(0.0);
                 if widgets::value_field(ui, &mut angle, -180.0..=180.0, "°", 56.0).changed()
-                    && let Some(v) = app.ui.views.get_mut(i)
+                    && let Some(v) = app.command_view_mut(i)
                 {
                     v.rotation = crate::rotate_view::wrap_deg(angle);
                 }
                 if widgets::secondary_button(ui, tl!("Reset View"), 0.0).clicked()
-                    && let Some(v) = app.ui.views.get_mut(i)
+                    && let Some(v) = app.command_view_mut(i)
                 {
                     v.rotation = 0.0;
                 }
@@ -771,34 +747,42 @@ fn tool_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: Tokens, 
             widgets::checkbox(ui, &mut app.ui.tool_options.hand_scroll_all, tl!("Scroll All Windows"))
                 .on_hover_text(tl!("Scroll all open document windows when using the hand tool"));
             // The reference tooltips and no hint text, as on the Zoom bar (#12026).
-            if widgets::secondary_button(ui, "100%", 0.0).on_hover_text(tl!("Zoom current window to 1:1")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].zoom = 1.0;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fit_pending = false;
-                app.ui.views[i].fill_pending = false;
-            }
-            if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).on_hover_text(tl!("Zoom current window to screen size")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].fit_pending = true;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fill_pending = false;
-            }
-            if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).on_hover_text(tl!("Zoom current window to fill the screen")).clicked()
-                && let Some(i) = app.session.active_index()
-            {
-                app.ui.views[i].fill_pending = true;
-                app.ui.views[i].request_zoom_animation(app.session.prefs().general.animated_zoom);
-                app.ui.views[i].zoom_anchor = None;
-                app.ui.views[i].fit_pending = false;
-            }
+            zoom_screen_buttons(app, ui);
         }
         // Retouching and smart-selection tools draw their bar in `retouch_ui::options_bar`.
         _ => {}
+    }
+}
+
+/// The Zoom and Hand bars' 100 % / Fit Screen / Fill Screen buttons. They act on the camera of
+/// the window the user is working in (`command_view_mut`): a document window has its own, the
+/// main canvas keeps its own, and clicking one never zooms another view.
+fn zoom_screen_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let animated = app.session.prefs().general.animated_zoom;
+    if widgets::secondary_button(ui, "100%", 0.0).on_hover_text(tl!("Zoom current window to 1:1")).clicked()
+        && let Some(view) = app.session.active_index().and_then(|i| app.command_view_mut(i))
+    {
+        view.zoom = 1.0;
+        view.request_zoom_animation(animated);
+        view.zoom_anchor = None;
+        view.fit_pending = false;
+        view.fill_pending = false;
+    }
+    if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).on_hover_text(tl!("Zoom current window to screen size")).clicked()
+        && let Some(view) = app.session.active_index().and_then(|i| app.command_view_mut(i))
+    {
+        view.fit_pending = true;
+        view.request_zoom_animation(animated);
+        view.zoom_anchor = None;
+        view.fill_pending = false;
+    }
+    if widgets::secondary_button(ui, tl!("Fill Screen"), 0.0).on_hover_text(tl!("Zoom current window to fill the screen")).clicked()
+        && let Some(view) = app.session.active_index().and_then(|i| app.command_view_mut(i))
+    {
+        view.fill_pending = true;
+        view.request_zoom_animation(animated);
+        view.zoom_anchor = None;
+        view.fit_pending = false;
     }
 }
 

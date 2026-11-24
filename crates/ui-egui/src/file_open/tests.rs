@@ -1281,6 +1281,7 @@ fn views_and_windows_stay_with_their_documents() {
             floating: false,
             focused: false,
             position: None,
+            flip_horizontal: None,
         })
         .collect();
     let zooms = |app: &PhotocraftApp| app.ui.views.iter().map(|v| v.zoom).collect::<Vec<_>>();

@@ -48,7 +48,9 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             && widgets::compact_button(ui, tl!("Fit"), control_h).clicked()
                             && let Some(i) = app.session.active_index()
                         {
-                            app.ui.views[i].fit_pending = true;
+                            if let Some(view) = app.command_view_mut(i) {
+                                view.fit_pending = true;
+                            }
                         }
                         // Background job progress with Cancel (#210).
                         if app.session.has_jobs() {
@@ -96,23 +98,26 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                     st.doc.depth.bits(),
                                     st.doc.layer_count(),
                                 );
-                                let mut pct = app.ui.views[i].zoom * 100.0;
+                                let view = app.command_view(i).cloned().unwrap_or_default();
+                                let mut pct = view.zoom * 100.0;
                                 let field = widgets::compact_wrapping_value_field(
                                     ui,
                                     &mut pct,
-                                    crate::zoom_levels::percent_range(&app.ui.views[i]),
+                                    crate::zoom_levels::percent_range(&view),
                                     "%",
                                     vec2(78.0, control_h),
                                 )
                                 .accessible_name(tl!("Zoom"));
                                 if field.changed() {
                                     let animated = app.session.prefs().general.animated_zoom;
-                                    crate::zoom_levels::set_from_field(
-                                        &mut app.ui.views[i],
-                                        field.dragged() || field.drag_started(),
-                                        pct,
-                                        animated,
-                                    );
+                                    if let Some(view) = app.command_view_mut(i) {
+                                        crate::zoom_levels::set_from_field(
+                                            view,
+                                            field.dragged() || field.drag_started(),
+                                            pct,
+                                            animated,
+                                        );
+                                    }
                                 }
                                 widgets::vline(ui, 16.0);
                                 label(ui, &crate::i18n::fmt(tl!("{mode} Color · {bits} bit"), &[("mode", mode), ("bits", &bits.to_string())]));

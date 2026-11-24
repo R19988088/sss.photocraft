@@ -1065,14 +1065,15 @@ pub fn open_view(app: &mut PhotocraftApp, ctx: &Context, tool: Tool, pos: [f32; 
 fn choose_view(app: &mut PhotocraftApp, ctx: &Context, menu: &CanvasToolMenu, command: &str) -> Result<(), String> {
     let i = app.session.active_index().ok_or("no document")?;
     if command == FILL_SCREEN {
-        let v = app.ui.views.get_mut(i).ok_or("no document view")?;
+        let animated = app.session.prefs().general.animated_zoom;
+        let v = app.command_view_mut(i).ok_or("no document view")?;
         v.fit_pending = false;
         v.fill_pending = true;
-        v.request_zoom_animation(app.session.prefs().general.animated_zoom);
+        v.request_zoom_animation(animated);
         v.zoom_anchor = None;
         return Ok(());
     }
-    let before = app.ui.views.get(i).map(|v| (v.zoom, v.center));
+    let before = app.command_view(i).map(|v| (v.zoom, v.center));
     crate::menus::invoke(app, ctx, command, json!({}))?;
     if !matches!(command, "view.zoomIn" | "view.zoomOut") {
         return Ok(());
@@ -1082,7 +1083,7 @@ fn choose_view(app: &mut PhotocraftApp, ctx: &Context, menu: &CanvasToolMenu, co
     if menu.tool == Tool::Zoom && app.ui.tool == Tool::Zoom && app.ui.spring.is_none() && crate::hold_keys::held_tool(app, ctx).is_none() && !center_on_point {
         return Ok(());
     }
-    let Some(v) = app.ui.views.get_mut(i) else { return Ok(()) };
+    let Some(v) = app.command_view_mut(i) else { return Ok(()) };
     let d = [d[0] as f32, d[1] as f32];
     // The view scales about the centre, so the point keeps its screen position when its offset
     // from the centre shrinks (or grows) by the zoom ratio, whatever the rotation or flip.

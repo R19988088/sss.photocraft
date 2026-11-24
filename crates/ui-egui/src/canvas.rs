@@ -439,6 +439,7 @@ fn paint_canvas(
             output: output.unwrap_or(0),
             hdr: hdr_preview(app, doc),
             offset: [0.0, 0.0],
+            desaturate: app.ui.view.desaturate,
         };
         paint_gpu_view(painter, rect, params, &pattern);
     } else if gpu_ok && viewport_pages::show(app, ctx, idx, &xf, view.zoom) {
@@ -459,6 +460,7 @@ fn paint_canvas(
             output: output.unwrap_or(0),
             hdr: hdr_preview(app, doc),
             offset: [0.0, 0.0],
+            desaturate: app.ui.view.desaturate,
         };
         paint_gpu_view(painter, rect, params, &pattern);
     } else if gpu_ok && ensure_gpu(app, ctx, idx, redraw_focus(&target_xf, &xf)) {
@@ -478,6 +480,7 @@ fn paint_canvas(
             output: output.unwrap_or(0),
             hdr: hdr_preview(app, doc),
             offset: [0.0, 0.0],
+            desaturate: app.ui.view.desaturate,
         };
         if app.navigator_plain.contains(&doc.id) {
             app.navigator_gpu.insert(doc.id, params);
@@ -514,6 +517,7 @@ fn paint_canvas(
                 output: 0,
                 hdr: None,
                 offset: [0.0, 0.0],
+                desaturate: false,
             };
             crate::gpu_canvas::GpuCanvas::paint_shadow(painter, rect, params);
         }
@@ -1571,11 +1575,12 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     crate::move_hover::draw(app, painter, xf, idx, response.hover_pos());
     crate::object_finder::draw(app, painter, xf, idx, response.hover_pos());
     crate::layer_pick_ui::show(app, ctx);
-    let shown = app.ui.views.get(idx).cloned();
+    let shown = drawn_view(app, idx).cloned();
     crate::canvas_tool_menu::show(app, ctx);
-    // A view menu row (Zoom In, Fit on Screen…) changed the camera: it wins over this
-    // frame's copy, which is written back at the end.
-    if let Some(now) = app.ui.views.get(idx)
+    // A view menu row (Zoom In, Fit on Screen…) changed the camera of this canvas: it wins over
+    // this frame's copy, which is written back at the end. Another canvas's camera is never read
+    // here, so a row chosen in this window cannot move any other view.
+    if let Some(now) = drawn_view(app, idx)
         && Some(now) != shown.as_ref()
     {
         *view = now.clone();
@@ -1606,9 +1611,9 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     if app.session.active_index() == Some(idx) {
         // Done asks for a fit of the cropped document (`commit_crop`): like a view menu row
         // above, the stored camera wins over this frame's copy, or the write-back drops it.
-        let before = app.ui.views.get(idx).cloned();
+        let before = drawn_view(app, idx).cloned();
         crate::crop_task_bar::draw(app, ui, xf);
-        if let Some(now) = app.ui.views.get(idx)
+        if let Some(now) = drawn_view(app, idx)
             && Some(now) != before.as_ref()
         {
             *view = now.clone();
@@ -1621,6 +1626,16 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     crate::snap_ui::draw(app, painter, xf);
 
     draw_canvas_tool_cursor(app, ui, input, resizing);
+}
+
+/// The camera the canvas being drawn keeps: the document window's own while one draws it
+/// (`drawing_window`), else the document's on the main canvas. Menus and task bars that change a
+/// camera change only this one, so a row chosen in one window never moves another view.
+fn drawn_view(app: &PhotocraftApp, idx: usize) -> Option<&View> {
+    match app.drawing_window {
+        Some(id) => app.ui.windows.iter().find(|w| w.id == id).map(|w| &w.view),
+        None => app.ui.views.get(idx),
+    }
 }
 
 fn draw_canvas_tool_cursor(app: &mut PhotocraftApp, ui: &mut egui::Ui, input: &CanvasOverlayInput<'_>, resizing: bool) {
@@ -2008,19 +2023,21 @@ fn finish_canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut Vie
         crate::rulers::draw_guide_drag_readout(app, ctx);
     }
     crate::rotate_view::overlay(app, ctx, painter, &xf, view, response);
-    if owns_doc_view {
-        // Tool input can change the stored camera while navigation edits the local view.
-        // Merge changed camera values so write-back preserves tool-driven pan and rotation.
-        if let (Some((center, rotation)), Some(now)) = (camera, app.ui.views.get(idx)) {
-            if now.center != center {
-                view.center = now.center;
-                ctx.request_repaint();
-            }
-            if now.rotation != rotation {
-                view.rotation = now.rotation;
-                ctx.request_repaint();
-            }
+    // Tool input can change the stored camera while navigation edits the local view. Merge
+    // changed camera values so the canvas that owns this view keeps tool-driven pan and rotation:
+    // the document window's own camera for a window, the document's for the main canvas. A window
+    // adopting its own camera here can never pick up another canvas's.
+    if let (Some((center, rotation)), Some(now)) = (camera, drawn_view(app, idx)) {
+        if now.center != center {
+            view.center = now.center;
+            ctx.request_repaint();
         }
+        if now.rotation != rotation {
+            view.rotation = now.rotation;
+            ctx.request_repaint();
+        }
+    }
+    if owns_doc_view {
         app.ui.views[idx] = (*view).clone();
     }
 }
@@ -2101,11 +2118,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // and a window opened beside the main canvas keeps the zoom it was opened with instead of
     // writing its own back over the document (#multi-window).
     let owns_doc_view = app.drawing_window.is_none();
-    // The camera as the app holds it before this frame's input. The canvas works on its own copy
-    // (`view`) and writes it back at the end; a tool that moves the camera itself meanwhile (the
+    // The camera as the app holds it before this frame's input — this window's own for a
+    // document-window canvas, the document's on the main canvas otherwise. The canvas works on
+    // its own copy (`view`) and writes it back at the end; a tool that moves the camera itself meanwhile (the
     // Crop tool's default mode pans and turns the view with the image, `crop_mode`) must not be
     // undone by that write-back.
-    let camera = if owns_doc_view { app.ui.views.get(idx).map(|v| (v.center, v.rotation)) } else { None };
+    let camera = drawn_view(app, idx).map(|v| (v.center, v.rotation));
     // `View::zoom` is device pixels per document pixel; this canvas's geometry is in its own
     // viewport's egui points. A document window can sit on another display with a different
     // scale, so only the primary canvas records `app.ppp` for the frame's shared helpers
@@ -2158,7 +2176,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let aspect = sync_view_to_document(app, &ctx, &mut view, &doc, rect, ppp);
     update_polygon_camera(app, &ctx, (idx, primary), rect, &mut view, ppp, aspect);
 
-    let flip = app.ui.view.flip_horizontal;
+    let flip = app.canvas_flip(idx);
     // Document rendering follows the target; only shader uniforms and overlay geometry ease.
     let target_xf = ViewXform { rect, zoom: view.zoom / ppp, center: view.center, flip, rotation: view.rotation, aspect };
     let render_zoom = view.zoom;
@@ -2400,7 +2418,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         };
         handle_primary_canvas_input(app, ui, &mut view, &input);
     }
-    if crop_camera && let (Some((center, rotation)), Some(now)) = (camera, app.ui.views.get(idx)) {
+    if crop_camera && let (Some((center, rotation)), Some(now)) = (camera, drawn_view(app, idx)) {
         if now.center != center {
             view.center = now.center;
             ctx.request_repaint();
@@ -3264,7 +3282,7 @@ fn polygon_edge_scroll(app: &PhotocraftApp, ctx: &egui::Context, idx: usize, rec
     };
     let velocity = vec2(speed(pointer.x, rect.left(), rect.right()), speed(pointer.y, rect.top(), rect.bottom()));
     let velocity = velocity * (600.0 / velocity.length().max(600.0));
-    let xf = ViewXform { rect, zoom, center: view.center, flip: app.ui.view.flip_horizontal, rotation: view.rotation, aspect: app.ui.view.display_aspect() };
+    let xf = ViewXform { rect, zoom, center: view.center, flip: app.canvas_flip(idx), rotation: view.rotation, aspect: app.ui.view.display_aspect() };
     let delta = xf.unmap_vec(velocity) * dt.min(0.05) / zoom;
     view.center[0] += delta.x;
     view.center[1] += delta.y;

@@ -47,6 +47,7 @@ pub fn handles(id: &str) -> bool {
             | "view.fitArtboardOnScreen"
             | "window.panel.layerComps"
             | "view.flipHorizontal"
+            | "view.desaturate"
             | "view.pixelAspectRatioCorrection"
             | "view.patternPreview"
             | "view.pixelArtPreview"
@@ -166,7 +167,8 @@ pub fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     }
     Some(match id {
         "view.extras" => o.extras,
-        "view.flipHorizontal" => o.flip_horizontal,
+        "view.flipHorizontal" => app.session.active_index().map_or(o.flip_horizontal, |i| app.command_flip(i)),
+        "view.desaturate" => o.desaturate,
         "view.pixelAspectRatioCorrection" => o.pixel_aspect_correction,
         "view.patternPreview" => o.pattern_preview,
         "view.pixelArtPreview" => o.pixel_art_preview,
@@ -319,6 +321,18 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
     if id == "view.resetView" {
         return crate::rotate_view::reset(app);
     }
+    // A view-only flip belongs to one view, the way Photoshop's does: the focused document
+    // window's own, else the main canvas's. Flipping one window leaves the others as they were.
+    if id == "view.flipHorizontal" {
+        let i = app.session.active_index();
+        let current = i.map_or(app.ui.view.flip_horizontal, |i| app.command_flip(i));
+        let on = flag_param(p, current);
+        match i {
+            Some(i) => app.set_flip(i, on),
+            None => app.ui.view.flip_horizontal = on,
+        }
+        return Ok(json!(on));
+    }
     let o = &mut app.ui.view;
     if let Some(k) = id.strip_prefix("view.show.") {
         if k == "all" {
@@ -400,9 +414,11 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
             o.extras = flag_param(p, o.extras);
             Ok(json!(o.extras))
         }
-        "view.flipHorizontal" => {
-            o.flip_horizontal = flag_param(p, o.flip_horizontal);
-            Ok(json!(o.flip_horizontal))
+        // Handled above, before the app-wide view options were borrowed.
+        "view.flipHorizontal" => Err("view.flipHorizontal is handled before the view options".into()),
+        "view.desaturate" => {
+            o.desaturate = flag_param(p, o.desaturate);
+            Ok(json!(o.desaturate))
         }
         "view.pixelAspectRatioCorrection" => {
             o.pixel_aspect_correction = flag_param(p, o.pixel_aspect_correction);

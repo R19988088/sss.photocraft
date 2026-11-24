@@ -91,7 +91,8 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     let options = crate::workspace_ui::switcher_options(app);
                     let opts: Vec<(String, &str)> = options.iter().map(|(k, l)| (k.clone(), l.as_str())).collect();
                     // A narrow bar drops what is also in a menu, the theme toggle first
-                    // (Preferences), then search (Edit › Search), and narrows the switcher
+                    // (Preferences), then the view previews (View › Flip Horizontal /
+                    // Desaturate Preview), then search (Edit › Search), and narrows the switcher
                     // (Window › Workspace) before anything runs over.
                     let room = ui.available_width();
                     let icons_shown: u8 = if room >= WORKSPACE_MIN + 2.0 * ICON_SLOT {
@@ -101,7 +102,11 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     } else {
                         0
                     };
-                    let ws_width = (room - f32::from(icons_shown) * ICON_SLOT - 6.0).clamp(WORKSPACE_MIN, 130.0);
+                    // The two view toggles take their own slots; they only show when all four
+                    // icons fit, so the switcher never loses room to them.
+                    let view_icons = room >= WORKSPACE_MIN + 4.0 * ICON_SLOT;
+                    let slots = f32::from(icons_shown) + if view_icons { 2.0 } else { 0.0 };
+                    let ws_width = (room - slots * ICON_SLOT - 6.0).clamp(WORKSPACE_MIN, 130.0);
                     if room >= WORKSPACE_MIN && widgets::dropdown(ui, "workspace", tl!("Workspace"), &mut ws, &opts, ws_width) {
                         app.ui.workspace = ws;
                         crate::menus::apply_workspace(app);
@@ -123,6 +128,25 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::prefs_ui::cycle_appearance(app, ui.ctx());
                         }
                         button.context_menu(|ui| crate::prefs_ui::appearance_context_menu(app, ui));
+                    }
+                    if view_icons {
+                        // View previews, both view-only: nothing in the document changes. Click
+                        // once to turn on, again to turn off (accent while on).
+                        let flip_tip = crate::shortcuts::tip_label(app, "Flip Horizontal (view only)", "view.flipHorizontal");
+                        // The view being worked in: a document window's own flip, else the main
+                        // canvas's. Toggling one leaves the other views unmirrored.
+                        let active = app.session.active_index();
+                        let flip = active.map_or(app.ui.view.flip_horizontal, |i| app.command_flip(i));
+                        if icons::button(ui, "arrow-left-right", 28.0, flip, &flip_tip).clicked() {
+                            match active {
+                                Some(i) => app.set_flip(i, !flip),
+                                None => app.ui.view.flip_horizontal = !flip,
+                            }
+                        }
+                        let desat_tip = crate::shortcuts::tip_label(app, "Desaturate Preview (view only)", "view.desaturate");
+                        if icons::button(ui, "contrast", 28.0, app.ui.view.desaturate, &desat_tip).clicked() {
+                            app.ui.view.desaturate = !app.ui.view.desaturate;
+                        }
                     }
                     if rtl { ui.min_rect().right() } else { ui.min_rect().left() }
                 };

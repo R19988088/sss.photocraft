@@ -67,7 +67,13 @@ pub fn pivot_center(center: [f32; 2], c: [f64; 2], from: f32, to: f32, flip: boo
 
 /// The active document's view rotation in degrees (0 without a view).
 pub fn view_rotation(app: &PhotocraftApp) -> f32 {
-    app.session.active_index().and_then(|i| app.ui.views.get(i)).map_or(0.0, |v| v.rotation)
+    app.session.active_index().and_then(|i| app.command_view(i)).map_or(0.0, |v| v.rotation)
+}
+
+/// View › Flip Horizontal of the view the tool is working in: the focused document window's own,
+/// else the main canvas's. A flip in one window leaves the other views as they were.
+pub(crate) fn current_flip(app: &PhotocraftApp) -> bool {
+    app.session.active_index().map_or(app.ui.view.flip_horizontal, |i| app.command_flip(i))
 }
 
 /// Turns the active view so the frame shows upright while default mode drives it, pivoting about
@@ -80,8 +86,8 @@ pub fn sync(app: &mut PhotocraftApp, pivot: Option<[f64; 2]>) {
     let Some(i) = app.session.active_index() else { return };
     // Classic Mode: an upright camera, the frame turned on it. Default mode: the frame upright.
     let want = if classic(app) { 0.0 } else { crate::rotate_view::wrap_deg(-crate::crop_ui::angle(app) as f32) };
-    let flip = app.ui.view.flip_horizontal;
-    let Some(v) = app.ui.views.get_mut(i) else { return };
+    let flip = app.command_flip(i);
+    let Some(v) = app.command_view_mut(i) else { return };
     if v.rotation != want {
         if let Some(p) = pivot.filter(|p| p.iter().all(|v| v.is_finite())) {
             v.center = pivot_center(v.center, p, v.rotation, want, flip);
@@ -102,7 +108,7 @@ pub fn upright(app: &mut PhotocraftApp) {
     if app.ui.tool != Tool::Crop {
         return;
     }
-    if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+    if let Some(v) = app.session.active_index().and_then(|i| app.command_view_mut(i)) {
         v.rotation = 0.0;
     }
 }
@@ -226,7 +232,7 @@ pub fn live_resize(app: &mut PhotocraftApp, g: LiveResize, press: PressView) {
     let Some((f, s)) = resized_frame(g) else { return };
     app.ui.crop_rect = Some(f);
     // The view follows the centre, so the box stays where it was on screen.
-    if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+    if let Some(v) = app.session.active_index().and_then(|i| app.command_view_mut(i)) {
         let c = [press.center[0] + s[0] as f32, press.center[1] + s[1] as f32];
         if c.iter().all(|x| x.is_finite()) {
             v.center = c;
@@ -251,7 +257,7 @@ pub fn shift_image(app: &mut PhotocraftApp, d: [f64; 2]) {
         return;
     }
     app.ui.crop_rect = Some(n);
-    if let Some(v) = app.session.active_index().and_then(|i| app.ui.views.get_mut(i)) {
+    if let Some(v) = app.session.active_index().and_then(|i| app.command_view_mut(i)) {
         let c = [v.center[0] - d[0] as f32, v.center[1] - d[1] as f32];
         if c.iter().all(|x| x.is_finite()) {
             v.center = c;
@@ -269,7 +275,7 @@ pub struct PressView {
 
 /// The active view's camera now.
 pub fn press_view(app: &PhotocraftApp) -> Option<PressView> {
-    app.session.active_index().and_then(|i| app.ui.views.get(i)).map(|v| PressView { rotation: v.rotation, center: v.center })
+    app.session.active_index().and_then(|i| app.command_view(i)).map(|v| PressView { rotation: v.rotation, center: v.center })
 }
 
 /// Document point `p` as seen through camera `from` re-read through camera `to`: the point that
@@ -286,7 +292,7 @@ fn remap(p: [f64; 2], from: PressView, to: PressView, flip: bool) -> [f64; 2] {
 /// would nudge a click).
 pub fn to_press(app: &PhotocraftApp, press: Option<PressView>, p: [f64; 2]) -> [f64; 2] {
     match (press, press_view(app)) {
-        (Some(press), Some(now)) if press != now => remap(p, now, press, app.ui.view.flip_horizontal),
+        (Some(press), Some(now)) if press != now => remap(p, now, press, current_flip(app)),
         _ => p,
     }
 }
@@ -294,7 +300,7 @@ pub fn to_press(app: &PhotocraftApp, press: Option<PressView>, p: [f64; 2]) -> [
 /// A press-view point mapped back into the current camera after snapping the crop handle.
 pub(crate) fn from_press(app: &PhotocraftApp, press: PressView, p: [f64; 2]) -> [f64; 2] {
     match press_view(app) {
-        Some(now) => remap(p, press, now, app.ui.view.flip_horizontal),
+        Some(now) => remap(p, press, now, current_flip(app)),
         None => p,
     }
 }
@@ -310,7 +316,7 @@ pub fn control_point(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
         _ => None,
     };
     match (press, press_view(app)) {
-        (Some(press), Some(now)) if app.ui.tool == Tool::Crop && press != now => remap(p, press, now, app.ui.view.flip_horizontal),
+        (Some(press), Some(now)) if app.ui.tool == Tool::Crop && press != now => remap(p, press, now, current_flip(app)),
         _ => p,
     }
 }
@@ -324,7 +330,7 @@ pub fn offset_image(app: &mut PhotocraftApp, rect: [f64; 4], press: Option<Press
         return;
     }
     app.ui.crop_rect = Some(n);
-    let (Some(press), Some(v)) = (press, app.session.active_index().and_then(|i| app.ui.views.get_mut(i))) else { return };
+    let (Some(press), Some(v)) = (press, app.session.active_index().and_then(|i| app.command_view_mut(i))) else { return };
     let c = [press.center[0] - d[0] as f32, press.center[1] - d[1] as f32];
     if c.iter().all(|x| x.is_finite()) {
         v.center = c;
@@ -334,7 +340,7 @@ pub fn offset_image(app: &mut PhotocraftApp, rect: [f64; 4], press: Option<Press
 /// A screen vector `s` (points, at the current zoom ignored) as a document vector of the same
 /// length: undoes the view's flip and rotation.
 pub fn screen_to_doc_vec(app: &PhotocraftApp, s: [f64; 2]) -> [f64; 2] {
-    let xf = ViewXform { rect: Rect::ZERO, zoom: 1.0, center: [0.0, 0.0], flip: app.ui.view.flip_horizontal, rotation: view_rotation(app), aspect: 1.0 };
+    let xf = ViewXform { rect: Rect::ZERO, zoom: 1.0, center: [0.0, 0.0], flip: current_flip(app), rotation: view_rotation(app), aspect: 1.0 };
     let u = xf.unmap_vec(vec2(s[0] as f32, s[1] as f32));
     [f64::from(u.x), f64::from(u.y)]
 }
@@ -347,7 +353,7 @@ pub fn auto_center(app: &mut PhotocraftApp) {
     }
     let Some(c) = finite_frame(app).map(crate::crop_ui::center) else { return };
     let c = [c[0] as f32, c[1] as f32];
-    if let (Some(v), true) = (app.session.active_index().and_then(|i| app.ui.views.get_mut(i)), c.iter().all(|x| x.is_finite())) {
+    if let (Some(v), true) = (app.session.active_index().and_then(|i| app.command_view_mut(i)), c.iter().all(|x| x.is_finite())) {
         v.center = c;
     }
 }
