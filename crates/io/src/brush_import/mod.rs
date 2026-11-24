@@ -295,7 +295,7 @@ pub fn read_any_with(bytes: &[u8], file_name: &str, group: &str, ctl: &photocraf
     }
     let parsed = match format {
         Format::Abr => return abr_import(bytes, group, ctl),
-        Format::Tpl => return tpl::read(bytes, group, ctl),
+        Format::Tpl => return tpl::read(bytes, group, ctl).map_err(|e| format!("{file_name}: {e}")),
         Format::Gimp => gimp::parse(bytes, file_name).map_err(|e| format!("{file_name}: {e}"))?,
         Format::MyPaint => mypaint::parse(bytes, file_name).map_err(|e| format!("{file_name}: {e}"))?,
         Format::Krita => krita::parse(bytes, file_name).map_err(|e| format!("{file_name}: {e}"))?,

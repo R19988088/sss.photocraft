@@ -254,6 +254,23 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
    - 还没照搬的参考项（用户没要求，别顺手加）：`taper.start`（起笔 0.15 渐显）、`opacity` 锥度、
      `tip_animation`、classic taper 的 `run_on`（`RUN_ON_PEN=1` / `RUN_ON_SHRINK=0.66`）。
 
+## 5b. 笔刷文件导入（`.abr/.tpl/.gbr/…`，`crates/io/src/brush_import`）
+
+格式表、嗅探与映射都在这里；工程命令是 `brush.presets.importBrushFile`（`preset_import_cmds.rs`），
+参数 `path`/`data` + `group`/`replace`/`select`，返回 `{group, imported, count, folders, format, warnings}`。
+
+- **`.tpl`（Photoshop 工具预设）必须是 `8BTP` + `8BIM` 块，画笔列表在 `tptp` 块里**：每条 =
+  u32 名称字符数 + UTF-16BE 名称 + **带版本头的描述符**。版本头（16）由
+  `VersionedDescriptor::parse_prefix` 自己读——2026-11-24 修过一次「先手读 4 字节再 parse」
+  的双读 bug，那会让每个 `.tpl` 都报 `descriptor version 0`（用户报的「导入 tpl 失败」就是它）。
+- 画笔定义有两种写法，`brush_of` 都认：tool 里有 `Brsh` item（`Objc` 或 `VlLs`），或者
+  tool 的 class 就是 `Brsh`、画笔键（`Dmtr/Hrdn/Spcn/Angl/Rndn/Cntc`）直接铺在 tool 上；
+  后一种会被收进一个 `Brsh` 对象再交给 `.abr` 的同一套映射。非画笔工具（移动/裁剪等）跳过并进 warning。
+- 回归口径：`cargo test -p photocraft-io brush_import::` 全绿（`.tpl` 有 6 个合成用例：
+  item / class 铺平 / list / 混入非画笔 / 无画笔报错 / version 3）。真实文件实测过
+  `.abr`×2 与 `.brushset`（30 个预设）；其它格式（`kpp/.bundle/gbr/gih/.myb/.sai2/.gobrush/.mdp/.sut/`
+  Painter 库）目前只有合成用例或完全没测，用户报障时优先要样本文件。
+
 ## 6. 交付物
 
 - `dist/release/PhotoCraft.app`、`dist/release/PhotoCraft-0.24.0-arm64.zip`（`custom-merged` 的构建产物）。
