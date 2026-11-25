@@ -227,6 +227,21 @@ fn documents_save_in_place_once_they_have_a_file() {
     answer(&mut app);
     assert_eq!(written.borrow().len(), 2);
     assert!(!app.ui.status_error);
+    // A layered TIFF is the document's own file: Ctrl+S writes its layers back without a chooser,
+    // and without TIFF Options, every time.
+    app.open_file("/pics/art.tif", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    for _ in 0..2 {
+        assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap()["path"], "/pics/art.tif");
+        assert!(!app.file_dialog_open());
+        assert!(app.tiff_options.is_none());
+    }
+    assert_eq!(written.borrow().len(), 4);
+    // A plain TIFF (one Background layer) writes itself back the same way.
+    app.open_file("/pics/plain.tiff", b"x").unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap()["path"], "/pics/plain.tiff");
+    assert!(!app.file_dialog_open() && app.tiff_options.is_none());
+    assert_eq!(written.borrow().len(), 5);
 }
 
 #[test]

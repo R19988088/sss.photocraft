@@ -452,3 +452,22 @@ Ctrl+S 都会再弹一次文件选择框。改动三处：
   `display_key`（`1 << 56`），切换时纹理重传一次。
 - 窄窗口：两枚按钮各占一个 `ICON_SLOT`，只有四个图标都放得下时才显示（否则仍在 View 菜单里）。
 
+## 11. 自研改动：TIFF 作品 Ctrl+S 写回（2026-11-25）
+
+用户的作品是 Photoshop 分层 TIFF（`E:\作品\2026\*.tif`，tag 37724 里带整套图层）。上游把 TIFF
+当平铺格式（`paths.rs` 的 `holds` / `layered_extension` 只认 psd/psb/pcraft/ora/sssp），于是
+**每次 Ctrl+S 都走"另存为"**：先弹文件选择框，再弹 TIFF Options，永远不在原文件上直接保存。
+改动：
+
+- `crates/io/src/tiff_layers.rs`：新增 `pub fn holds(doc)` —— Grayscale/RGB/CMYK 且非 Multichannel
+  的文档由 TIFF 完整承载（图层进 Photoshop 图层 tag，单层平铺也不丢东西）；`layered_mode` 复用它。
+- `paths.rs`：`layered_extension` 增加 `tif` / `tiff`，`holds` 对 TIFF 走 `tiff_layers::holds`。
+- `app/files.rs` 的 `save_in_place`：目标是 TIFF 时 `tiff_layers = Some(true)`（写回图层），
+  未给压缩选择时用 **LZW**（和 Photoshop 的 Save 一致，避免把 400MB 图层块写成未压缩的巨型文件），
+  并把 `tiffLayers` / `tiffCompression` 记进 `file.save` 步，回放不再问。
+- 口径：**分层 TIFF 的 Ctrl+S = 原地覆盖、无任何弹窗**；Lab/Indexed/Bitmap/Duotone/Multichannel
+  等 TIFF 复合图写不了的文档仍走"另存为"；Save As / Save a Copy 仍按原样弹 TIFF Options。
+- 测试：`engine/.../file_cmds/tests.rs`（`layered_extension`、`holds_at`、Lab 不承载）、
+  `file_open/tests.rs`（分层 TIFF 连按两次 Ctrl+S 不弹框、单层 TIFF 也不弹 TIFF Options）。
+
+

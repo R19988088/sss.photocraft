@@ -3221,7 +3221,7 @@ fn guide_layouts() {
 
 #[test]
 fn only_layered_files_save_in_place() {
-    for path in ["a.psd", "dir/a.PSB", r"C:\w\a.pcraft", "my.dir/a.psd", "a.ora", "dir/A.ORA", "a.sssp", "dir/A.SSSP"] {
+    for path in ["a.psd", "dir/a.PSB", r"C:\w\a.pcraft", "my.dir/a.psd", "a.ora", "dir/A.ORA", "a.sssp", "dir/A.SSSP", "a.tif", "dir/A.TIFF"] {
         assert!(saves_in_place(path), "{path}");
     }
     // Flat formats, no extension, a dotted folder with an extensionless file, a dot file.
@@ -3232,16 +3232,17 @@ fn only_layered_files_save_in_place() {
     assert_eq!(extension("my.dir/name"), None);
 }
 
-/// #3806: a layered format holds a document only if it keeps everything in it.
+/// #3806: a layered format holds a document only if it keeps everything in it. TIFF keeps
+/// Photoshop layer data, as Photoshop's Save writes it, so it is the document's own file.
 #[test]
 fn openraster_holds_a_document_only_when_it_drops_nothing() {
     let mut s = session(16, 16, 8);
     s.execute("layer.new.layer", json!({})).unwrap();
     let plain = doc(&s).clone();
-    for p in ["a.psd", "a.psb", "a.pcraft", "a.ora", "A.ORA", "a.sssp", "A.SSSP"] {
+    for p in ["a.psd", "a.psb", "a.pcraft", "a.ora", "A.ORA", "a.sssp", "A.SSSP", "a.tif", "A.TIFF"] {
         assert!(holds_at(&plain, p), "{p}");
     }
-    for p in ["a.png", "a.tif", "a", ""] {
+    for p in ["a.png", "a", ""] {
         assert!(!holds_at(&plain, p), "{p}");
     }
     assert!(losses_at(&plain, "a.ora").is_empty());
@@ -3250,9 +3251,25 @@ fn openraster_holds_a_document_only_when_it_drops_nothing() {
     assert!(holds_at(&adjusted, "a.psd") && !holds_at(&adjusted, "a.ora"));
     // SSSP keeps adjustment layers, so it stays the document's own file.
     assert!(holds_at(&adjusted, "a.sssp"));
+    // TIFF keeps them in its Photoshop layer data too.
+    assert!(holds_at(&adjusted, "a.tif") && holds_at(&adjusted, "a.TIFF"));
     assert!(losses_at(&adjusted, "a.sssp").is_empty());
     assert!(losses_at(&adjusted, "a.ora").iter().any(|l| l.contains("adjustment layers")), "{:?}", losses_at(&adjusted, "a.ora"));
     assert!(losses_at(&adjusted, "a.psd").is_empty());
+}
+
+/// A document whose composite a TIFF can't encode is not held by it: File › Save asks instead
+/// of writing back something the format would have to change.
+#[test]
+fn a_tiff_holds_only_documents_its_composite_can_carry() {
+    let mut s = session(16, 16, 8);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let plain = doc(&s).clone();
+    assert!(holds_at(&plain, "a.tif"));
+    s.execute("image.mode.lab", json!({})).unwrap();
+    let lab = doc(&s).clone();
+    assert!(!holds_at(&lab, "a.tif"));
+    assert!(!holds_at(&lab, "a.tiff"));
 }
 
 #[test]

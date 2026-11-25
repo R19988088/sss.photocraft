@@ -331,16 +331,30 @@ impl PhotocraftApp {
 
     /// File › Save back to the document's own file, recorded as a `file.save` step with the
     /// Targa, DDS or JPEG answer in `choices` (a replayed or scripted Save of a flat file brings
-    /// its own).
+    /// its own). A TIFF keeps its layers, and is compressed with LZW like Photoshop's Save, so
+    /// Ctrl+S writes it back without asking for TIFF Options each time.
     pub(crate) fn save_in_place(&mut self, path: String, choices: FormatChoices) -> Result<Value, String> {
         if self.save_options_open() {
             return Err(SAVE_OPTIONS_OPEN.into());
         }
-        let r = self.write_save(path, None, choices)?;
+        // TIFF is the document's own file now: a layered one holds everything the PSD path does
+        // (`photocraft_io::tiff_layers`), and a plain one is written flat, exactly.
+        let tiff = matches!(photocraft_engine::file_cmds::extension(&path).as_deref(), Some("tif" | "tiff"));
+        let choices = if tiff && choices.tiff.is_none() {
+            // No answer from a script: LZW, as Photoshop's TIFF Save writes it (no prompt).
+            FormatChoices { tiff: Some(tiff_options_ui::TiffChoice { compression: photocraft_codecs::TiffCompression::Lzw, ..Default::default() }), ..choices }
+        } else {
+            choices
+        };
+        let tiff_layers = tiff.then_some(true);
+        let r = self.write_save(path, tiff_layers, choices)?;
         // JPEG Options are recorded only where they change something
-        // ([`jpeg_options_ui::plain_save_step`]); the Targa and DDS answers as given.
+        // ([`jpeg_options_ui::plain_save_step`]); the Targa, DDS and TIFF answers as given.
         let mut step = jpeg_options_ui::plain_save_step(choices.jpeg);
         FormatChoices { jpeg: None, ..choices }.record(&mut step);
+        if let Some(layers) = tiff_layers {
+            step["tiffLayers"] = layers.into();
+        }
         self.session.journal.push(("file.save".into(), step));
         Ok(r)
     }
@@ -483,7 +497,7 @@ impl PhotocraftApp {
                     && photocraft_engine::file_cmds::extension(p).is_some_and(|e| photocraft_codecs::from_extension(&e).is_some_and(|f| f.caps().write))
             };
             let path = st.path.clone().filter(|p| photocraft_engine::file_cmds::holds_at(&st.doc, p) || flat_own(p)).ok_or(
-                "Save writes back only to the document's own PSD, PSB, .pcraft or OpenRaster file (OpenRaster only when it holds everything), or to its own flat file while the document is a single plain layer",
+                "Save writes back only to the document's own PSD, PSB, .pcraft, OpenRaster, SSSP or TIFF file (OpenRaster only when it holds everything, TIFF only when its composite can carry the document), or to its own flat file while the document is a single plain layer",
             )?;
             return self.save_in_place(path, choices);
         }
@@ -795,7 +809,7 @@ impl PhotocraftApp {
             let state = self.session.active().ok_or("no document")?;
             // As File › Save: without `path` only a layered file is written back (#416).
             path.or_else(|| state.path.clone().filter(|p| photocraft_engine::file_cmds::holds_at(&state.doc, p))).ok_or(
-                "pass `path`: a save without one writes back only to the document's own PSD, PSB, .pcraft or OpenRaster file, and to OpenRaster only when it holds everything (adjustment layers, styles and masks don't fit)",
+                "pass `path`: a save without one writes back only to the document's own PSD, PSB, .pcraft, SSSP or TIFF file, and to OpenRaster only when it holds everything (adjustment layers, styles and masks don't fit)",
             )?
         };
         let reply = |path: &str, warnings: &[String]| json!({"path": path, "warnings": warnings});

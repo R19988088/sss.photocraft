@@ -32,12 +32,22 @@ pub fn would_write_layers(doc: &Document) -> bool {
     !(single_layer(doc).is_some() && doc.layers.first().is_some_and(|l| l.locks.transparency))
 }
 
-/// Documents a layered TIFF can hold: the TIFF composite must be in the document's model so
-/// that the layer channels inside the tag match it (Lab TIFFs are not decoded or encoded by
-/// `photocraft-codecs`), and there must be layers to keep (a Multichannel document has none:
-/// its channels are the image).
+/// Whether a TIFF can hold the whole of `doc`, so it can be the document's own file (File › Save
+/// writes back to it instead of asking for a name). A TIFF keeps the layers in the Photoshop layer
+/// tags, so anything the PSD path understands fits; a plain single layer is written flat, exactly.
+/// It cannot hold a document whose composite it can't encode (Lab, Indexed, Bitmap and Duotone
+/// TIFFs) or a Multichannel one, whose channels are the image rather than layers.
+pub fn holds(doc: &Document) -> bool {
+    matches!(
+        doc.pixel_format().mode,
+        ColorMode::Grayscale | ColorMode::Rgb | ColorMode::Cmyk
+    ) && doc.mode != ColorMode::Multichannel
+}
+
+/// Documents a layered TIFF can hold: [`holds`], with layers to keep (a Multichannel document has
+/// none: its channels are the image).
 fn layered_mode(doc: &Document) -> bool {
-    matches!(doc.pixel_format().mode, ColorMode::Grayscale | ColorMode::Rgb | ColorMode::Cmyk) && doc.mode != ColorMode::Multichannel && !doc.layers.is_empty()
+    holds(doc) && !doc.layers.is_empty()
 }
 
 /// Replaces (or inserts) resource `id`; removes it when `data` is `None`.
