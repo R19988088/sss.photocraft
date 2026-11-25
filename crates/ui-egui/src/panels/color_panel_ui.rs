@@ -246,11 +246,13 @@ pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], backgrou
     out
 }
 
-/// 颜色数值 (the panel menu's Show Color Values): the colour's R, G, B sliders, appended under
+/// 颜色数值 (the panel menu's Show Color Values): the colour's H, S, B sliders, appended under
 /// whatever face the panel shows so the face keeps its own content and only gains the values
-/// below it, the way the reference application adds its value controls under the palette.
+/// below it, the way the reference application adds its value controls under the palette. HSB
+/// rather than RGB so the numbers read the way the field above them picks (#6000's 颜色 tab is
+/// an HSV square and hue strip).
 pub(super) fn color_values(app: &mut PhotocraftApp, ui: &mut egui::Ui, background: bool) {
-    let model = Model::Rgb;
+    let model = Model::Hsb;
     let v = current_values(ui, model, background, active(app));
     let dynamic = app.session.prefs().interface.dynamic_color_sliders;
     if let Some(v) = slider_rows(ui, model, v, background, dynamic) {
@@ -802,7 +804,7 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
         ui.separator();
-        // 颜色数值: the colour's R, G, B sliders appended under the face's own content (the
+        // 颜色数值: the colour's H, S, B sliders appended under the face's own content (the
         // reference application adds its value controls below the palette) — never instead of it.
         // The menu stays open so the change can be seen and undone in place.
         if check_item(ui, app.ui.color_panel.show_values, "Show Color Values") {

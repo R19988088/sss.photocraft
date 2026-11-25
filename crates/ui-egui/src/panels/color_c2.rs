@@ -259,7 +259,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     image_palette(app, ui, scale);
-    // 颜色数值: the R, G, B sliders appended under the panel's own content — the reference
+    // 颜色数值: the H, S, B sliders appended under the panel's own content — the reference
     // application puts its value controls below the palette — never in place of it, so the
     // swatches and the field above stay exactly as they are.
     if app.ui.color_panel.show_values {

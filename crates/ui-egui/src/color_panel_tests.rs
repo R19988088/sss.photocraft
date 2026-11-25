@@ -689,7 +689,7 @@ fn the_c2_picker_keeps_a_168_pt_square_at_any_dock_width() {
     assert_eq!(sides, [(168.0, 168.0), (168.0, 168.0)], "the picker is fixed, not stretched with the dock");
 }
 
-/// 开启颜色数值: the C2 layout gains the R, G, B slider rows under its swatch row — the field,
+/// 开启颜色数值: the C2 layout gains the H, S, B slider rows under its swatch row — the field,
 /// chips and swatches above keep their place, so the values are appended, never a replacement —
 /// and loses only those rows when it is off.
 #[test]
@@ -698,9 +698,9 @@ fn the_c2_panel_appends_color_values_below_its_content() {
     assert!(h.state().ui.color_panel.show_values, "颜色数值 starts on, as the reference application has it");
     assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "the swatch row is still there");
     let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
-    let red = h.query_by_label("Red").unwrap_or_else(|| panic!("no Red row")).rect();
-    assert!(red.top() > swatch.bottom(), "the values follow the swatch row: {red:?} under {swatch:?}");
-    for name in ["Red", "Green", "Blue"] {
+    let hue = h.query_by_label("Hue").unwrap_or_else(|| panic!("no Hue row")).rect();
+    assert!(hue.top() > swatch.bottom(), "the values follow the swatch row: {hue:?} under {swatch:?}");
+    for name in ["Hue", "Saturation", "Brightness"] {
         assert!(h.query_by_label(name).is_some(), "{name} row");
     }
     let picker = h.get_by_label("Saturation / Brightness").rect();
@@ -708,7 +708,7 @@ fn the_c2_panel_appends_color_values_below_its_content() {
 
     h.state_mut().ui.color_panel.show_values = false;
     h.run_steps(3);
-    for name in ["Red", "Green", "Blue"] {
+    for name in ["Hue", "Saturation", "Brightness"] {
         assert!(h.query_by_label(name).is_none(), "off: no {name} row");
     }
     assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "and the swatches stay either way");

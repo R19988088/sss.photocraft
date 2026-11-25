@@ -40,7 +40,7 @@ pub struct ColorPanelState {
     /// The colours picked most recently (newest first), drawn as the C2 layout's swatch column.
     #[serde(default = "recent_default")]
     pub recent: [[f32; 4]; 6],
-    /// 颜色数值 (Photoshop's Show Color Values): the colour's R, G, B sliders appended under the
+    /// 颜色数值 (Photoshop's Show Color Values): the colour's H, S, B sliders appended under the
     /// face's own content — the reference layout adds them below its swatches — never in place of
     /// it. On by default, as the previous build and the reference application had it.
     #[serde(default = "values_default")]
