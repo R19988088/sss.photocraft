@@ -1,10 +1,26 @@
 //! Causal tablet pressure and coordinate filtering shared by native input consumers.
+//!
+//! One reading goes through one response, in this order:
+//!
+//! 1. the **dead zone** — a light resting touch paints nothing; the pen's pressure starts
+//!    counting right above it, so the edge of the dead zone is where the response's 0 sits
+//!    (the start moved, not only the cut);
+//! 2. the **full-press calibration** — the hardest the pen pressed maps the rest to 0..1;
+//! 3. the **pressure curve** (`tools.pressureCurve`, the pen's page in Preferences) — those
+//!    points shape that 0..1 before the brush sees it;
+//! 4. the **elasticity** — the pen page's rise/fall exponent over the shaped 0..1;
+//! 5. the **1 % floor** — anything that paints paints at least 1 % of full pressure, and a
+//!    stroke's first point is exactly 1 % (a zero-width first dab reads as a stroke that never
+//!    started).
 use serde::{Deserialize, Serialize};
 
+use crate::curve::ResponseCurve;
 use crate::StrokePoint;
 
 const PRESSURE_MAX: i64 = 65535;
-const PRESSURE_FLOOR: i64 = 66;
+/// 1 % of full pressure in the 0..=65535 units the response works in: the least a reading that
+/// paints may map to, and what a stroke's first point is forced to. Was 66 (0.1 %, invisible).
+const PRESSURE_FLOOR: i64 = 655;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -15,6 +31,13 @@ pub struct TabletPressureSettings {
     pub elasticity: f64,
     pub coordinate_window: usize,
     pub pressure_window: usize,
+    /// The pen's pressure curve (Preferences › Tablet › Pressure curve): `[input, output]` points
+    /// shaping this stroke's own 0..1 pressure, after the dead zone and the full-press calibration.
+    /// Not stored with the response — the preferences keep one curve under `tools.pressureCurve`
+    /// and hand it here (`Stylus::set_tablet_response`), so the editor and the response can never
+    /// drift apart into two different curves.
+    #[serde(skip)]
+    pub pressure_curve: ResponseCurve,
 }
 
 impl Default for TabletPressureSettings {
@@ -22,9 +45,18 @@ impl Default for TabletPressureSettings {
     /// maximum, no dead zone, elasticity 6 and stroke stability 2. Pressure itself is not
     /// averaged: a window's mean dulls every change in the pen's pressure and reads too coarse
     /// at exactly the moments that matter (the stroke's start and its lift), so the window is
-    /// one sample — the pen's own reading, through the calibration and the elasticity curve.
+    /// one sample — the pen's own reading, through the dead zone, the calibration, the pressure
+    /// curve and the elasticity.
     fn default() -> Self {
-        Self { enabled: true, maximum_pressure: 1.0, dead_zone: 0.0, elasticity: 6.0, coordinate_window: 2, pressure_window: 1 }
+        Self {
+            enabled: true,
+            maximum_pressure: 1.0,
+            dead_zone: 0.0,
+            elasticity: 6.0,
+            coordinate_window: 2,
+            pressure_window: 1,
+            pressure_curve: ResponseCurve::LINEAR,
+        }
     }
 }
 
@@ -47,21 +79,32 @@ fn finite(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
 }
 
-/// Full-press calibration, the dead zone and the elasticity curve for one reading, in the
-/// 0..=65535 units the response works in: the mapping every sample of a stroke goes through,
-/// with or without the windows around it.
+/// The pen's own reading through the whole response, in the 0..=65535 units it works in: the
+/// dead zone, the full-press calibration, the pressure curve, the elasticity and the 1 % floor.
+/// Every sample of a stroke goes through this, with or without the windows around it.
 fn calibrated(pressure: f32, settings: &TabletPressureSettings) -> i64 {
     let maximum = (settings.maximum_pressure * 65535.0).round() as i64;
     let dead_zone = (settings.dead_zone * 65535.0).round() as i64;
     let maximum = maximum.max(dead_zone + 1);
     let raw = (finite(pressure as f64, 0.0).clamp(0.0, 1.0) * 65535.0).round() as i64;
-    let mapped = if raw <= dead_zone { 0 } else { ((raw.min(maximum) - dead_zone) * PRESSURE_MAX / (maximum - dead_zone)).min(PRESSURE_MAX) };
-    if mapped == 0 {
+    // Nothing paints inside the dead zone — not even the floor: a resting touch lays no ink.
+    if raw <= dead_zone {
         return 0;
     }
-    let p = mapped as f64 / 65535.0;
+    // Above it the pen's pressure starts at the dead zone's edge and reaches full at the
+    // calibrated maximum, so the dead zone moves the response's start instead of only cutting
+    // its low end off (the pen page's own equation).
+    let mapped = ((raw.min(maximum) - dead_zone) * PRESSURE_MAX / (maximum - dead_zone)).min(PRESSURE_MAX);
+    let mut p = mapped as f64 / 65535.0;
+    // The pen's pressure curve shapes this stroke's own 0..1 pressure: one curve, applied here
+    // rather than in the stylus, so a dead zone's start and the curve's shape always agree.
+    p = f64::from(settings.pressure_curve.eval(p as f32)).clamp(0.0, 1.0);
     let rise = p.powf(0.92);
-    (rise / (rise + settings.elasticity * (1.0 - p).powf(1.19)) * 65535.0).round() as i64
+    let shaped = rise / (rise + settings.elasticity * (1.0 - p).powf(1.19));
+    let out = (finite(shaped, 0.0) * 65535.0).round() as i64;
+    // Past the dead zone the pen is pressing, so the reading paints: a curve that holds its
+    // output at 0 still lays the 1 % minimum, never a zero-width dab.
+    out.max(PRESSURE_FLOOR)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -171,13 +214,9 @@ fn handles(a: Node, b: Node, c: Node) -> ((i64, i64), (i64, i64)) {
 }
 
 fn pressure_value(pressure: i64) -> f32 {
-    if pressure <= 0 {
-        0.0
-    } else if pressure <= PRESSURE_FLOOR {
-        0.001
-    } else {
-        pressure as f32 / 65535.0
-    }
+    // A reading that paints never reads below the 1 % floor (a stroke's first point is exactly
+    // it); only the lift's own zero reads as nothing.
+    if pressure <= 0 { 0.0 } else { pressure.max(PRESSURE_FLOOR) as f32 / 65535.0 }
 }
 
 fn coordinate(value: f64) -> i64 {
@@ -272,8 +311,9 @@ impl TabletPressureFilter {
         self.last_pressure.map_or(1.0, pressure_value)
     }
 
-    /// This filter's pressure for one reading on its own: the dead zone, full-press calibration
-    /// and the elasticity curve, without the averaging window and without the coordinate delay.
+    /// This filter's pressure for one reading on its own: the dead zone, the full-press
+    /// calibration, the pen's pressure curve and the elasticity, without the averaging window and
+    /// without the coordinate delay.
     /// The lift takes the pen's last reading through this: the window's mean still holds the
     /// coarser samples just before it, and reading that at the lift is what makes the tail's
     /// pressure jump *up* exactly when the pen thins away.
@@ -372,11 +412,48 @@ mod tests {
         let mut filter = TabletPressureFilter::default();
         let first = filter.begin(StrokePoint::new(10.0, 20.0, 0.5), settings());
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].pressure, 0.001);
+        // A stroke's first point is forced to 1 % of full pressure, whatever the pen reads.
+        assert!((first[0].pressure - 0.01).abs() < 1e-3, "the first point was {}", first[0].pressure);
         filter.push(StrokePoint::new(11.0, 20.0, 0.0));
         let next = filter.push(StrokePoint::new(12.0, 20.0, 0.5));
         assert_eq!(next.len(), 1);
-        assert_eq!(next[0].pressure, 0.001);
+        assert!((next[0].pressure - 0.01).abs() < 1e-3, "the restarted stroke's first point was {}", next[0].pressure);
+    }
+
+    #[test]
+    fn the_dead_zone_is_where_the_pressure_starts_and_nothing_below_it_paints() {
+        // The pen page's dead zone: a resting touch (at or under it) paints nothing; right above
+        // it the response starts, and the calibrated maximum is full pressure. Before the rewrite
+        // the curve was never applied here and a start just above the dead zone mapped to a
+        // pressure too thin to see.
+        let settings = TabletPressureSettings { dead_zone: 0.1, maximum_pressure: 0.9, elasticity: 1.0, coordinate_window: 1, ..settings() };
+        let mapped = |p: f32| TabletPressureFilter::default().mapped_pressure(p, settings);
+        assert_eq!(mapped(0.0), 0.0, "no contact paints nothing");
+        assert_eq!(mapped(0.05), 0.0, "inside the dead zone");
+        assert_eq!(mapped(0.1), 0.0, "the dead zone's edge is still nothing");
+        // Just above the edge the response starts at 1 %, not at a zero-width dab.
+        assert!((mapped(0.101) - 0.01).abs() < 1e-3, "the start was {}", mapped(0.101));
+        // It rises from there and reaches full pressure at the calibrated maximum.
+        assert!(mapped(0.5) > mapped(0.2), "{} then {}", mapped(0.2), mapped(0.5));
+        assert!((mapped(0.9) - 1.0).abs() < 1e-6, "full press was {}", mapped(0.9));
+    }
+
+    #[test]
+    fn the_pressure_curve_shapes_the_pressure_the_brush_gets() {
+        // Preferences › Tablet › Pressure curve is the pen's own response: the same reading
+        // through a soft curve must give more pressure than through the linear one, and the
+        // dead zone and the curve agree (the curve's input is the pressure after the dead zone).
+        let soft = [[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]];
+        let mut settings = TabletPressureSettings { dead_zone: 0.1, elasticity: 1.0, coordinate_window: 1, ..settings() };
+        let linear = TabletPressureFilter::default().mapped_pressure(0.4, settings);
+        settings.pressure_curve = ResponseCurve::new(&soft);
+        let curved = TabletPressureFilter::default().mapped_pressure(0.4, settings);
+        assert!(curved > linear + 0.05, "the curve did nothing: {linear} then {curved}");
+        // A curve that holds its low end flat still paints at the floor from the dead zone's
+        // edge, and a reading under the dead zone still paints nothing whatever the curve says.
+        settings.pressure_curve = ResponseCurve::new(&[[0.0, 0.0], [0.5, 0.0], [1.0, 1.0]]);
+        assert!((TabletPressureFilter::default().mapped_pressure(0.15, settings) - 0.01).abs() < 1e-3);
+        assert_eq!(TabletPressureFilter::default().mapped_pressure(0.05, settings), 0.0);
     }
 
     #[test]

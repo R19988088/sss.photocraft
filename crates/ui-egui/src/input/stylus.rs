@@ -515,15 +515,27 @@ impl Stylus {
 
     /// The current pen sample, `None` for a mouse (and for any pen while Use Tablet Pressure is
     /// off).
-    pub fn sample(&self) -> Option<PenSample> {        if !self.use_pressure {
-            return None;
-        }
-        let s = self.current.or_else(|| self.latest()).or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
+    pub fn sample(&self) -> Option<PenSample> {
+        let s = self.raw_sample()?;
         // The pen's pressure through Preferences › Tools › Pressure Curve, before any brush sees it.
+        // When the tablet response is on, the curve is the response's own (it applies it after the
+        // dead zone): shaping it here as well would send it through twice.
+        if self.tablet_response.is_some() {
+            return Some(s);
+        }
         Some(match &self.pressure_curve {
             Some(c) => PenSample { pressure: c.eval(s.pressure), ..s },
             None => s,
         })
+    }
+
+    /// The pen's own reading, before the pressure curve: the response applies the curve itself,
+    /// exactly once, so it is handed the reading as the pen reported it.
+    fn raw_sample(&self) -> Option<PenSample> {
+        if !self.use_pressure {
+            return None;
+        }
+        self.current.or_else(|| self.latest()).or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))
     }
 
     /// Preferences › Tools › Pressure Curve (rebuilt only when the points change).
@@ -654,10 +666,13 @@ impl Stylus {
     /// Pressure for the next tool event (1 for a mouse).
     pub fn pressure(&self) -> f32 {
         let Some(s) = self.sample() else { return 1.0 };
-        match (self.tablet_response.is_some(), self.current_filtered()) {
-            (true, Some(filtered)) => filtered,
-            _ => s.pressure,
+        if let Some(settings) = self.tablet_response {
+            // The response's own value; with no sample through it yet (a touch force, a frame
+            // without pen samples) the reading still takes the response's mapping, not the raw
+            // one, so the dead zone and the curve hold everywhere.
+            return self.current_filtered().unwrap_or_else(|| self.pressure_filter.mapped_pressure(s.pressure, settings));
         }
+        s.pressure
     }
 
     /// The response's pressure for the event being processed: the one at the event's time with
@@ -666,7 +681,10 @@ impl Stylus {
         if self.optimized { self.filtered_at(self.clock_ms) } else { self.filtered.last().map(|s| s.sample.pressure) }
     }
 
-    /// Preferences › Tools › Tablet Pressure response (off when the filter is disabled).
+    /// Preferences › Tools › Tablet Pressure response (off when the filter is disabled). The pen's
+    /// pressure curve travels with it: the response applies the curve itself, on the pressure the
+    /// dead zone and the calibration leave, so the curve reaches every stroke whatever path the
+    /// samples take (and `sample()` must not apply it a second time).
     pub fn set_tablet_response(&mut self, settings: photocraft_paint::TabletPressureSettings) {
         self.tablet_response = settings.enabled.then_some(settings.clamped());
         if self.tablet_response.is_none() {
@@ -721,7 +739,7 @@ impl Stylus {
             self.filtered.clear();
             return;
         };
-        let Some(sample) = self.sample() else {
+        let Some(sample) = self.raw_sample() else {
             self.filtered.clear();
             return;
         };
@@ -766,6 +784,11 @@ impl Stylus {
     /// often far lighter than the tap. 1 for a mouse.
     pub(crate) fn tap_pressure(&self) -> f32 {
         let Some(s) = self.sample() else { return 1.0 };
+        // The response owns the pen's pressure, its curve included: a tap reads through it like
+        // every other sample of the stroke instead of taking the curve twice.
+        if let Some(settings) = self.tablet_response {
+            return self.pressure_filter.mapped_pressure(self.peak, settings);
+        }
         let peak = match &self.pressure_curve {
             Some(c) => c.eval(self.peak),
             None => self.peak,

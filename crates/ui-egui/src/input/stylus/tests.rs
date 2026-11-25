@@ -512,6 +512,64 @@ fn the_tablet_response_smooths_every_sample_of_a_frame() {
     assert_eq!(s.pressure(), 0.0, "the frame's samples did not all reach the filter");
 }
 
+/// The pressure `pressure()` reports for one pen reading through the response, on a stroke's
+/// second sample (the first is forced to the 1 % floor, so the reading itself shows on the next).
+fn response_pressure(settings: photocraft_paint::TabletPressureSettings, reading: f32) -> f32 {
+    let mut s = Stylus { optimized: true, ..Default::default() };
+    s.set_tablet_response(settings);
+    s.begin_pressure_filter();
+    for (i, at) in [100.0, 116.0].into_iter().enumerate() {
+        s.clock_ms = at;
+        s.feed.set_at(pen(reading), at - 4.0 + i as f64 * 16.0);
+        s.update(&[]);
+    }
+    s.pressure()
+}
+
+#[test]
+fn the_pens_pressure_curve_reaches_the_brush_through_the_response() {
+    // Preferences › Tablet › Pressure curve used to be applied in `sample()` only: the response
+    // then replaced that value with its own mapping of the *raw* reading, so the curve's shape
+    // never reached a dab. The response applies it itself now, once.
+    let soft = [[0.0, 0.0], [0.3, 0.6], [1.0, 1.0]];
+    let linear = response_pressure(photocraft_paint::TabletPressureSettings { dead_zone: 0.1, coordinate_window: 1, ..Default::default() }, 0.4);
+    let curved = response_pressure(
+        photocraft_paint::TabletPressureSettings {
+            dead_zone: 0.1,
+            coordinate_window: 1,
+            pressure_curve: photocraft_paint::ResponseCurve::new(&soft),
+            ..Default::default()
+        },
+        0.4,
+    );
+    assert!(curved > linear + 0.1, "the curve did nothing: linear {linear}, soft {curved}");
+}
+
+#[test]
+fn the_dead_zone_starts_the_pressure_and_a_resting_touch_paints_nothing() {
+    let settings = || photocraft_paint::TabletPressureSettings { dead_zone: 0.2, coordinate_window: 1, ..Default::default() };
+    assert_eq!(response_pressure(settings(), 0.15), 0.0, "a resting touch paints nothing");
+    // Right above the dead zone the response starts at the 1 % floor, not at nothing.
+    let start = response_pressure(settings(), 0.21);
+    assert!((start - 0.01).abs() < 1e-3, "the pressure starts at {start}");
+    // And it rises with the pen from there.
+    assert!(response_pressure(settings(), 0.6) > start);
+}
+
+#[test]
+fn a_strokes_first_pressure_point_is_forced_to_one_percent() {
+    // A zero-width first dab reads as a stroke that never started: the first point takes 1 % of
+    // full pressure whatever the pen reads.
+    let mut s = Stylus::default();
+    s.set_tablet_response(photocraft_paint::TabletPressureSettings::default());
+    s.begin_pressure_filter();
+    s.clock_ms = 100.0;
+    s.feed.set(Some(pen(0.9)));
+    s.update(&[]);
+    s.select(0, 1);
+    assert!((s.pressure() - 0.01).abs() < 1e-3, "the first point painted at {}", s.pressure());
+}
+
 #[test]
 fn a_stroke_ends_at_the_pressure_the_pen_lifted_with() {
     use crate::canvas::{ToolEvent, tool_event};

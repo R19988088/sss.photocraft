@@ -2245,9 +2245,12 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     app.stylus.optimized = app.session.prefs().tools.tablet_optimization;
     let curve = app.session.prefs().tools.pressure_curve.clone();
     app.stylus.set_pressure_curve(&curve);
-    // The custom tablet response: dead zone, full-pressure calibration, elasticity and
-    // pressure averaging, applied to every pen sample before the brush sees it.
-    let tablet_response = app.session.prefs().tools.tablet_pressure.clamped();
+    // The custom tablet response: dead zone, full-press calibration, the pen's pressure curve and
+    // the elasticity, applied to every pen sample before the brush sees it. The curve is the pen
+    // page's own (`tools.pressureCurve`) and travels inside the response, so the dead zone's start
+    // and the curve always meet in the same mapping.
+    let mut tablet_response = app.session.prefs().tools.tablet_pressure.clamped();
+    tablet_response.pressure_curve = photocraft_paint::ResponseCurve::new(&app.session.prefs().tools.pressure_curve);
     app.stylus.set_tablet_response(tablet_response);
     // The frame's clock before the pen samples are read: a sample's arrival time is aligned to it
     // (see `Stylus::update`), and this frame's moves spread between the last point and it.

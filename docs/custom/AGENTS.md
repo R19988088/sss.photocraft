@@ -283,6 +283,30 @@ cargo test -p photocraft-engine     # 应 3373 passed / 3 failed / 15 ignored
      是同一份代码（同样有 `result.count <= 4` 的收笔门槛，同样 `finish(at:)` 只调 `end()`），
      所以「mac 那边尾巴好看」不是因为它做了额外处理，而是因为它**没有那层低通**。
 
+15. **压力是一整条响应，死区是起点、曲线在里面、首点固定 1 %**（2026-11-25 重写，
+   `tablet_pressure.rs::calibrated`；用户报「压力修复后死区对应的压力起点和压力曲线映射失效」）：
+   一次读数按顺序过五步，改顺序或把某一步挪回 `stylus.rs` 都会让「死区起点」和「曲线形状」
+   再次对不上：
+   - **死区**：`raw <= dead_zone` 直接返回 0（落笔前轻碰、悬停不落墨，连 1 % 地板也不给）；
+   - **满压归一**：`[dead_zone, maximum_pressure] → 0..1`，即死区边缘是响应的 0 点、校准的最
+     大值是满压。死区因此是**移动起点**，不是只把低端砍掉；
+   - **压力曲线**：`tools.pressureCurve`（Preferences › 数位板 › Pressure curve）作用在这条
+     0..1 上。曲线放在响应里（`TabletPressureSettings::pressure_curve`，`#[serde(skip)]`，
+     由 `canvas.rs` 每帧从 prefs 填、`Stylus::set_tablet_response` 带进来），**不再**由
+     `sample()` 施加——以前 `sample()` 施加、响应却用自己的 raw 映射覆盖 `pressure()`，
+     曲线编辑器的形状永远到不了 dab（这就是「曲线映射失效」）。
+   - **弹性**：`rise=x^0.92` / `fall=k*(1-x)^1.19`（数位板页的 Elasticity），压在曲线之后；
+   - **1 % 地板**：过了死区就一定落墨，最少 1 % 满压（`PRESSURE_FLOOR` 由 66/0.1 % 改成
+     655）；**一笔的第一个压力点强制 1 %**（`filtered_node` 的激活分支本来就是地板，别再改回
+     笔的原始读数）。曲线把低端压成 0 也只落到地板，不会变成零宽 dab。
+   抬笔的 0（`finish(Some(0))`）仍必须是 0：地板只给「过了死区」的读数，抬笔不是。
+   单测：`tablet_pressure::tests::the_dead_zone_is_where_the_pressure_starts_and_nothing_below_it_paints`、
+   `the_pressure_curve_shapes_the_pressure_the_brush_gets`、
+   `first_sample_is_immediate_and_pressure_activation_restarts_after_release`（首点 1 %）、
+   `stylus::tests::the_pens_pressure_curve_reaches_the_brush_through_the_response`、
+   `the_dead_zone_starts_the_pressure_and_a_resting_touch_paints_nothing`、
+   `a_strokes_first_pressure_point_is_forced_to_one_percent`。
+
 ## 5b. 笔刷文件导入（`.abr/.tpl/.gbr/…`，`crates/io/src/brush_import`）
 
 格式表、嗅探与映射都在这里；工程命令是 `brush.presets.importBrushFile`（`preset_import_cmds.rs`），
