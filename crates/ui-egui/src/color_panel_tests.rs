@@ -55,6 +55,10 @@ fn bytes(c: [f32; 4]) -> [u8; 3] {
 }
 
 fn type_into(h: &mut Harness<'_, PhotocraftApp>, role: egui::accesskit::Role, nth: usize, text: &str) {
+    // Photoshop's number fields open on the second click (fields.rs `number_edit`): the first
+    // only arms the field.
+    h.query_all_by_role(role).nth(nth).unwrap().click();
+    h.run_steps(1);
     h.query_all_by_role(role).nth(nth).unwrap().click();
     h.run_steps(1);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
@@ -524,6 +528,9 @@ fn color_tab_with_a_shape(mode: ColorPanelMode, background: bool) -> Harness<'st
 
 /// Types `text` into the first slider field (Hue or Red) and commits it with Enter.
 fn type_first_slider(h: &mut Harness<'_, PhotocraftApp>, text: &str) {
+    // The number field opens on the second click (fields.rs `number_edit`).
+    h.query_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().click();
+    h.run_steps(1);
     h.query_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().click();
     h.run_steps(2);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);

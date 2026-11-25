@@ -204,8 +204,19 @@ fn channel_name(model: Model, label: &'static str) -> String {
     full.to_string()
 }
 
-/// The slider rows of `model`. Returns the edited values, if any.
-pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool) -> Option<[f32; 4]> {
+/// The name of a slider row's number field: the model's word when `named`, its letter otherwise
+/// (see [`slider_rows`]).
+fn field_name(model: Model, label: &'static str, named: bool) -> String {
+    // The track beside it carries the letter ("R", "H"): the field's own name needs the word to be
+    // unique as well as said out loud, so a named face reads "Hue", a lettered one "H value".
+    if named { channel_name(model, label) } else { format!("{label} value") }
+}
+
+/// The slider rows of `model`. Returns the edited values, if any. `named` gives each row's field
+/// the model's full word ("Hue", "Saturation") instead of its letter: the 颜色数值 block under the
+/// C2 layout reads the values out loud, while the faces that are sliders themselves keep Photoshop's
+/// letters, where "H" is what the row is.
+pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool, named: bool) -> Option<[f32; 4]> {
     let t = Tokens::get(ui.ctx());
     // Dynamic Color Sliders off: the tracks keep the colours they had when a drag began.
     let stops_key = egui::Id::unique(("color-panel-stops", model, background));
@@ -232,7 +243,7 @@ pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], backgrou
             resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(x), label));
             if model == Model::Web {
                 changed |= hex_pair(ui, ui.scope_id().with(("web-field", i, background)), &mut x);
-            } else if widgets::value_field_named(ui, &channel_name(model, label), &mut x, lo..=hi, "", FIELD_W).changed() {
+            } else if widgets::value_field_named(ui, &field_name(model, label, named), &mut x, lo..=hi, "", FIELD_W).changed() {
                 changed = true;
             }
             let (ur, _) = ui.allocate_exact_size(vec2(UNIT_W, ROW_H), Sense::hover());
@@ -255,7 +266,7 @@ pub(super) fn color_values(app: &mut PhotocraftApp, ui: &mut egui::Ui, backgroun
     let model = Model::Hsb;
     let v = current_values(ui, model, background, active(app));
     let dynamic = app.session.prefs().interface.dynamic_color_sliders;
-    if let Some(v) = slider_rows(ui, model, v, background, dynamic) {
+    if let Some(v) = slider_rows(ui, model, v, background, dynamic, true) {
         apply_values(app, ui, model, v);
     }
 }
@@ -362,7 +373,7 @@ fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
         field_chips(app, ui, col);
         alerts(app, ui, col, rgb, model == Model::Web);
         ui.vertical(|ui| {
-            edited = slider_rows(ui, model, v, background, dynamic);
+            edited = slider_rows(ui, model, v, background, dynamic, false);
         });
     });
     if let Some(v) = edited {
@@ -579,7 +590,7 @@ fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, top_h), Sense::hover());
         field_chips(app, ui, col);
         ui.vertical(|ui| {
-            edited = slider_rows(ui, Model::Hsb, v, background, dynamic);
+            edited = slider_rows(ui, Model::Hsb, v, background, dynamic, false);
         });
     });
     let mut v = edited.unwrap_or(v);
@@ -810,9 +821,7 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if check_item(ui, app.ui.color_panel.show_values, "Show Color Values") {
             app.ui.color_panel.show_values = !app.ui.color_panel.show_values;
         }
-    } else {
-        // Wide enough for the mixing strength row's slider and field, as the reference menu is.
-        ui.set_min_width(220.0);
+        ui.separator();
         // 混合强度: the brush's pigment mixing, one value for every brush, beside the colour field
         // as the reference application keeps it. The slider writes the `painting.pigmentMixStrength`
         // preference and the engine copies it onto the brush, so it survives a restart with the rest
@@ -824,7 +833,9 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 app.ui.status_error = true;
             }
         }
-        ui.separator();
+    } else {
+        // Wide enough for the copy commands, as the reference menu is.
+        ui.set_min_width(220.0);
         let rgb = active(app);
         if ui.button(tl!("Copy Color as HTML")).clicked() {
             ui.ctx().copy_text(html_color(rgb));
@@ -884,9 +895,11 @@ pub fn persist(app: &mut PhotocraftApp) {
 }
 
 /// Restore the remembered Color panel options (at launch, or after a preference change made
-/// outside the panel); none stored (a reset) or unreadable ones are the defaults. The display
-/// mode is whatever the panel menu last picked — C2 (the reference layout) until then.
+/// outside the panel); none stored (a reset) or unreadable ones are the defaults. The display face
+/// is the reference layout (C2) at launch whatever the file says: the panel menu's pick lasts the
+/// session, a stored traditional face never comes back.
 pub fn restore(app: &mut PhotocraftApp) {
-    let state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
+    let mut state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
+    state.mode = ColorPanelMode::C2;
     app.ui.color_panel = state;
 }

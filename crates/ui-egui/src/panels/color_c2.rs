@@ -113,7 +113,9 @@ fn sv(ui: &mut egui::Ui, r: Rect, h: &mut egui::ecolor::Hsva) -> bool {
 fn hue(ui: &mut egui::Ui, r: Rect, h: &mut egui::ecolor::Hsva) -> bool {
     gradient(ui, r, 1, 36, |_, v| hsva_color32(egui::ecolor::Hsva::new(v, 1., 1., 1.)));
     let response = ui.interact(r, ui.id().with("c2-hue"), Sense::click_and_drag());
-    response.widget_info(|| egui::WidgetInfo::slider(true, f64::from(h.h * 360.0), "Hue"));
+    // "Hue Strip", not "Hue": the 颜色数值 rows below the swatches own "Hue", and two nodes with
+    // one name would make either of them ambiguous.
+    response.widget_info(|| egui::WidgetInfo::slider(true, f64::from(h.h * 360.0), "Hue Strip"));
     let picked = (response.clicked() || response.dragged()) && response.interact_pointer_pos().is_some();
     if picked && let Some(p) = response.interact_pointer_pos() {
         h.h = ((p.y - r.top()) / r.height()).rem_euclid(1.);
@@ -280,17 +282,23 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 /// The document's ten most telling colours, as a row of swatches under the field.
 fn image_palette(app: &mut PhotocraftApp, ui: &mut egui::Ui, scale: f32) {
-    let Some(st) = app.session.active() else { return };
-    let key = (st.doc.id, st.revision);
-    let id = egui::Id::new("c2-image-palette");
-    let cached = ui.data(|d| d.get_temp::<((photocraft_doc::DocId, u64), Vec<[f32; 4]>)>(id));
-    let colors = if let Some((_, v)) = cached.filter(|(k, _)| *k == key) {
-        v
-    } else {
-        let image = photocraft_compose::thumbnail(&st.doc, 96);
-        let colors = extract_colors(&image.pixels);
-        ui.data_mut(|d| d.insert_temp(id, (key, colors.clone())));
-        colors
+    // No document: the row keeps its place as ten empty boxes, so the panel's own content above
+    // the value rows doesn't reflow when a document opens.
+    let colors: Vec<[f32; 4]> = match app.session.active() {
+        Some(st) => {
+            let key = (st.doc.id, st.revision);
+            let id = egui::Id::new("c2-image-palette");
+            let cached = ui.data(|d| d.get_temp::<((photocraft_doc::DocId, u64), Vec<[f32; 4]>)>(id));
+            if let Some((_, v)) = cached.filter(|(k, _)| *k == key) {
+                v
+            } else {
+                let image = photocraft_compose::thumbnail(&st.doc, 96);
+                let colors = extract_colors(&image.pixels);
+                ui.data_mut(|d| d.insert_temp(id, (key, colors.clone())));
+                colors
+            }
+        }
+        None => Vec::new(),
     };
     ui.add_space(6. * scale);
     let t = Tokens::get(ui.ctx());

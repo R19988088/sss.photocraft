@@ -43,14 +43,16 @@ fn color_panel_field_and_hue_strip_pick_on_press() {
     );
     PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
     h.run_steps(2);
-    let (o, w) = h.ctx.data(|d| d.get_temp::<(Pos2, f32)>(egui::Id::unique("test-origin"))).unwrap();
-    let field_w = w - 38.0 - 14.0 - 16.0;
     let press = |h: &mut egui_kittest::Harness<'static, PhotocraftApp>, at: Pos2, pressed: bool| {
         h.event(egui::Event::PointerMoved(at));
         h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
         h.run_steps(1);
     };
-    let at = o + vec2(38.0 + 8.0 + field_w * 0.5, 60.0);
+    use egui_kittest::kittest::Queryable;
+    // The square is a fixed 168 pt (the C3 palette's scale), so the field is read from its node,
+    // not from the panel's width.
+    let field = h.get_by_label("Saturation / Brightness").rect();
+    let at = field.center();
     press(&mut h, at, true);
     let picked = h.state().session.tools.foreground;
     assert_ne!(picked, [0.2, 0.4, 0.6, 1.0], "the press itself picks");
@@ -63,7 +65,8 @@ fn color_panel_field_and_hue_strip_pick_on_press() {
     h.run_steps(1);
     // Hue strip: a press a third of the way down is a hue of about 240° at once.
     let before = h.state().session.tools.foreground;
-    press(&mut h, o + vec2(38.0 + 8.0 + field_w + 8.0 + 7.0, 40.0), true);
+    let strip = h.get_by_label("Hue Strip").rect();
+    press(&mut h, pos2(strip.center().x, strip.top() + strip.height() / 3.0), true);
     let now = h.state().session.tools.foreground;
     assert_ne!(now, before, "the strip picks on press");
     assert!((srgb_hsva(now).h * 360.0 - 240.0).abs() < 8.0, "{:?}", srgb_hsva(now));
@@ -525,14 +528,18 @@ fn color_panel_gestures_recolour_the_selected_shape_in_separate_steps() {
     };
     let steps = |app: &PhotocraftApp| app.session.active().unwrap().history.entries().len();
     let before = steps(h.state());
-    let min = h.ctx.input(|i| i.viewport_rect()).min;
-    click(&mut h, min + vec2(60.0, 10.0));
+    use egui_kittest::kittest::Queryable;
+    // The square is a fixed 168 pt (the C3 palette's scale): its points come from the field's
+    // own node, not from the panel's width.
+    let field = h.get_by_label("Saturation / Brightness").rect();
+    let top_left = pos2(field.left() + 2.0, field.top() + 2.0);
+    click(&mut h, top_left);
     assert!(is_foreground(h.state()));
     assert_eq!(steps(h.state()), before + 1, "the click");
-    drag(&mut h, min + vec2(120.0, 40.0), min + vec2(250.0, 120.0));
+    drag(&mut h, field.center(), pos2(field.right() - 4.0, field.bottom() - 4.0));
     assert!(is_foreground(h.state()));
     assert_eq!(steps(h.state()), before + 2, "the drag is one more step");
-    drag(&mut h, min + vec2(200.0, 60.0), min + vec2(100.0, 150.0));
+    drag(&mut h, pos2(field.left() + 4.0, field.top() + 4.0), pos2(field.left() + 4.0, field.bottom() - 4.0));
     assert_eq!(steps(h.state()), before + 3, "the next drag another");
     // The drag ended on black, the first swatch: picking the shape's own colour changes
     // nothing and adds no step (#5568), so take the second swatch.
@@ -541,7 +548,7 @@ fn color_panel_gestures_recolour_the_selected_shape_in_separate_steps() {
     crate::swatches_ui::use_swatch(h.state_mut(), &name, false);
     assert_ne!(h.state().session.tools.foreground, fg, "{name} is another colour");
     assert_eq!(steps(h.state()), before + 4, "the swatch");
-    drag(&mut h, min + vec2(150.0, 30.0), min + vec2(220.0, 100.0));
+    drag(&mut h, pos2(field.left() + 8.0, field.top() + 8.0), pos2(field.right() - 8.0, field.bottom() - 8.0));
     assert!(is_foreground(h.state()));
     assert_eq!(steps(h.state()), before + 5, "a drag after a swatch is a step of its own");
 }
@@ -562,13 +569,15 @@ fn color_panel_recolours_the_selected_shape_fill() {
     };
     let steps = |app: &PhotocraftApp| app.session.active().unwrap().history.entries().len();
     let before = steps(h.state());
-    let min = h.ctx.input(|i| i.viewport_rect()).min;
+    use egui_kittest::kittest::Queryable;
+    // The field's own square (168 pt), not the panel's width.
+    let field = h.get_by_label("Saturation / Brightness").rect();
     // The field's top-left: no saturation, full brightness.
-    click(&mut h, min + vec2(60.0, 10.0));
+    click(&mut h, pos2(field.left() + 2.0, field.top() + 2.0));
     let fg = h.state().session.tools.foreground;
     assert_eq!(fill(h.state()), Some(Fill::Solid(photocraft_doc::Color::rgba(fg[0], fg[1], fg[2], 0.5))));
     assert_eq!(steps(h.state()), before + 1);
-    drag(&mut h, min + vec2(120.0, 40.0), min + vec2(250.0, 120.0));
+    drag(&mut h, field.center(), pos2(field.right() - 2.0, field.bottom() - 2.0));
     let fg = h.state().session.tools.foreground;
     assert_eq!(fill(h.state()), Some(Fill::Solid(photocraft_doc::Color::rgba(fg[0], fg[1], fg[2], 0.5))));
     assert_eq!(steps(h.state()), before + 2, "the whole drag is one undo step");
