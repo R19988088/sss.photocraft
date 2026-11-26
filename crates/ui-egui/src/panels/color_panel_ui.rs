@@ -1,21 +1,20 @@
-//! Photoshop's Color panel modes, picked from its panel menu and the same in every theme (#6000,
-//! #2569): Hue Cube and Brightness Cube (drawn by [`crate::panels::color_field`]), Color Wheel (HSB
-//! sliders over a hue ring around a saturation/brightness triangle), and the Grayscale, RGB, HSB,
-//! CMYK, Lab and Web Color sliders over a colour ramp. The panel menu also has Copy Color as HTML,
-//! Copy Color's Hex Code, the ramp choices (RGB Spectrum, CMYK Spectrum, Grayscale Ramp, Current
-//! Colors) and Make Ramp Web Safe. Shift-click on the ramp cycles the ramps, Alt-click picks the
-//! colour the panel isn't editing, and a right-click opens the ramp menu.
+//! The Color panel's faces: the reference layout (C2, [`super::color_c2`]), Photoshop's Hue Cube
+//! ([`crate::panels::color_field`]) and Color Wheel, and the 色条 sliders (HSB, Lab).
+//!
+//! The faces come in two kinds and a face is only ever one of them. A disc puts the colour on a
+//! field — the C2 square and its hue strip, the hue cube, the color wheel — and carries no sliders.
+//! A strip shows the colour as sliders and carries no field. The panel menu groups them 色盘 and
+//! 色条, and a panel never mixes the two, so the colour area is one thing or the other.
 
 use std::f32::consts::TAU;
-use std::sync::Arc;
 
 use egui::{Color32, Mesh, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use serde_json::json;
 
 use crate::PhotocraftApp;
-use crate::color_picker_ui::{hex, not_web_safe, out_of_gamut};
-use crate::panels::{color_field_fill_id, field_chips, field_hsva, srgb_hsva};
-use crate::state::{ColorPanelMode, ColorRamp, ColorPanelState};
+use crate::color_picker_ui::{hex, out_of_gamut};
+use crate::panels::{field_chips, field_hsva, srgb_hsva};
+use crate::state::{ColorPanelMode, ColorPanelState};
 use crate::theme::Tokens;
 use crate::widgets;
 use photocraft_color::convert;
@@ -29,52 +28,35 @@ const ROW_H: f32 = 22.0;
 const FIELD_W: f32 = 44.0;
 /// Width of the unit after a field ("°", "%").
 const UNIT_W: f32 = 14.0;
-/// Width of the white and black boxes at the right end of the ramp.
-const BOXES_W: f32 = 16.0;
 
-/// The colour model a slider mode edits.
+/// The colour model a strip edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Model {
-    Gray,
-    Rgb,
     Hsb,
-    Cmyk,
     Lab,
-    Web,
 }
 
 impl Model {
     pub(crate) fn of(mode: ColorPanelMode) -> Model {
         match mode {
-            ColorPanelMode::GrayscaleSlider => Model::Gray,
-            // The C2 layout has no sliders; it reads and writes RGB.
-            ColorPanelMode::C2 | ColorPanelMode::HsbSliders | ColorPanelMode::ColorWheel => Model::Hsb,
-            ColorPanelMode::CmykSliders => Model::Cmyk,
             ColorPanelMode::LabSliders => Model::Lab,
-            ColorPanelMode::WebColorSliders => Model::Web,
-            ColorPanelMode::RgbSliders | ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => Model::Rgb,
+            _ => Model::Hsb,
         }
     }
 
     /// Each slider: label, range and unit, in Photoshop's order.
     pub(crate) fn channels(self) -> &'static [(&'static str, f32, f32, &'static str)] {
         match self {
-            Model::Gray => &[("K", 0.0, 100.0, "%")],
-            Model::Rgb | Model::Web => &[("R", 0.0, 255.0, ""), ("G", 0.0, 255.0, ""), ("B", 0.0, 255.0, "")],
             Model::Hsb => &[("H", 0.0, 360.0, "°"), ("S", 0.0, 100.0, "%"), ("B", 0.0, 100.0, "%")],
-            Model::Cmyk => &[("C", 0.0, 100.0, "%"), ("M", 0.0, 100.0, "%"), ("Y", 0.0, 100.0, "%"), ("K", 0.0, 100.0, "%")],
             Model::Lab => &[("L", 0.0, 100.0, ""), ("a", -128.0, 127.0, ""), ("b", -128.0, 127.0, "")],
         }
     }
 
     /// The sRGB colour of slider values `v` (in the units the fields show).
     pub(crate) fn to_rgb(self, v: [f32; 4]) -> [f32; 3] {
-        let [a, b, c, d] = v.map(|x| if x.is_finite() { x } else { 0.0 });
+        let [a, b, c, _] = v.map(|x| if x.is_finite() { x } else { 0.0 });
         let rgb = match self {
-            Model::Gray => [1.0 - a / 100.0; 3],
-            Model::Rgb | Model::Web => [a / 255.0, b / 255.0, c / 255.0],
             Model::Hsb => hsb_to_rgb([a, b / 100.0, c / 100.0]),
-            Model::Cmyk => convert::cmyk_to_rgb([a / 100.0, b / 100.0, c / 100.0, d / 100.0]),
             Model::Lab => convert::lab_to_srgb([a, b, c]),
         };
         rgb.map(|x| if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 })
@@ -83,13 +65,10 @@ impl Model {
     /// Slider values of `rgb`, rounded to whole numbers as Photoshop's fields show them.
     pub(crate) fn values_of(self, rgb: [f32; 3]) -> [f32; 4] {
         let v = match self {
-            Model::Gray => [(1.0 - convert::rgb_to_gray(rgb)) * 100.0, 0.0, 0.0, 0.0],
-            Model::Rgb | Model::Web => [rgb[0] * 255.0, rgb[1] * 255.0, rgb[2] * 255.0, 0.0],
             Model::Hsb => {
                 let [h, s, b] = rgb_to_hsb(rgb);
                 [h, s * 100.0, b * 100.0, 0.0]
             }
-            Model::Cmyk => convert::rgb_to_cmyk(rgb).map(|x| x * 100.0),
             Model::Lab => {
                 let [l, a, b] = convert::srgb_to_lab(rgb);
                 [l, a, b, 0.0]
@@ -122,12 +101,12 @@ pub(crate) fn set_color(app: &mut PhotocraftApp, ctx: &egui::Context, background
 }
 
 /// The key of the slider values last shown for `model`, kept while they still give the colour:
-/// a grey has no hue, and CMYK or Lab values don't survive an sRGB round trip (#3228).
+/// a grey has no hue, and Lab values don't survive an sRGB round trip (#3228).
 fn values_key(model: Model, background: bool) -> egui::Id {
     egui::Id::unique(("color-panel-values", model, background))
 }
 
-/// The key of the Hue Cube's remembered hue and saturation (see [`field_hsva`]).
+/// The key of the hue cube's remembered hue and saturation (see [`field_hsva`]).
 fn field_key(background: bool) -> egui::Id {
     egui::Id::unique(("color-field-hue", background))
 }
@@ -139,7 +118,7 @@ fn current_values(ui: &egui::Ui, model: Model, background: bool, rgb: [f32; 3]) 
         return v;
     }
     if model == Model::Hsb {
-        // Share the cube's hue and saturation, so a grey keeps its hue across modes.
+        // Share the cube's hue and saturation, so a grey keeps its hue across faces.
         let c = [rgb[0], rgb[1], rgb[2], 1.0];
         let hsva = srgb_hsva(c);
         let remembered: (f32, f32) = ui.data(|d| d.get_temp(field_key(background))).unwrap_or((hsva.h, hsva.s));
@@ -183,21 +162,13 @@ pub(crate) fn rgb32(c: [f32; 3]) -> Color32 {
     Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]))
 }
 
-/// The accessible name of a slider row's number field. Its channel letter alone ("R", "a") says
-/// nothing when it is read out, so the model's own word names the field.
+/// The accessible name of a slider row's number field. Its channel letter alone ("a") says nothing
+/// when it is read out, so the model's own word names the field.
 fn channel_name(model: Model, label: &'static str) -> String {
     let full = match (model, label) {
-        (Model::Gray, _) => tl!("Black"),
         (Model::Hsb, "H") => tl!("Hue"),
         (Model::Hsb, "S") => tl!("Saturation"),
         (Model::Hsb, "B") => tl!("Brightness"),
-        (_, "R") => tl!("Red"),
-        (_, "G") => tl!("Green"),
-        (_, "B") => tl!("Blue"),
-        (_, "C") => tl!("Cyan"),
-        (_, "M") => tl!("Magenta"),
-        (_, "Y") => tl!("Yellow"),
-        (_, "K") => tl!("Black"),
         (_, "L") => tl!("Lightness"),
         (_, other) => other,
     };
@@ -207,15 +178,14 @@ fn channel_name(model: Model, label: &'static str) -> String {
 /// The name of a slider row's number field: the model's word when `named`, its letter otherwise
 /// (see [`slider_rows`]).
 fn field_name(model: Model, label: &'static str, named: bool) -> String {
-    // The track beside it carries the letter ("R", "H"): the field's own name needs the word to be
+    // The track beside it carries the letter ("H"): the field's own name needs the word to be
     // unique as well as said out loud, so a named face reads "Hue", a lettered one "H value".
     if named { channel_name(model, label) } else { format!("{label} value") }
 }
 
 /// The slider rows of `model`. Returns the edited values, if any. `named` gives each row's field
-/// the model's full word ("Hue", "Saturation") instead of its letter: the 颜色数值 block under the
-/// C2 layout reads the values out loud, while the faces that are sliders themselves keep Photoshop's
-/// letters, where "H" is what the row is.
+/// the model's full word ("Hue", "Saturation") instead of its letter; the strip faces keep
+/// Photoshop's letters, where "H" is what the row is.
 pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], background: bool, dynamic: bool, named: bool) -> Option<[f32; 4]> {
     let t = Tokens::get(ui.ctx());
     // Dynamic Color Sliders off: the tracks keep the colours they had when a drag began.
@@ -239,11 +209,9 @@ pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], backgrou
             let track_w = (ui.available_width() - FIELD_W - UNIT_W - 8.0).max(24.0);
             let (tr, resp) = ui.allocate_exact_size(vec2(track_w, ROW_H), Sense::click_and_drag());
             let stops = track_stops(model, stops_from, i, 24);
-            changed |= track(ui, tr, &resp, &mut x, lo, hi, &stops, model == Model::Web);
+            changed |= track(ui, tr, &resp, &mut x, lo, hi, &stops);
             resp.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(x), label));
-            if model == Model::Web {
-                changed |= hex_pair(ui, ui.scope_id().with(("web-field", i, background)), &mut x);
-            } else if widgets::value_field_named(ui, &field_name(model, label, named), &mut x, lo..=hi, "", FIELD_W).changed() {
+            if widgets::value_field_named(ui, &field_name(model, label, named), &mut x, lo..=hi, "", FIELD_W).changed() {
                 changed = true;
             }
             let (ur, _) = ui.allocate_exact_size(vec2(UNIT_W, ROW_H), Sense::hover());
@@ -257,24 +225,9 @@ pub(super) fn slider_rows(ui: &mut egui::Ui, model: Model, v: [f32; 4], backgrou
     out
 }
 
-/// 颜色数值 (the panel menu's Show Color Values): the colour's H, S, B sliders, appended under
-/// whatever face the panel shows so the face keeps its own content and only gains the values
-/// below it, the way the reference application adds its value controls under the palette. HSB
-/// rather than RGB so the numbers read the way the field above them picks (#6000's 颜色 tab is
-/// an HSV square and hue strip).
-pub(super) fn color_values(app: &mut PhotocraftApp, ui: &mut egui::Ui, background: bool) {
-    let model = Model::Hsb;
-    let v = current_values(ui, model, background, active(app));
-    let dynamic = app.session.prefs().interface.dynamic_color_sliders;
-    if let Some(v) = slider_rows(ui, model, v, background, dynamic, true) {
-        apply_values(app, ui, model, v);
-    }
-}
-
 /// A slider track with Photoshop's triangle thumb under it. Returns true when dragged or clicked
-/// to a new value; Web Color tracks snap to the web steps (00, 33, 66, 99, CC, FF).
-#[allow(clippy::too_many_arguments)]
-fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32, hi: f32, stops: &[Color32], web: bool) -> bool {
+/// to a new value.
+fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32, hi: f32, stops: &[Color32]) -> bool {
     let t = Tokens::get(ui.ctx());
     let bar = Rect::from_min_max(pos2(r.left() + 4.0, r.center().y - 6.0), pos2(r.right() - 4.0, r.center().y + 1.0));
     let mut mesh = Mesh::default();
@@ -291,13 +244,6 @@ fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32
     }
     ui.painter().add(mesh);
     ui.painter().rect_stroke(bar, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
-    if web {
-        // Ticks at the web steps.
-        for k in 0..=5 {
-            let x = bar.left() + bar.width() * k as f32 / 5.0;
-            ui.painter().line_segment([pos2(x, bar.bottom() + 1.0), pos2(x, bar.bottom() + 3.0)], Stroke::new(1.0, t.text_faint));
-        }
-    }
     let mut changed = false;
     if (resp.dragged() || resp.clicked())
         && let Some(p) = resp.interact_pointer_pos()
@@ -305,11 +251,7 @@ fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32
         && hi > lo
     {
         let f = ((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
-        let mut v = lo + (hi - lo) * f;
-        if web {
-            v = (v / 51.0).round() * 51.0;
-        }
-        let v = v.round().clamp(lo, hi);
+        let v = (lo + (hi - lo) * f).round().clamp(lo, hi);
         if v != *value {
             *value = v;
             changed = true;
@@ -323,41 +265,8 @@ fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32
     changed
 }
 
-/// A Web Color slider's field: the channel as two hex digits. Valid input sets `value` (0..255)
-/// and returns true; while focused it shows what is typed, and an invalid entry snaps back.
-fn hex_pair(ui: &mut egui::Ui, id: egui::Id, value: &mut f32) -> bool {
-    let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(FIELD_W, ROW_H), Sense::hover());
-    widgets::surface(ui, rect, t.field, false);
-    if !t.bevel {
-        ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
-    }
-    let byte = value.clamp(0.0, 255.0).round() as u8;
-    let typing = if ui.memory(|m| m.has_focus(id)) { ui.data(|d| d.get_temp::<String>(id)) } else { None };
-    let mut text = typing.unwrap_or_else(|| format!("{byte:02X}"));
-    let inner = rect.shrink2(vec2(5.0, 2.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let resp = child
-        .add(egui::TextEdit::singleline(&mut text).id(id).char_limit(2).desired_width(inner.width()).frame(egui::Frame::NONE).font(crate::theme::mono(12.0)));
-    if resp.has_focus() {
-        ui.data_mut(|d| d.insert_temp(id, text.clone()));
-    } else {
-        ui.data_mut(|d| d.remove::<String>(id));
-    }
-    // Two hex digits only: `from_str_radix` would also take a sign ("+F").
-    if resp.changed()
-        && text.len() == 2
-        && text.bytes().all(|b| b.is_ascii_hexdigit())
-        && let Ok(b) = u8::from_str_radix(&text, 16)
-    {
-        *value = f32::from(b);
-        return true;
-    }
-    false
-}
-
-/// The slider modes: chips (with the out-of-gamut and web-colour alerts under them) beside the
-/// sliders, over the colour ramp.
+/// The 色条 faces: chips (with the out-of-gamut alert under them) beside the sliders. No ramp and
+/// no field of any kind under them: a strip is nothing but strips.
 fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
     let model = Model::of(mode);
     let background = app.ui.color_panel.background;
@@ -371,7 +280,7 @@ fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
         ui.spacing_mut().item_spacing.x = 8.0;
         let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, top_h), Sense::hover());
         field_chips(app, ui, col);
-        alerts(app, ui, col, rgb, model == Model::Web);
+        alerts(app, ui, col, rgb);
         ui.vertical(|ui| {
             edited = slider_rows(ui, model, v, background, dynamic, false);
         });
@@ -379,222 +288,43 @@ fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
     if let Some(v) = edited {
         apply_values(app, ui, model, v);
     }
-    ui.add_space(6.0);
-    let fill = ui.data(|d| d.get_temp::<f32>(color_field_fill_id()));
-    let gaps = 2.0 * ui.spacing().item_spacing.y + 6.0;
-    let ramp_h = fill.filter(|f| f.is_finite()).map_or(36.0, |f| (f - top_h - gaps).clamp(28.0, 2000.0));
-    ramp(app, ui, ramp_h);
 }
 
-/// Photoshop's alerts under the chips: ⚠ when the colour can't print (click: the nearest CMYK
-/// colour) and, for Web Color sliders, the cube when it isn't a web colour (click: the nearest).
-pub(crate) fn alerts(app: &mut PhotocraftApp, ui: &mut egui::Ui, col: Rect, rgb: [f32; 3], web: bool) {
+/// Photoshop's alert under the chips: ⚠ when the colour can't print, and a click takes the nearest
+/// printable colour.
+pub(crate) fn alerts(app: &mut PhotocraftApp, ui: &mut egui::Ui, col: Rect, rgb: [f32; 3]) {
     let t = Tokens::get(ui.ctx());
     let background = app.ui.color_panel.background;
-    let mut y = col.top() + CHIPS_W + 2.0;
-    let warnings = [
-        (out_of_gamut(rgb), "Out of gamut for printing: click for the nearest printable color", false),
-        (if web { not_web_safe(rgb) } else { None }, "Not a web color: click for the nearest web color", true),
-    ];
-    for (slot, (near, tip, cube)) in warnings.into_iter().enumerate() {
-        let Some(near) = near else { continue };
-        let icon = Rect::from_min_size(pos2(col.left() + 1.0, y), vec2(14.0, 13.0));
-        let chip = Rect::from_min_size(pos2(col.left() + 18.0, y), vec2(13.0, 13.0));
-        if cube {
-            crate::color_picker_ui::web_cube(ui.painter(), icon.shrink(0.5), t.text_dim);
-        } else {
-            crate::color_picker_ui::warning_triangle(ui.painter(), icon, t.text_dim, t.card);
-        }
-        ui.painter().rect_filled(chip, 0.0, rgb32(near));
-        ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.text_dim), StrokeKind::Outside);
-        let resp = ui.interact(icon.union(chip), ui.scope_id().with(("color-panel-alert", slot)), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tip));
-        if resp.on_hover_text(tl!(tip)).clicked() {
-            set_color(app, ui.ctx(), background, near);
-        }
-        y += 18.0;
+    let y = col.top() + CHIPS_W + 2.0;
+    let Some(near) = out_of_gamut(rgb) else { return };
+    const TIP: &str = "Out of gamut for printing: click for the nearest printable color";
+    let icon = Rect::from_min_size(pos2(col.left() + 1.0, y), vec2(14.0, 13.0));
+    let chip = Rect::from_min_size(pos2(col.left() + 18.0, y), vec2(13.0, 13.0));
+    crate::color_picker_ui::warning_triangle(ui.painter(), icon, t.text_dim, t.card);
+    ui.painter().rect_filled(chip, 0.0, rgb32(near));
+    ui.painter().rect_stroke(chip, 0.0, Stroke::new(1.0, t.text_dim), StrokeKind::Outside);
+    let resp = ui.interact(icon.union(chip), ui.scope_id().with("color-panel-alert"), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), TIP));
+    if resp.on_hover_text(tl!(TIP)).clicked() {
+        set_color(app, ui.ctx(), background, near);
     }
 }
 
-/// The ramp's colour at (x, y) in 0..1 (y down). RGB Spectrum: hue across, white at the top
-/// through the full colour to black at the bottom; CMYK Spectrum: the same in the CMYK gamut;
-/// Grayscale Ramp: white to black; Current Colors: the foreground to the background.
-pub(crate) fn ramp_color(ramp: ColorRamp, web_safe: bool, fg: [f32; 3], bg: [f32; 3], x: f32, y: f32) -> [f32; 3] {
-    let (x, y) = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-    let spectrum = || {
-        let (s, v) = if y < 0.5 { (y * 2.0, 1.0) } else { (1.0, 1.0 - (y - 0.5) * 2.0) };
-        hsb_to_rgb([x.min(0.9999) * 360.0, s, v])
-    };
-    let c = match ramp {
-        ColorRamp::RgbSpectrum => spectrum(),
-        ColorRamp::CmykSpectrum => convert::cmyk_to_rgb(convert::rgb_to_cmyk(spectrum())),
-        ColorRamp::GrayscaleRamp => [1.0 - x; 3],
-        ColorRamp::CurrentColors => [0, 1, 2].map(|i| fg[i] + (bg[i] - fg[i]) * x),
-    };
-    let c = c.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 });
-    if web_safe { c.map(|v| (v * 5.0).round() / 5.0) } else { c }
-}
-
-/// Cells across and down the ramp's mesh.
-const RAMP_NX: usize = 48;
-const RAMP_NY: usize = 8;
-
-/// The ramp's colours, cached until the ramp, its inputs or the CMYK space change: the CMYK
-/// Spectrum takes a CMYK round trip per vertex, too slow to redo every frame.
-fn ramp_colors(ui: &egui::Ui, ramp: ColorRamp, web_safe: bool, fg: [f32; 3], bg: [f32; 3]) -> Arc<Vec<Color32>> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    (ramp as u8, web_safe).hash(&mut h);
-    if ramp == ColorRamp::CurrentColors {
-        (hex(fg), hex(bg)).hash(&mut h);
-    }
-    if ramp == ColorRamp::CmykSpectrum {
-        convert::active_cmyk_space().map(|s| Arc::as_ptr(&s) as usize).hash(&mut h);
-    }
-    let sig = h.finish();
-    let key = egui::Id::unique("color-panel-ramp-cache");
-    if let Some((s, colors)) = ui.data(|d| d.get_temp::<(u64, Arc<Vec<Color32>>)>(key))
-        && s == sig
-    {
-        return colors;
-    }
-    // Web-safe ramps are flat cells (sampled at their centres), the others shaded vertices.
-    let (nx, ny, half) = if web_safe { (RAMP_NX, RAMP_NY, 0.5) } else { (RAMP_NX + 1, RAMP_NY + 1, 0.0) };
-    let mut colors = Vec::with_capacity(nx * ny);
-    for j in 0..ny {
-        for i in 0..nx {
-            let (x, y) = ((i as f32 + half) / RAMP_NX as f32, (j as f32 + half) / RAMP_NY as f32);
-            colors.push(rgb32(ramp_color(ramp, web_safe, fg, bg, x, y)));
-        }
-    }
-    let colors = Arc::new(colors);
-    ui.data_mut(|d| d.insert_temp(key, (sig, colors.clone())));
-    colors
-}
-
-/// The ramp mesh over `r` from [`ramp_colors`].
-fn ramp_mesh(r: Rect, colors: &[Color32], web_safe: bool) -> Mesh {
-    let mut m = Mesh::default();
-    let at = |i: usize, j: usize| pos2(r.left() + r.width() * i as f32 / RAMP_NX as f32, r.top() + r.height() * j as f32 / RAMP_NY as f32);
-    if web_safe {
-        for j in 0..RAMP_NY {
-            for i in 0..RAMP_NX {
-                let Some(&c) = colors.get(j * RAMP_NX + i) else { continue };
-                let a = m.vertices.len() as u32;
-                for p in [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)] {
-                    m.colored_vertex(p, c);
-                }
-                m.add_triangle(a, a + 1, a + 2);
-                m.add_triangle(a, a + 2, a + 3);
-            }
-        }
-        return m;
-    }
-    for j in 0..=RAMP_NY {
-        for i in 0..=RAMP_NX {
-            m.colored_vertex(at(i, j), colors.get(j * (RAMP_NX + 1) + i).copied().unwrap_or(Color32::BLACK));
-        }
-    }
-    let row = (RAMP_NX + 1) as u32;
-    for j in 0..RAMP_NY as u32 {
-        for i in 0..RAMP_NX as u32 {
-            let a = j * row + i;
-            m.add_triangle(a, a + 1, a + row + 1);
-            m.add_triangle(a, a + row + 1, a + row);
-        }
-    }
-    m
-}
-
-/// The colour ramp with the white and black boxes at its right end. A click or drag picks; with
-/// Alt it picks the colour the panel isn't editing; Shift-click cycles the ramps; a right-click
-/// opens the ramp menu.
-fn ramp(app: &mut PhotocraftApp, ui: &mut egui::Ui, height: f32) {
-    let t = Tokens::get(ui.ctx());
-    let w = ui.available_width();
-    let (all, _) = ui.allocate_exact_size(vec2(w, height), Sense::hover());
-    let bar = Rect::from_min_max(all.min, pos2(all.right() - BOXES_W - 2.0, all.bottom()));
-    let boxes = Rect::from_min_max(pos2(all.right() - BOXES_W, all.top()), all.max);
-    let cp = app.ui.color_panel;
-    let ramp_id = ui.scope_id().with("color-panel-ramp");
-    // A pick changes the foreground or background, so a drag keeps the Current Colors ends it began
-    // with; otherwise the ramp would slide under the pointer and a held pick would drift.
-    let ends_id = ramp_id.with("ends");
-    let live = (rgb3(app.session.tools.foreground), rgb3(app.session.tools.background));
-    let (fg, bg) = if ui.ctx().is_being_dragged(ramp_id) {
-        ui.data(|d| d.get_temp::<([f32; 3], [f32; 3])>(ends_id)).unwrap_or(live)
-    } else {
-        ui.data_mut(|d| d.insert_temp(ends_id, live));
-        live
-    };
-    let colors = ramp_colors(ui, cp.ramp, cp.web_safe_ramp, fg, bg);
-    ui.painter().add(ramp_mesh(bar, &colors, cp.web_safe_ramp));
-    ui.painter().rect_stroke(bar, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
-    let (white, black) =
-        (Rect::from_min_max(boxes.min, pos2(boxes.right(), boxes.center().y)), Rect::from_min_max(pos2(boxes.left(), boxes.center().y), boxes.max));
-    ui.painter().rect_filled(white, 0.0, Color32::WHITE);
-    ui.painter().rect_filled(black, 0.0, Color32::BLACK);
-    ui.painter().rect_stroke(boxes, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
-    let resp = ui.interact(bar, ramp_id, Sense::click_and_drag());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, ui.is_enabled(), "Color Ramp"));
-    let mods = ui.input(|i| i.modifiers);
-    let target = cp.background != mods.alt;
-    if resp.clicked() && mods.shift {
-        app.ui.color_panel.ramp = cp.ramp.next();
-    } else if (resp.dragged() || resp.clicked())
-        && !mods.shift
-        && let Some(p) = resp.interact_pointer_pos()
-        && bar.width() > 0.0
-        && bar.height() > 0.0
-    {
-        let (mut x, mut y) = ((p.x - bar.left()) / bar.width(), (p.y - bar.top()) / bar.height());
-        if cp.web_safe_ramp {
-            // Pick the cell drawn under the pointer: web-safe cells show their centre's colour.
-            let centre = |f: f32, n: usize| ((f * n as f32).floor().clamp(0.0, (n - 1) as f32) + 0.5) / n as f32;
-            (x, y) = (centre(x, RAMP_NX), centre(y, RAMP_NY));
-        }
-        let c = ramp_color(cp.ramp, cp.web_safe_ramp, fg, bg, x, y);
-        set_color(app, ui.ctx(), target, c);
-    }
-    resp.context_menu(|ui| {
-        widgets::style_spectrum_popup_menu(ui);
-        ramp_menu(app, ui);
-    });
-    for (r, c, name) in [(white, [1.0; 3], "White"), (black, [0.0; 3], "Black")] {
-        let b = ui.interact(r, ui.scope_id().with(("color-panel-box", name)), Sense::click());
-        b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
-        if b.clicked() {
-            set_color(app, ui.ctx(), target, c);
-        }
-    }
-}
-
-fn rgb3(c: [f32; 4]) -> [f32; 3] {
-    [c[0], c[1], c[2]].map(|v| v.clamp(0.0, 1.0))
-}
-
-/// The Color Wheel: HSB sliders over a hue ring (red at the right, running counter-clockwise
-/// through yellow and green) around a triangle whose tip is the hue, with white and black at its
-/// other corners; the add-to-swatches button sits under it.
+/// The Color Wheel: a hue ring (red at the right, running counter-clockwise through yellow and
+/// green) around a triangle whose tip is the hue, with white and black at its other corners; the
+/// add-to-swatches button sits under it. A disc of its own: no sliders above it.
 fn wheel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let background = app.ui.color_panel.background;
     let rgb = active(app);
-    let v = current_values(ui, Model::Hsb, background, rgb);
-    let dynamic = app.session.prefs().interface.dynamic_color_sliders;
-    let rows_h = 3.0 * (ROW_H + ui.spacing().item_spacing.y);
-    let top_h = rows_h.max(CHIPS_W);
-    let mut edited = None;
+    let mut v = current_values(ui, Model::Hsb, background, rgb);
+    let mut changed = false;
+    // The chips row: the foreground and background the wheel edits, nothing else.
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, top_h), Sense::hover());
+        let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, CHIPS_W), Sense::hover());
         field_chips(app, ui, col);
-        ui.vertical(|ui| {
-            edited = slider_rows(ui, Model::Hsb, v, background, dynamic, false);
-        });
     });
-    let mut v = edited.unwrap_or(v);
-    let mut changed = edited.is_some();
     ui.add_space(6.0);
     // The wheel takes the palette's square, as every face does: the reference layout's 168 pt
     // picker at the dock's width, never the height left in the group, so switching faces never
@@ -777,29 +507,12 @@ fn check_item(ui: &mut egui::Ui, on: bool, label: &str) -> bool {
     resp.clicked()
 }
 
-/// The ramp choices and Make Ramp Web Safe (the panel menu's last section and the ramp's
-/// right-click menu).
-fn ramp_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    for r in ColorRamp::ALL {
-        if check_item(ui, app.ui.color_panel.ramp == r, r.label()) {
-            app.ui.color_panel.ramp = r;
-            ui.close();
-        }
-    }
-    ui.separator();
-    if check_item(ui, app.ui.color_panel.web_safe_ramp, "Make Ramp Web Safe") {
-        app.ui.color_panel.web_safe_ramp = !app.ui.color_panel.web_safe_ramp;
-        ui.close();
-    }
-}
-
-/// The Color tab: whatever the panel menu picked. The C2 layout draws the 实线/图案 source
-/// switch at its top; the Photoshop modes keep Photoshop's geometry, which the default Color
-/// group can't hold a switch row above (its wheel would run past the group's bottom).
+/// The Color tab: whatever the panel menu picked. A 色盘 face draws a field, a 色条 face draws
+/// sliders; neither face draws the other kind.
 pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     match app.ui.color_panel.mode {
         ColorPanelMode::C2 => super::color_c2::show(app, ui),
-        ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => crate::panels::color_field(app, ui),
+        ColorPanelMode::HueCube => crate::panels::color_field(app, ui),
         ColorPanelMode::ColorWheel => wheel(app, ui),
         mode => sliders(app, ui, mode),
     }
@@ -818,10 +531,10 @@ fn section(ui: &mut egui::Ui, label: &str) {
     ui.label(egui::RichText::new(tl!(label)).color(t.text_dim).size(12.0));
 }
 
-/// The Color panel's panel menu, Photoshop's: the faces in two groups (色盘 and 色条), the colour
-/// values, the mixing strength, the copy commands, the ramps. Two narrow pages — the faces and the
-/// colour controls, then the commands — with a page dot under them, so the menu never grows into a
-/// column wider or taller than the panel it belongs to.
+/// The Color panel's panel menu, Photoshop's: the faces in two groups (色盘 and 色条), the
+/// mixing strength, the copy commands. Two narrow pages — the faces and the brush control, then
+/// the commands — with a page dot under them, so the menu never grows into a column wider or
+/// taller than the panel it belongs to.
 pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.set_width(MENU_WIDTH);
     ui.set_max_width(MENU_WIDTH);
@@ -840,20 +553,13 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
         ui.separator();
-        // 色条: the faces that show the colour as sliders.
+        // 色条: the faces that show the colour as sliders, and only as sliders.
         section(ui, "Color Strips");
         for mode in ColorPanelMode::STRIP {
             if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
                 app.ui.color_panel.mode = mode;
                 ui.close();
             }
-        }
-        ui.separator();
-        // 颜色数值: the colour's H, S, B sliders appended under the face's own content (the
-        // reference application adds its value controls below the palette) — never instead of it.
-        // The menu stays open so the change can be seen and undone in place.
-        if check_item(ui, app.ui.color_panel.show_values, "Show Color Values") {
-            app.ui.color_panel.show_values = !app.ui.color_panel.show_values;
         }
         ui.separator();
         // 混合强度: the brush's pigment mixing, one value for every brush, beside the colour field
@@ -877,8 +583,6 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.ctx().copy_text(hex_code(rgb));
             ui.close();
         }
-        ui.separator();
-        ramp_menu(app, ui);
     }
     page_dots(ui, page_id, page, PAGES);
 }
@@ -929,7 +633,7 @@ pub fn persist(app: &mut PhotocraftApp) {
 /// Restore the remembered Color panel options (at launch, or after a preference change made
 /// outside the panel); none stored (a reset) or unreadable ones are the defaults. The display face
 /// is the reference layout (C2) at launch whatever the file says: the panel menu's pick lasts the
-/// session, a stored traditional face never comes back.
+/// session, a stored face never comes back.
 pub fn restore(app: &mut PhotocraftApp) {
     let mut state: ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap_or_default();
     state.mode = ColorPanelMode::C2;

@@ -1154,7 +1154,6 @@ fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: &str) {
         ui.set_min_height(ui.available_height().max(0.0));
         crate::panels::dock_body(app, ui, *group, tab);
     } else {
-        crate::panels::offer_color_field_fill(ui, pro, *group, tab);
         // No scroll fade: it darkens real colours, swatches and previews at the edge (#2726).
         ui.spacing_mut().scroll.fade.strength = 0.0;
         egui::ScrollArea::vertical()

@@ -12,7 +12,7 @@ mod transform;
 #[cfg(test)]
 mod type_default_size_tests;
 
-pub use color_panel::{ColorPanelMode, ColorPanelState, ColorRamp, DockTabs};
+pub use color_panel::{ColorPanelMode, ColorPanelState, DockTabs};
 pub use panel_state::{
     CameraRawPreviewState, CameraRawScopeState, CurvesEditorState, LayerThumbnailContents, LayerThumbnailSize, LayersPanelDialog, LayersPanelOptions,
     PointCurveDrag, PointCurveState,

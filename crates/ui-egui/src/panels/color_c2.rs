@@ -261,15 +261,6 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     image_palette(app, ui, scale);
-    // 颜色数值: the H, S, B sliders appended under the panel's own content — the reference
-    // application puts its value controls below the palette — never in place of it, so the
-    // swatches and the field above stay exactly as they are.
-    if app.ui.color_panel.show_values {
-        ui.add_space(4. * scale);
-        ui.separator();
-        ui.add_space(2.);
-        super::color_panel_ui::color_values(app, ui, background);
-    }
     // The panel menu, from a right-click anywhere on the panel.
     let popup = egui::Popup::context_menu(&response);
     let open = ui.input(|i| {

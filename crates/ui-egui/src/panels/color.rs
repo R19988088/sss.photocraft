@@ -50,20 +50,6 @@ pub(crate) fn field_chips(app: &mut PhotocraftApp, ui: &mut egui::Ui, chips: Rec
     }
 }
 
-/// Where the dock tells the Color field how tall its group body is.
-pub(crate) fn color_field_fill_id() -> egui::Id {
-    egui::Id::unique("color-field-fill-height")
-}
-
-/// The Color field stretches to its dock group's height instead of a fixed 120 pt, in every theme
-/// (#6000): a dock calls this with the group body's `ui` before drawing the tab.
-pub(crate) fn offer_color_field_fill(ui: &egui::Ui, pro: bool, group: crate::dock::Group, tab: usize) {
-    if group == crate::dock::Group::Color && group.tabs(pro).get(tab) == Some(&"Color") {
-        let inner = ui.available_height().max(0.0);
-        ui.data_mut(|d| d.insert_temp(color_field_fill_id(), inner));
-    }
-}
-
 /// The colour the SV field draws for `hsva`, with what the field showed last (`hue`, `saturation`)
 /// filling in what the colour itself cannot carry: a grey has no hue of its own, and black has
 /// neither hue nor saturation — so a drag that bottoms out into black would otherwise round-trip
@@ -81,8 +67,9 @@ pub(crate) fn field_hsva(mut hsva: egui::ecolor::Hsva, remembered: (f32, f32)) -
     hsva
 }
 
-/// Photoshop's Color panel Hue Cube (saturation/brightness field + hue strip) or Brightness Cube
-/// (hue/saturation field + brightness strip), drawn as shaded meshes, over a hex/RGB readout.
+/// Photoshop's Color panel Hue Cube: a saturation/brightness field with its hue strip, drawn as
+/// shaded meshes, over a hex/RGB readout. A 色盘 face: the strip belongs to the field, nothing
+/// below it is a slider.
 pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let bg_active = app.ui.color_panel.background;
@@ -108,56 +95,38 @@ pub(crate) fn color_field(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // (#8672); a compact field too short to hold it below the chips leaves it out.
         if chips.height() >= 38.0 + 15.0 {
             let rgb = crate::color_panel_ui::active(app);
-            crate::color_panel_ui::alerts(app, ui, chips, rgb, false);
+            crate::color_panel_ui::alerts(app, ui, chips, rgb);
         }
-        // Hue Cube: saturation across and brightness up, hue on the strip. Brightness Cube (the
-        // Color Picker's B mode): hue across and saturation up, brightness on the strip.
-        let brightness = app.ui.color_panel.mode == crate::state::ColorPanelMode::BrightnessCube;
+        // Saturation across and brightness up, hue on the strip.
         let (field, fresp) = ui.allocate_exact_size(vec2(side, side), Sense::click_and_drag());
-        let at = |x: f32, y: f32| {
-            if brightness { egui::ecolor::Hsva::new(x.min(0.9999), 1.0 - y, hsva.v, 1.0) } else { egui::ecolor::Hsva::new(hsva.h, x, 1.0 - y, 1.0) }
-        };
+        let at = |x: f32, y: f32| egui::ecolor::Hsva::new(hsva.h, x, 1.0 - y, 1.0);
         ui.painter().add(color_grid(field, 16, |x, y| hsva_color32(at(x, y))));
         ui.painter().rect_stroke(field, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Outside);
         // The same pair of names as the C2 layout's own field and strip, so the faces read alike.
-        let name = if brightness { "Hue / Saturation" } else { "Saturation / Brightness" };
-        fresp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(hsva.v), name.clone()));
+        fresp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(hsva.v), "Saturation / Brightness"));
         let field_pick = widgets::pick_pos(&fresp);
         if let Some(p) = field_pick {
             let x = ((p.x - field.left()) / field.width()).clamp(0.0, 1.0);
             let y = ((p.y - field.top()) / field.height()).clamp(0.0, 1.0);
-            if brightness {
-                hsva.h = x.min(0.9999);
-                hsva.s = 1.0 - y;
-            } else {
-                hsva.s = x;
-                hsva.v = 1.0 - y;
-            }
+            hsva.s = x;
+            hsva.v = 1.0 - y;
         }
-        let (kx, ky) = if brightness { (hsva.h, 1.0 - hsva.s) } else { (hsva.s, 1.0 - hsva.v) };
+        let (kx, ky) = (hsva.s, 1.0 - hsva.v);
         let knob = pos2(field.left() + kx * field.width(), field.top() + ky * field.height());
         // At the extremes the knob sits on the edge: clip it to the field (#8968).
         let painter = ui.painter().with_clip_rect(field);
         painter.circle_stroke(knob, 5.0, Stroke::new(1.5, Color32::WHITE));
         painter.circle_stroke(knob, 6.5, Stroke::new(1.0, Color32::from_black_alpha(160)));
-        // The strip: hue (red at both ends, as Photoshop's) or brightness (the colour down to black).
+        // The hue strip: red at both ends, as Photoshop's.
         let (strip, sresp) = ui.allocate_exact_size(vec2(strip_w, side), Sense::click_and_drag());
-        let strip_at = |f: f32| {
-            if brightness { egui::ecolor::Hsva::new(hsva.h, hsva.s, 1.0 - f, 1.0) } else { egui::ecolor::Hsva::new(1.0 - f, 1.0, 1.0, 1.0) }
-        };
-        ui.painter().add(color_grid(strip, 24, |_, y| hsva_color32(strip_at(y))));
-        let strip_name = if brightness { "Brightness Strip" } else { "Hue Strip" };
-        sresp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(if brightness { hsva.v } else { hsva.h }), strip_name.clone()));
+        ui.painter().add(color_grid(strip, 24, |_, y| hsva_color32(egui::ecolor::Hsva::new(1.0 - y, 1.0, 1.0, 1.0))));
+        sresp.widget_info(|| egui::WidgetInfo::slider(true, f64::from(hsva.h), "Hue Strip"));
         let strip_pick = widgets::pick_pos(&sresp);
         if let Some(p) = strip_pick {
             let f = ((p.y - strip.top()) / strip.height()).clamp(0.0, 1.0);
-            if brightness {
-                hsva.v = 1.0 - f;
-            } else {
-                hsva.h = 1.0 - f.min(0.9999);
-            }
+            hsva.h = 1.0 - f.min(0.9999);
         }
-        let y = strip.top() + (1.0 - if brightness { hsva.v } else { hsva.h }) * strip.height();
+        let y = strip.top() + (1.0 - hsva.h) * strip.height();
         let tri = vec![pos2(strip.right() + 1.0, y), pos2(strip.right() + 6.0, y - 4.0), pos2(strip.right() + 6.0, y + 4.0)];
         ui.painter().add(egui::Shape::convex_polygon(tri, t.text, Stroke::NONE));
         if field_pick.is_some() || strip_pick.is_some() {

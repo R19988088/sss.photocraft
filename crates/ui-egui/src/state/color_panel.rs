@@ -31,20 +31,11 @@ pub struct ColorPanelState {
     /// its name before the camelCase rename (#6000).
     #[serde(default, alias = "web_only")]
     pub web_only: bool,
-    /// What the panel shows, picked from its panel menu as in Photoshop (#6000).
+    /// What the panel shows, picked from its panel menu.
     pub mode: ColorPanelMode,
-    /// The colour ramp under the sliders.
-    pub ramp: ColorRamp,
-    /// Make Ramp Web Safe: the ramp shows (and picks) web colours only.
-    pub web_safe_ramp: bool,
     /// The colours picked most recently (newest first), drawn as the C2 layout's swatch column.
     #[serde(default = "recent_default")]
     pub recent: [[f32; 4]; 6],
-    /// 颜色数值 (Photoshop's Show Color Values): the colour's H, S, B sliders appended under the
-    /// face's own content — the reference layout adds them below its swatches — never in place of
-    /// it. On by default, as the previous build and the reference application had it.
-    #[serde(default = "values_default")]
-    pub show_values: bool,
 }
 
 impl Default for ColorPanelState {
@@ -53,17 +44,9 @@ impl Default for ColorPanelState {
             background: false,
             web_only: false,
             mode: ColorPanelMode::default(),
-            ramp: ColorRamp::default(),
-            web_safe_ramp: false,
             recent: recent_default(),
-            show_values: values_default(),
         }
     }
-}
-
-/// 颜色数值 starts on, as in the reference application.
-fn values_default() -> bool {
-    true
 }
 
 /// The C2 layout's starting swatches, as the reference application shows them.
@@ -71,40 +54,31 @@ fn recent_default() -> [[f32; 4]; 6] {
     [[0.0, 0.0, 0.0, 1.0], [0.86, 0.12, 0.12, 1.0], [0.04, 0.32, 0.92, 1.0], [0.05, 0.52, 0.24, 1.0], [0.0; 4], [0.0; 4]]
 }
 
-/// The Color panel's display, Photoshop's panel menu choices in its order. Hue Cube is
-/// Photoshop's default; the theme never changes it (#6000).
+/// The Color panel's display. Two kinds of face, and a face is never the other kind: a disc
+/// (the reference layout, the hue cube, the color wheel) puts the colour on a field, and a strip
+/// (HSB, Lab) shows it as sliders. A disc carries no sliders of its own and a strip carries no
+/// field, so the two never share a panel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ColorPanelMode {
     /// The C2 layout: colour and pattern source, chips, a large saturation/brightness field with
-    /// its hue strip, and the recent and image swatch columns.
+    /// its hue strip, and the recent and image swatch rows.
     #[default]
     C2,
+    /// Photoshop's Hue Cube: a saturation/brightness field with its hue strip.
     HueCube,
-    BrightnessCube,
+    /// Photoshop's Color Wheel: a hue ring around a saturation/brightness triangle.
     ColorWheel,
-    GrayscaleSlider,
-    RgbSliders,
+    /// The colour as H, S, B sliders.
     HsbSliders,
-    CmykSliders,
+    /// The colour as L, a, b sliders.
     LabSliders,
-    WebColorSliders,
 }
 
 impl ColorPanelMode {
-    /// Every mode, in Photoshop's panel menu order.
-    pub const ALL: [ColorPanelMode; 10] = [
-        ColorPanelMode::C2,
-        ColorPanelMode::HueCube,
-        ColorPanelMode::BrightnessCube,
-        ColorPanelMode::ColorWheel,
-        ColorPanelMode::GrayscaleSlider,
-        ColorPanelMode::RgbSliders,
-        ColorPanelMode::HsbSliders,
-        ColorPanelMode::CmykSliders,
-        ColorPanelMode::LabSliders,
-        ColorPanelMode::WebColorSliders,
-    ];
+    /// Every mode, in the panel menu's order.
+    pub const ALL: [ColorPanelMode; 5] =
+        [ColorPanelMode::C2, ColorPanelMode::HueCube, ColorPanelMode::ColorWheel, ColorPanelMode::HsbSliders, ColorPanelMode::LabSliders];
 
     /// The 色盘 group of the panel menu: the faces that put the colour on a disc or a square.
     pub const DISC: [ColorPanelMode; 3] = [ColorPanelMode::C2, ColorPanelMode::HueCube, ColorPanelMode::ColorWheel];
@@ -117,51 +91,14 @@ impl ColorPanelMode {
         match self {
             ColorPanelMode::C2 => "C2 Color",
             ColorPanelMode::HueCube => "Hue Cube",
-            ColorPanelMode::BrightnessCube => "Brightness Cube",
             ColorPanelMode::ColorWheel => "Color Wheel",
-            ColorPanelMode::GrayscaleSlider => "Grayscale Slider",
-            ColorPanelMode::RgbSliders => "RGB Sliders",
             ColorPanelMode::HsbSliders => "HSB Sliders",
-            ColorPanelMode::CmykSliders => "CMYK Sliders",
             ColorPanelMode::LabSliders => "Lab Sliders",
-            ColorPanelMode::WebColorSliders => "Web Color Sliders",
         }
     }
 
-    /// The slider modes, which show the colour ramp under their sliders.
+    /// The faces that show the colour as sliders (色条), never as a field.
     pub fn is_sliders(self) -> bool {
-        !matches!(self, ColorPanelMode::C2 | ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel)
-    }
-}
-
-/// The Color panel's colour ramp, from its panel menu (or Shift-click on the ramp to cycle).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ColorRamp {
-    #[default]
-    RgbSpectrum,
-    CmykSpectrum,
-    GrayscaleRamp,
-    CurrentColors,
-}
-
-impl ColorRamp {
-    /// Every ramp, in Photoshop's panel menu order (also the Shift-click cycle).
-    pub const ALL: [ColorRamp; 4] = [ColorRamp::RgbSpectrum, ColorRamp::CmykSpectrum, ColorRamp::GrayscaleRamp, ColorRamp::CurrentColors];
-
-    /// The panel menu item.
-    pub fn label(self) -> &'static str {
-        match self {
-            ColorRamp::RgbSpectrum => "RGB Spectrum",
-            ColorRamp::CmykSpectrum => "CMYK Spectrum",
-            ColorRamp::GrayscaleRamp => "Grayscale Ramp",
-            ColorRamp::CurrentColors => "Current Colors",
-        }
-    }
-
-    /// The next ramp in the Shift-click cycle.
-    pub fn next(self) -> ColorRamp {
-        let i = ColorRamp::ALL.iter().position(|r| *r == self).unwrap_or(0);
-        ColorRamp::ALL.get(i + 1).copied().unwrap_or(ColorRamp::RgbSpectrum)
+        matches!(self, ColorPanelMode::HsbSliders | ColorPanelMode::LabSliders)
     }
 }

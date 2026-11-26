@@ -1,5 +1,6 @@
-//! The Color panel's modes, ramp and panel menu (#6000, #2569): every mode draws and edits the
-//! colour in every theme, and the choice is the panel menu's, never the theme's.
+//! The Color panel's faces and panel menu (#6000, #2569): every face draws and edits the colour
+//! in every theme, a 色盘 face carries no sliders and a 色条 face carries no field, and the
+//! choice is the panel menu's, never the theme's.
 
 use egui::{Modifiers, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -7,12 +8,12 @@ use egui_kittest::kittest::Queryable;
 use serde_json::json;
 
 use crate::PhotocraftApp;
-use crate::color_panel_ui::{Model, hex_code, html_color, ramp_color};
+use crate::color_panel_ui::{Model, hex_code, html_color};
 use crate::dock::Group;
-use crate::state::{ColorPanelMode, ColorRamp};
+use crate::state::ColorPanelMode;
 use crate::theme::{ThemeKind, Tokens};
 
-/// The Color tab of `kind` in `mode`, alone in a 300 x 400 pt panel that offers it 360 pt.
+/// The Color tab of `kind` in `mode`, alone in a 300 x 400 pt panel.
 fn color_tab(kind: ThemeKind, mode: ColorPanelMode, fg: [f32; 4]) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = fg;
@@ -26,7 +27,6 @@ fn color_tab_of(kind: ThemeKind, app: PhotocraftApp) -> Harness<'static, Photocr
     let mut h = Harness::builder().with_size(vec2(300.0, 400.0)).with_step_dt(1.0 / 60.0).build_ui_state(
         move |ui, app: &mut PhotocraftApp| {
             if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
-                ui.data_mut(|d| d.insert_temp(crate::panels::color_field_fill_id(), 360.0_f32));
                 crate::panels::dock_body(app, ui, Group::Color, tab);
             }
         },
@@ -74,77 +74,25 @@ fn type_into(h: &mut Harness<'_, PhotocraftApp>, role: egui::accesskit::Role, nt
 #[test]
 fn every_model_round_trips_its_colours() {
     let colours = [[0.2, 0.6, 0.8], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.25, 0.75]];
-    for model in [Model::Rgb, Model::Hsb, Model::Web, Model::Lab, Model::Cmyk] {
+    for model in [Model::Hsb, Model::Lab] {
         for c in colours {
-            // Pure red, for one, can't print: CMYK gives the nearest printable colour back.
-            if model == Model::Cmyk && crate::color_picker_ui::out_of_gamut(c).is_some() {
-                continue;
-            }
             let back = model.to_rgb(model.values_of(c));
             let worst = (0..3).map(|i| (back[i] - c[i]).abs()).fold(0.0, f32::max);
-            // Whole-number fields: RGB is exact, HSB within a step, CMYK and Lab within a few.
+            // Whole-number fields: HSB within a step, Lab within a few.
             let tolerance = match model {
-                Model::Rgb | Model::Web => 0.6 / 255.0,
                 Model::Hsb => 2.5 / 255.0,
-                _ => 0.03,
+                Model::Lab => 0.03,
             };
             assert!(worst <= tolerance, "{model:?} {c:?} -> {back:?}");
         }
     }
-    for g in [0.0, 0.25, 0.5, 1.0] {
-        let back = Model::Gray.to_rgb(Model::Gray.values_of([g; 3]));
-        assert!((back[0] - g).abs() < 0.01, "gray {g} -> {back:?}");
-    }
     // Hostile values give a valid colour.
-    for model in [Model::Gray, Model::Rgb, Model::Hsb, Model::Cmyk, Model::Lab, Model::Web] {
+    for model in [Model::Hsb, Model::Lab] {
         for v in [[f32::NAN; 4], [f32::INFINITY; 4], [-1e9; 4], [1e9; 4]] {
             assert!(model.to_rgb(v).iter().all(|x| (0.0..=1.0).contains(x)), "{model:?} {v:?}");
         }
-        assert_eq!(
-            model.channels().len(),
-            match model {
-                Model::Gray => 1,
-                Model::Cmyk => 4,
-                _ => 3,
-            }
-        );
+        assert_eq!(model.channels().len(), 3, "{model:?}");
     }
-}
-
-#[test]
-fn ramps_match_photoshop() {
-    let (fg, bg) = ([0.2, 0.4, 0.6], [1.0, 1.0, 0.0]);
-    let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 0.02);
-    // RGB Spectrum: hue across, white at the top, the full colour in the middle, black at the bottom.
-    assert!(near(ramp_color(ColorRamp::RgbSpectrum, false, fg, bg, 0.0, 0.0), [1.0; 3]));
-    assert!(near(ramp_color(ColorRamp::RgbSpectrum, false, fg, bg, 0.0, 0.5), [1.0, 0.0, 0.0]));
-    assert!(near(ramp_color(ColorRamp::RgbSpectrum, false, fg, bg, 1.0 / 3.0, 0.5), [0.0, 1.0, 0.0]));
-    assert!(near(ramp_color(ColorRamp::RgbSpectrum, false, fg, bg, 0.5, 1.0), [0.0; 3]));
-    assert!(near(ramp_color(ColorRamp::GrayscaleRamp, false, fg, bg, 0.0, 0.3), [1.0; 3]));
-    assert!(near(ramp_color(ColorRamp::GrayscaleRamp, false, fg, bg, 1.0, 0.3), [0.0; 3]));
-    assert!(near(ramp_color(ColorRamp::CurrentColors, false, fg, bg, 0.0, 0.9), fg));
-    assert!(near(ramp_color(ColorRamp::CurrentColors, false, fg, bg, 1.0, 0.1), bg));
-    // CMYK Spectrum stays printable.
-    let c = ramp_color(ColorRamp::CmykSpectrum, false, fg, bg, 0.6, 0.5);
-    assert!(crate::color_picker_ui::out_of_gamut(c).is_none(), "{c:?}");
-    // Make Ramp Web Safe: every colour is a web colour.
-    for ramp in ColorRamp::ALL {
-        for (x, y) in [(0.13, 0.37), (0.71, 0.66), (0.5, 0.5)] {
-            let c = ramp_color(ramp, true, fg, bg, x, y);
-            assert!(crate::color_picker_ui::not_web_safe(c).is_none(), "{ramp:?} {c:?}");
-        }
-        let c = ramp_color(ramp, false, fg, bg, f32::NAN, f32::INFINITY);
-        assert!(c.iter().all(|v| (0.0..=1.0).contains(v)), "{ramp:?} {c:?}");
-    }
-    // Shift-click cycles the ramps in menu order and wraps.
-    let mut r = ColorRamp::RgbSpectrum;
-    let mut seen = vec![r];
-    for _ in 0..3 {
-        r = r.next();
-        seen.push(r);
-    }
-    assert_eq!(seen, ColorRamp::ALL);
-    assert_eq!(r.next(), ColorRamp::RgbSpectrum);
 }
 
 #[test]
@@ -153,7 +101,7 @@ fn copy_color_formats() {
     assert_eq!(hex_code([0.2, 0.6, 0.8]), "3399cc");
 }
 
-/// Every mode draws in every theme, and a click in it sets the colour.
+/// Every face draws in every theme, and a click in it sets the colour.
 #[test]
 fn every_mode_works_in_every_theme() {
     for kind in ThemeKind::ALL {
@@ -161,7 +109,7 @@ fn every_mode_works_in_every_theme() {
             let mut h = color_tab(kind, mode, [1.0, 0.0, 0.0, 1.0]);
             match mode {
                 ColorPanelMode::C2 => {
-                    // The C2 layout: the source switch, the chips and the hex/RGB readout.
+                    // The C2 layout: the source switch, the chips and the hex readout.
                     for label in ["Solid", "Pattern", "Foreground Color", "Background Color", "#"] {
                         assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: {label}");
                     }
@@ -169,11 +117,14 @@ fn every_mode_works_in_every_theme() {
                     press(&mut h, field, Modifiers::NONE);
                     assert_ne!(h.state().session.tools.foreground, [1.0, 0.0, 0.0, 1.0], "{kind:?} {mode:?}: the field picks");
                 }
-                ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube => {
+                ColorPanelMode::HueCube => {
                     assert!(h.query_by_label("#").is_some(), "{kind:?} {mode:?}: the readout");
+                    let field = h.get_by_label("Saturation / Brightness").rect().center();
+                    press(&mut h, field, Modifiers::NONE);
+                    assert_ne!(h.state().session.tools.foreground, [1.0, 0.0, 0.0, 1.0], "{kind:?} {mode:?}: the field picks");
                 }
                 ColorPanelMode::ColorWheel => {
-                    for label in ["H", "S", "B", "Add to Swatches"] {
+                    for label in ["Color Wheel", "Add to Swatches"] {
                         assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: {label}");
                     }
                 }
@@ -181,30 +132,19 @@ fn every_mode_works_in_every_theme() {
                     for (label, ..) in Model::of(mode).channels() {
                         assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: the {label} slider");
                     }
-                    // The black box at the end of the ramp sets black.
-                    let black = h.get_by_label("Black").rect().center();
-                    press(&mut h, black, Modifiers::NONE);
-                    assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 0], "{kind:?} {mode:?}");
                 }
             }
-            // The C2 layout is the exception: its hue strip and "Saturation / Brightness" field
-            // are labelled like Photoshop's HSB sliders but are the reference's own controls.
-            if mode != ColorPanelMode::C2 {
-                assert!(h.query_by_label("Hue").is_none() && h.query_by_label("Saturation").is_none(), "{kind:?} {mode:?}: no old sliders");
+            // A 色盘 face carries no slider rows; a 色条 face carries no field.
+            if mode.is_sliders() {
+                assert_eq!(h.query_all_by_role(egui::accesskit::Role::SpinButton).count(), 3, "{kind:?} {mode:?}: three strip fields");
+                assert!(h.query_by_label("Saturation / Brightness").is_none(), "{kind:?} {mode:?}: no field in a strip");
+            } else {
+                for name in ["H value", "S value", "B value", "L value", "a value", "b value"] {
+                    assert!(h.query_by_label(name).is_none(), "{kind:?} {mode:?}: no {name} row in a disc");
+                }
             }
         }
     }
-}
-
-#[test]
-fn rgb_slider_track_sets_its_channel() {
-    let mut h = color_tab(ThemeKind::AdwaitaDark, ColorPanelMode::RgbSliders, [0.0, 0.0, 0.0, 1.0]);
-    let g = h.get_by_label("G").rect();
-    press(&mut h, pos2(g.right() - 2.0, g.center().y), Modifiers::NONE);
-    assert_eq!(bytes(h.state().session.tools.foreground), [0, 255, 0]);
-    // The field takes a typed value too (the spin buttons are R, G, B).
-    type_into(&mut h, egui::accesskit::Role::SpinButton, 2, "128");
-    assert_eq!(bytes(h.state().session.tools.foreground), [0, 255, 128]);
 }
 
 /// Black has no hue or saturation of its own: typed H and S must stick while B is still 0.
@@ -218,115 +158,44 @@ fn hsb_sliders_take_values_on_black() {
 }
 
 #[test]
-fn cmyk_sliders_keep_typed_values() {
-    let mut h = color_tab(ThemeKind::Pro, ColorPanelMode::CmykSliders, [1.0, 1.0, 1.0, 1.0]);
-    type_into(&mut h, egui::accesskit::Role::SpinButton, 0, "40");
-    type_into(&mut h, egui::accesskit::Role::SpinButton, 3, "20");
-    let shown: Vec<String> = h.query_all_by_role(egui::accesskit::Role::SpinButton).filter_map(|n| n.value()).collect();
-    assert_eq!(shown.first().map(String::as_str), Some("40"), "C stays as typed: {shown:?}");
-    assert_eq!(shown.get(3).map(String::as_str), Some("20"), "K stays as typed: {shown:?}");
+fn hsb_slider_track_sets_its_channel() {
+    let mut h = color_tab(ThemeKind::AdwaitaDark, ColorPanelMode::HsbSliders, [1.0, 0.0, 0.0, 1.0]);
+    let s = h.get_by_label("S").rect();
+    press(&mut h, pos2(s.right() - 2.0, s.center().y), Modifiers::NONE);
+    // Saturation 100 of red is still red; the field takes a brightness next.
+    assert_eq!(bytes(h.state().session.tools.foreground), [255, 0, 0]);
+    let b = h.get_by_label("B").rect();
+    press(&mut h, pos2(b.left() + 4.0, b.center().y), Modifiers::NONE);
+    assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 0], "brightness 0 is black");
 }
 
 #[test]
-fn web_sliders_snap_and_take_hex() {
-    let mut h = color_tab(ThemeKind::Classic, ColorPanelMode::WebColorSliders, [0.0, 0.0, 0.0, 1.0]);
-    let r = h.get_by_label("R").rect();
-    // 45% along the track snaps to 0x66 (102), the nearest web step.
-    let x = r.left() + 4.0 + (r.width() - 8.0) * 0.45;
-    press(&mut h, pos2(x, r.center().y), Modifiers::NONE);
-    assert_eq!(bytes(h.state().session.tools.foreground), [0x66, 0, 0]);
-    // Not a web colour: the cube alert snaps it.
-    type_into(&mut h, egui::accesskit::Role::TextInput, 1, "C8");
-    assert_eq!(bytes(h.state().session.tools.foreground), [0x66, 0xC8, 0]);
-    let alert = h.get_by_label("Not a web color: click for the nearest web color").rect().center();
-    press(&mut h, alert, Modifiers::NONE);
-    assert_eq!(bytes(h.state().session.tools.foreground), [0x66, 0xCC, 0]);
-}
-
-#[test]
-fn cube_modes_warn_when_the_colour_cannot_print() {
-    // #8672: Photoshop's Hue and Brightness Cube show the ⚠ and the nearest printable colour under
-    // the chips, as the slider modes do; a click takes that colour.
+fn hue_cube_warns_when_the_colour_cannot_print() {
+    // #8672: Photoshop's Hue Cube shows the ⚠ and the nearest printable colour under the chips;
+    // a click takes that colour.
     const GAMUT: &str = "Out of gamut for printing: click for the nearest printable color";
-    for mode in [ColorPanelMode::HueCube, ColorPanelMode::BrightnessCube] {
-        let mut h = color_tab(ThemeKind::Classic, mode, [0.0, 1.0, 0.0, 1.0]);
-        let near = crate::color_picker_ui::out_of_gamut([0.0, 1.0, 0.0]).expect("pure green can't print");
-        let alert = h.get_by_label(GAMUT).rect().center();
-        press(&mut h, alert, Modifiers::NONE);
-        let fg = h.state().session.tools.foreground;
-        assert_eq!(bytes(fg), bytes([near[0], near[1], near[2], 1.0]), "{mode:?}");
-        h.run_steps(2);
-        assert!(h.query_by_label(GAMUT).is_none(), "{mode:?}: the printable colour still warns");
-        // A printable colour shows no alert.
-        let h = color_tab(ThemeKind::Classic, mode, [0.5, 0.5, 0.5, 1.0]);
-        assert!(h.query_by_label(GAMUT).is_none(), "{mode:?}");
-        // CodeRabbit on #9154: with the background chip active, the click sets the background.
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.session.tools.foreground = [0.5, 0.5, 0.5, 1.0];
-        app.session.tools.background = [0.0, 1.0, 0.0, 1.0];
-        app.ui.color_panel.mode = mode;
-        app.ui.color_panel.background = true;
-        let mut h = color_tab_of(ThemeKind::Classic, app);
-        let alert = h.get_by_label(GAMUT).rect().center();
-        press(&mut h, alert, Modifiers::NONE);
-        let tools = &h.state().session.tools;
-        assert_eq!(bytes(tools.background), bytes([near[0], near[1], near[2], 1.0]), "{mode:?}: background");
-        assert_eq!(bytes(tools.foreground), bytes([0.5, 0.5, 0.5, 1.0]), "{mode:?}: the foreground is left alone");
-    }
-}
-
-#[test]
-fn ramp_picks_and_shift_click_cycles_and_alt_picks_the_other_colour() {
-    let mut h = color_tab(ThemeKind::BreezeDark, ColorPanelMode::RgbSliders, [0.0, 0.0, 0.0, 1.0]);
-    let ramp: Rect = h.get_by_label("Color Ramp").rect();
-    // The RGB Spectrum's top is white.
-    press(&mut h, pos2(ramp.left() + 3.0, ramp.top() + 1.0), Modifiers::NONE);
-    assert!(bytes(h.state().session.tools.foreground).iter().all(|v| *v > 240), "{:?}", h.state().session.tools.foreground);
-    // Alt picks the background (the panel edits the foreground).
-    press(&mut h, pos2(ramp.left() + 3.0, ramp.bottom() - 1.0), Modifiers::ALT);
-    assert!(bytes(h.state().session.tools.background).iter().all(|v| *v < 16), "{:?}", h.state().session.tools.background);
-    assert!(bytes(h.state().session.tools.foreground).iter().all(|v| *v > 240), "Alt leaves the foreground");
-    // Shift-click cycles the ramp and picks nothing.
-    let fg = h.state().session.tools.foreground;
-    for expected in [ColorRamp::CmykSpectrum, ColorRamp::GrayscaleRamp, ColorRamp::CurrentColors, ColorRamp::RgbSpectrum] {
-        press(&mut h, ramp.center(), Modifiers::SHIFT);
-        assert_eq!(h.state().ui.color_panel.ramp, expected);
-    }
-    assert_eq!(h.state().session.tools.foreground, fg);
-    // Grayscale Ramp: its left end is white.
-    h.state_mut().ui.color_panel.ramp = ColorRamp::GrayscaleRamp;
-    h.state_mut().session.tools.foreground = [0.0, 0.0, 0.0, 1.0];
+    let mut h = color_tab(ThemeKind::Classic, ColorPanelMode::HueCube, [0.0, 1.0, 0.0, 1.0]);
+    let near = crate::color_picker_ui::out_of_gamut([0.0, 1.0, 0.0]).expect("pure green can't print");
+    let alert = h.get_by_label(GAMUT).rect().center();
+    press(&mut h, alert, Modifiers::NONE);
+    assert_eq!(bytes(h.state().session.tools.foreground), bytes([near[0], near[1], near[2], 1.0]));
     h.run_steps(2);
-    press(&mut h, pos2(ramp.left() + 1.0, ramp.center().y), Modifiers::NONE);
-    assert!(bytes(h.state().session.tools.foreground).iter().all(|v| *v > 245));
-}
-
-/// A drag on the Current Colors ramp picks from the ends it began with: holding still keeps the
-/// colour under the pointer instead of drifting toward the background.
-#[test]
-fn current_colors_ramp_drag_keeps_its_ends() {
-    let mut h = color_tab(ThemeKind::BreezeDark, ColorPanelMode::RgbSliders, [0.0, 0.0, 0.0, 1.0]);
-    h.state_mut().session.tools.background = [1.0, 1.0, 1.0, 1.0];
-    h.state_mut().ui.color_panel.ramp = ColorRamp::CurrentColors;
-    h.run_steps(2);
-    let ramp: Rect = h.get_by_label("Color Ramp").rect();
-    let p = ramp.center();
-    h.hover_at(p);
-    h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-    h.run_steps(1);
-    // Move away and back to start the drag, then hold still for a while.
-    for q in [p + vec2(12.0, 0.0), p] {
-        h.event(egui::Event::PointerMoved(q));
-        h.run_steps(1);
-    }
-    h.run_steps(20);
-    h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    h.run_steps(2);
-    let expected = ramp_color(ColorRamp::CurrentColors, false, [0.0; 3], [1.0; 3], (p.x - ramp.left()) / ramp.width(), 0.5);
-    let got = bytes(h.state().session.tools.foreground);
-    for (g, e) in got.iter().zip(expected) {
-        assert!(i32::from(*g).abs_diff((e * 255.0).round() as i32) <= 3, "{got:?} vs {expected:?}");
-    }
+    assert!(h.query_by_label(GAMUT).is_none(), "the printable colour still warns");
+    // A printable colour shows no alert.
+    let h = color_tab(ThemeKind::Classic, ColorPanelMode::HueCube, [0.5, 0.5, 0.5, 1.0]);
+    assert!(h.query_by_label(GAMUT).is_none());
+    // CodeRabbit on #9154: with the background chip active, the click sets the background.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.tools.foreground = [0.5, 0.5, 0.5, 1.0];
+    app.session.tools.background = [0.0, 1.0, 0.0, 1.0];
+    app.ui.color_panel.mode = ColorPanelMode::HueCube;
+    app.ui.color_panel.background = true;
+    let mut h = color_tab_of(ThemeKind::Classic, app);
+    let alert = h.get_by_label(GAMUT).rect().center();
+    press(&mut h, alert, Modifiers::NONE);
+    let tools = &h.state().session.tools;
+    assert_eq!(bytes(tools.background), bytes([near[0], near[1], near[2], 1.0]), "background");
+    assert_eq!(bytes(tools.foreground), bytes([0.5, 0.5, 0.5, 1.0]), "the foreground is left alone");
 }
 
 /// A non-finite pointer (a huge synthetic `ui.move`) misses the triangle instead of panicking.
@@ -375,10 +244,11 @@ fn the_panel_menu_keeps_its_narrow_width_over_the_panel() {
     assert_eq!(h.query_all_by_label("Color Strips").count(), 1);
 }
 
-/// The panel menu lists Photoshop's ten faces with the reference layout checked first; picking
-/// one switches the panel and a theme change keeps it; the ramp and copy commands still work.
+/// The panel menu lists the faces in two groups — 色盘 (the discs) over 色条 (the strips) — with
+/// the reference layout checked first; picking one switches the panel and a theme change keeps it.
+/// The copy commands still work on the second page.
 #[test]
-fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
+fn panel_menu_lists_the_faces_in_two_groups() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = [0.2, 0.6, 0.8, 1.0];
     let mut h = Harness::builder().with_size(vec2(260.0, 760.0)).build_ui_state(
@@ -391,8 +261,6 @@ fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    // Two groups: 色盘 (the discs and the reference square) and 色条 (the sliders). Every face in
-    // them is offered, the reference layout (C2) checked, and no other face is.
     for (group, modes) in [("Color Discs", &ColorPanelMode::DISC[..]), ("Color Strips", &ColorPanelMode::STRIP[..])] {
         assert_eq!(h.query_all_by_label(group).count(), 1, "the {group} heading");
         for mode in modes {
@@ -400,26 +268,13 @@ fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
             assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
         }
     }
-    for mode in ColorPanelMode::ALL {
-        if ColorPanelMode::DISC.contains(&mode) || ColorPanelMode::STRIP.contains(&mode) {
-            continue;
-        }
-        let label = format!("   {}", mode.label());
-        assert_eq!(h.query_all_by_label(&label).count(), 0, "{mode:?} is gone from the menu");
-    }
     assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
     h.get_by_label("   HSB Sliders").click();
     h.run_steps(2);
     assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::HsbSliders);
-    // The commands live on the menu's second page, reached from the dot under the first.
+    // The copy commands live on the menu's second page, reached from the dot under the first.
     h.get_by_label("Page 2").click();
     h.run_steps(2);
-    h.get_by_label("   Current Colors").click();
-    h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.ramp, ColorRamp::CurrentColors);
-    h.get_by_label("   Make Ramp Web Safe").click();
-    h.run_steps(2);
-    assert!(h.state().ui.color_panel.web_safe_ramp);
     h.get_by_label("Copy Color's Hex Code").click();
     h.run_steps(1);
     let copied: Vec<_> =
@@ -434,7 +289,7 @@ fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
 
 /// `ui.set colorPanel` merges, so setting the mode keeps the edited chip; bad values change nothing.
 #[test]
-fn control_sets_the_mode_ramp_and_web_safe_ramp() {
+fn control_sets_the_mode() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let ctx = egui::Context::default();
     let call = |app: &mut PhotocraftApp, params: serde_json::Value| {
@@ -445,11 +300,12 @@ fn control_sets_the_mode_ramp_and_web_safe_ramp() {
         }
     };
     assert!(call(&mut app, json!({"colorPanel": {"background": true}})));
-    assert!(call(&mut app, json!({"colorPanel": {"mode": "labSliders", "ramp": "grayscaleRamp", "webSafeRamp": true}})));
+    assert!(call(&mut app, json!({"colorPanel": {"mode": "labSliders"}})));
     let cp = app.ui.color_panel;
     assert!(cp.background, "the chip is kept");
-    assert_eq!((cp.mode, cp.ramp, cp.web_safe_ramp), (ColorPanelMode::LabSliders, ColorRamp::GrayscaleRamp, true));
-    for bad in [json!({"colorPanel": {"mode": "hueWheel"}}), json!({"colorPanel": {"ramp": 3}}), json!({"colorPanel": {"webSafeRamp": "yes"}})] {
+    assert_eq!(cp.mode, ColorPanelMode::LabSliders);
+    // The faces the panel no longer has, and values of the wrong type: rejected.
+    for bad in [json!({"colorPanel": {"mode": "hueWheel"}}), json!({"colorPanel": {"mode": "grayscaleSlider"}}), json!({"colorPanel": {"background": "yes"}})] {
         assert!(!call(&mut app, bad.clone()), "{bad}");
         assert_eq!(app.ui.color_panel, cp, "{bad}: nothing changes");
     }
@@ -464,27 +320,6 @@ fn web_only_reads_its_old_snake_case_key() {
     assert_eq!((new.get("webOnly"), new.get("web_only")), (Some(&json!(true)), None));
 }
 
-/// Make Ramp Web Safe: a click picks the cell drawn under the pointer, even near its edge. On
-/// the Grayscale Ramp the fifth cell is drawn white, though its right edge rounds to CC.
-#[test]
-fn web_safe_ramp_picks_the_cell_it_draws() {
-    let mut h = color_tab(ThemeKind::Pro, ColorPanelMode::RgbSliders, [0.0, 0.0, 0.0, 1.0]);
-    h.state_mut().ui.color_panel.ramp = ColorRamp::GrayscaleRamp;
-    h.state_mut().ui.color_panel.web_safe_ramp = true;
-    h.run_steps(2);
-    let ramp: Rect = h.get_by_label("Color Ramp").rect();
-    press(&mut h, pos2(ramp.left() + ramp.width() * 4.95 / 48.0, ramp.center().y), Modifiers::NONE);
-    assert_eq!(bytes(h.state().session.tools.foreground), [255, 255, 255]);
-}
-
-/// A Web Color field takes two hex digits only: "+F" is not 0F.
-#[test]
-fn web_field_ignores_a_sign() {
-    let mut h = color_tab(ThemeKind::Pro, ColorPanelMode::WebColorSliders, [0.0, 0.0, 0.0, 1.0]);
-    type_into(&mut h, egui::accesskit::Role::TextInput, 0, "+F");
-    assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 0]);
-}
-
 /// A click beside the Color Wheel (its area spans the panel) leaves the colour alone.
 #[test]
 fn color_wheel_ignores_clicks_beside_it() {
@@ -497,10 +332,9 @@ fn color_wheel_ignores_clicks_beside_it() {
     assert_eq!(bytes(h.state().session.tools.foreground), [0, 0, 255]);
 }
 
-/// 色板区域固定比例: every face draws the same square in the same panel — the C2 layout's 168 pt
-/// picker, the hue cube's field and the color wheel's area all measure that square — so switching
-/// faces never changes the colour area's size or shape. The wheel no longer shrinks to the Color
-/// group's height; a short group scrolls instead.
+/// 色板区域固定比例: every disc face draws the same square in the same panel — the C2 layout's
+/// 168 pt picker, the hue cube's field and the color wheel's area all measure that square — so
+/// switching faces never changes the colour area's size or shape.
 #[test]
 fn every_face_keeps_the_palette_square() {
     for width in [300.0, 420.0] {
@@ -556,7 +390,7 @@ fn color_tab_with_a_shape(mode: ColorPanelMode, background: bool) -> Harness<'st
     color_tab_of(ThemeKind::Studio, app)
 }
 
-/// Types `text` into the first slider field (Hue or Red) and commits it with Enter.
+/// Types `text` into the first slider field (Hue) and commits it with Enter.
 fn type_first_slider(h: &mut Harness<'_, PhotocraftApp>, text: &str) {
     // The number field opens on the second click (fields.rs `number_edit`).
     h.query_all_by_role(egui::accesskit::Role::SpinButton).next().unwrap().click();
@@ -598,38 +432,54 @@ fn hsb_sliders_edit_the_active_chip_and_only_the_foreground_recolours_shapes() {
     assert_eq!(shape_fill(app), [0, 255, 0], "the selected shape takes the new foreground");
 }
 
-/// The RGB sliders recolour the selected shape like the HSB sliders, the field and the swatches
-/// do (`apply_color`), in one history step, and only for a foreground edit.
+/// The strips recolour the selected shape like the disc's field and the swatches do
+/// (`apply_color`), in one history step, and only for a foreground edit.
 #[test]
-fn rgb_sliders_recolour_the_selected_shape_with_the_foreground() {
-    let mut h = color_tab_with_a_shape(ColorPanelMode::RgbSliders, false);
-    let steps = h.state().session.active().unwrap().history.entries().len();
-    type_first_slider(&mut h, "255");
+fn the_strips_recolour_the_selected_shape_with_the_foreground() {
+    let mut h = color_tab_with_a_shape(ColorPanelMode::HsbSliders, false);
+    let before = h.state().session.active().unwrap().history.entries().len();
+    type_first_slider(&mut h, "120");
     let app = h.state();
-    assert_eq!(bytes(app.session.tools.foreground), [255, 0, 255]);
-    assert_eq!(shape_fill(app), [255, 0, 255]);
-    assert_eq!(app.session.active().unwrap().history.entries().len(), steps + 1, "one history step");
+    assert_eq!(bytes(app.session.tools.foreground), [0, 255, 0]);
+    assert_eq!(shape_fill(app), [0, 255, 0]);
+    assert_eq!(app.session.active().unwrap().history.entries().len(), before + 1, "one history step");
 
-    let mut h = color_tab_with_a_shape(ColorPanelMode::RgbSliders, true);
-    type_first_slider(&mut h, "0");
+    let mut h = color_tab_with_a_shape(ColorPanelMode::LabSliders, false);
+    type_first_slider(&mut h, "70");
     let app = h.state();
-    assert_eq!(bytes(app.session.tools.background), [0, 0, 0]);
-    assert_eq!(shape_fill(app), [0, 0, 0], "a background edit recolours nothing");
+    assert_ne!(bytes(app.session.tools.foreground), [0, 0, 255], "the Lab strip edits the foreground");
+    assert_eq!(shape_fill(app), bytes(app.session.tools.foreground), "and the shape follows it");
 }
 
-/// Every slider mode's ramp (here its white box) recolours the selected shape with a new
-/// foreground, as the sliders and the field do.
+/// A 色盘 face carries no slider rows under its field: 颜色数值 lives in the disc's own hex
+/// readout at its top right, never as strips below the colour area.
 #[test]
-fn every_slider_mode_recolours_the_selected_shape() {
-    for mode in ColorPanelMode::ALL {
-        if matches!(mode, ColorPanelMode::C2 | ColorPanelMode::HueCube | ColorPanelMode::BrightnessCube | ColorPanelMode::ColorWheel) {
-            continue;
+fn the_disc_carries_no_sliders() {
+    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::C2, [0.772, 0.361, 0.361, 1.0]);
+    assert_eq!(h.query_all_by_role(egui::accesskit::Role::SpinButton).count(), 0, "no H/S/B rows under the C2 disc");
+    for name in ["Hue", "Saturation", "Brightness"] {
+        assert!(h.query_by_label(name).is_none(), "no {name} row");
+    }
+    // The hex field is there, at the panel's top right, above the field and the swatches.
+    let hex = h.get_by_label("#").rect();
+    let picker = h.get_by_label("Saturation / Brightness").rect();
+    let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
+    assert!(hex.bottom() <= picker.top() && hex.top() < swatch.top(), "the value sits at the top: {hex:?} {picker:?}");
+    assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "the swatch row is still there");
+    h.run_steps(3);
+}
+
+/// A 色条 face carries no field or ramp: the strips and nothing else.
+#[test]
+fn the_strips_carry_no_field() {
+    for mode in ColorPanelMode::STRIP {
+        let h = color_tab(ThemeKind::Studio, mode, [0.2, 0.4, 0.6, 1.0]);
+        for name in ["Color Ramp", "White", "Black", "Saturation / Brightness", "Color Wheel"] {
+            assert!(h.query_by_label(name).is_none(), "{mode:?}: no {name}");
         }
-        let mut h = color_tab_with_a_shape(mode, false);
-        let white = h.get_by_label("White").rect().center();
-        press(&mut h, white, Modifiers::NONE);
-        assert_eq!(bytes(h.state().session.tools.foreground), [255, 255, 255], "{mode:?}");
-        assert_eq!(shape_fill(h.state()), [255, 255, 255], "{mode:?}");
+        for (label, ..) in Model::of(mode).channels() {
+            assert_eq!(h.query_all_by_label(label).count(), 1, "{mode:?}: the {label} strip is there");
+        }
     }
 }
 
@@ -638,37 +488,35 @@ fn every_slider_mode_recolours_the_selected_shape() {
 #[test]
 fn color_panel_options_survive_a_restart() {
     let mut first = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    first.ui.color_panel.ramp = ColorRamp::GrayscaleRamp;
-    first.ui.color_panel.web_safe_ramp = true;
+    first.ui.color_panel.recent[0] = [0.1, 0.2, 0.3, 1.0];
     crate::color_panel_ui::persist(&mut first);
     let saved = first.session.prefs().clone();
 
     let mut next = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     next.session.prefs.edit(|p| *p = saved);
     crate::color_panel_ui::restore(&mut next);
-    // The options survive; the display does not, because the panel has only the reference layout.
-    assert_eq!((next.ui.color_panel.ramp, next.ui.color_panel.web_safe_ramp), (ColorRamp::GrayscaleRamp, true));
-    assert_eq!(next.ui.color_panel.mode, ColorPanelMode::C2, "the display never comes back traditional");
+    // The options survive; the display does not, because the panel opens on the reference layout.
+    assert_eq!(next.ui.color_panel.recent[0], [0.1, 0.2, 0.3, 1.0]);
+    assert_eq!(next.ui.color_panel.mode, ColorPanelMode::C2, "the display never comes back stored");
 
     let mut fresh = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     crate::color_panel_ui::restore(&mut fresh);
     assert_eq!(fresh.ui.color_panel.mode, ColorPanelMode::C2, "no saved options: the default");
 }
 
-/// Whatever the preferences record — an older file's traditional mode, a hand edit or
+/// Whatever the preferences record — a hand edit, an older file's face or
 /// `ui.set colorPanel.mode` — the panel comes back as the reference layout, and the preference
-/// is rewritten to match: one face, no traditional fallback.
+/// is rewritten to match: one starting face, no fallback.
 #[test]
 fn the_panel_never_falls_back_to_a_traditional_mode() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    let hue_cube = serde_json::json!({"background": false, "mode": "hueCube", "ramp": "rgbSpectrum"});
-    app.session.prefs.edit(|p| p.color_panel = hue_cube);
+    let stored = serde_json::json!({"background": false, "mode": "colorWheel", "recent": [[0.1, 0.2, 0.3, 1.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]});
+    app.session.prefs.edit(|p| p.color_panel = stored);
     crate::color_panel_ui::restore(&mut app);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the stored traditional mode is dropped");
-    assert_eq!(app.ui.color_panel.ramp, ColorRamp::RgbSpectrum, "the rest of the file is kept");
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the stored face is dropped");
+    assert_eq!(app.ui.color_panel.recent[0], [0.1, 0.2, 0.3, 1.0], "the rest of the file is kept");
     crate::color_panel_ui::persist(&mut app);
-    let stored: crate::state::ColorPanelState =
-        serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap();
+    let stored: crate::state::ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap();
     assert_eq!(stored.mode, ColorPanelMode::C2, "and the preference no longer asks for it");
 }
 
@@ -680,18 +528,18 @@ fn an_outside_preference_change_reaches_the_live_panel() {
     crate::color_panel_ui::persist(&mut app);
     // As prefs.set or a reset to defaults would: the stored options change under the panel.
     let mut other = app.ui.color_panel;
-    other.ramp = ColorRamp::CurrentColors;
+    other.recent[1] = [0.4, 0.5, 0.6, 1.0];
     app.session.prefs.edit(|p| p.color_panel = serde_json::to_value(other).unwrap());
     crate::color_panel_ui::persist(&mut app);
-    assert_eq!(app.ui.color_panel.ramp, ColorRamp::CurrentColors, "the live panel follows the preference");
+    assert_eq!(app.ui.color_panel.recent[1], [0.4, 0.5, 0.6, 1.0], "the live panel follows the preference");
     let stored: crate::state::ColorPanelState = serde_json::from_value(app.session.prefs().color_panel.clone()).unwrap();
-    assert_eq!(stored.ramp, ColorRamp::CurrentColors, "and the preference isn't overwritten");
-    // A stored traditional mode is the one option that never reaches the panel.
+    assert_eq!(stored.recent[1], [0.4, 0.5, 0.6, 1.0], "and the preference isn't overwritten");
+    // A stored face is the one option that never reaches the panel.
     let mut mode_change = app.ui.color_panel;
-    mode_change.mode = ColorPanelMode::GrayscaleSlider;
+    mode_change.mode = ColorPanelMode::HsbSliders;
     app.session.prefs.edit(|p| p.color_panel = serde_json::to_value(mode_change).unwrap());
     crate::color_panel_ui::persist(&mut app);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the traditional mode is not restored");
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the stored face is not restored");
     // A reset to defaults clears the stored options: the panel goes back to its defaults too.
     app.session.prefs.edit(|p| p.color_panel = serde_json::Value::Null);
     crate::color_panel_ui::persist(&mut app);
@@ -724,56 +572,6 @@ fn the_c2_picker_keeps_a_168_pt_square_at_any_dock_width() {
         sides.push((field.width().round(), field.height().round()));
     }
     assert_eq!(sides, [(168.0, 168.0), (168.0, 168.0)], "the picker is fixed, not stretched with the dock");
-}
-
-/// 开启颜色数值: the C2 layout gains the H, S, B slider rows under its swatch row — the field,
-/// chips and swatches above keep their place, so the values are appended, never a replacement —
-/// and loses only those rows when it is off.
-#[test]
-fn the_c2_panel_appends_color_values_below_its_content() {
-    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::C2, [0.772, 0.361, 0.361, 1.0]);
-    assert!(h.state().ui.color_panel.show_values, "颜色数值 starts on, as the reference application has it");
-    assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "the swatch row is still there");
-    let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
-    let hue = h.query_by_label("Hue").unwrap_or_else(|| panic!("no Hue row")).rect();
-    assert!(hue.top() > swatch.bottom(), "the values follow the swatch row: {hue:?} under {swatch:?}");
-    for name in ["Hue", "Saturation", "Brightness"] {
-        assert!(h.query_by_label(name).is_some(), "{name} row");
-    }
-    let picker = h.get_by_label("Saturation / Brightness").rect();
-    assert!(picker.height() > 100.0, "the saturation/brightness field keeps its square: {picker:?}");
-
-    h.state_mut().ui.color_panel.show_values = false;
-    h.run_steps(3);
-    for name in ["Hue", "Saturation", "Brightness"] {
-        assert!(h.query_by_label(name).is_none(), "off: no {name} row");
-    }
-    assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "and the swatches stay either way");
-}
-
-/// 颜色数值 is the panel menu's switch (the first page, after the faces): checked by default, and
-/// a click turns the value rows off, another turns them back on.
-#[test]
-fn the_panel_menu_toggles_color_values() {
-    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    let mut h = Harness::builder().with_size(vec2(320.0, 500.0)).build_ui_state(
-        |ui, app: &mut PhotocraftApp| {
-            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
-                crate::color_panel_ui::panel_menu(app, ui);
-            }
-        },
-        app,
-    );
-    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
-    h.run_steps(3);
-    assert!(h.state().ui.color_panel.show_values, "颜色数值 starts on");
-    h.get_by_label("✔ Show Color Values").click();
-    h.run_steps(2);
-    assert!(!h.state().ui.color_panel.show_values, "a click turns 颜色数值 off");
-    assert!(h.query_by_label("   Show Color Values").is_some(), "and the row shows unchecked");
-    h.get_by_label("   Show Color Values").click();
-    h.run_steps(2);
-    assert!(h.state().ui.color_panel.show_values, "a second click turns it back on");
 }
 
 /// The C2 layout's 实线/图案 switch at the top of the panel: 图案 arms the brush for a sampled

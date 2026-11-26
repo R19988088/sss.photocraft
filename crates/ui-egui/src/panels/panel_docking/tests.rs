@@ -864,10 +864,10 @@ fn floated_color_panel_menu_offers_the_mode_picker() {
     h.run_steps(2);
     // The floating panel's menu lists Photoshop's faces like the docked one, C2 checked first.
     assert!(h.query_all_by_label("✔ C2 Color").count() > 0);
-    assert!(h.query_all_by_label("   RGB Sliders").count() > 0);
-    h.get_by_label("   RGB Sliders").click();
+    assert!(h.query_all_by_label("   HSB Sliders").count() > 0);
+    h.get_by_label("   HSB Sliders").click();
     h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::RgbSliders);
+    assert_eq!(h.state().ui.color_panel.mode, crate::state::ColorPanelMode::HsbSliders);
 }
 
 #[test]
