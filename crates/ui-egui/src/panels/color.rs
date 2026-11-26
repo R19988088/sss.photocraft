@@ -275,3 +275,76 @@ pub(crate) fn hex_field(ui: &mut egui::Ui, id: egui::Id, color: &mut [f32; 4], s
     }
     false
 }
+
+/// The document's ten most telling colours, as the 色板 row every face carries above its own
+/// content: a strip of colours from the picture to pick with. Ten empty boxes without a document,
+/// so the panel's content below doesn't reflow when one opens.
+pub(crate) fn palette_row(app: &mut PhotocraftApp, ui: &mut egui::Ui, scale: f32) {
+    let colors: Vec<[f32; 4]> = match app.session.active() {
+        Some(st) => {
+            let key = (st.doc.id, st.revision);
+            let id = egui::Id::new("c2-image-palette");
+            let cached = ui.data(|d| d.get_temp::<((photocraft_doc::DocId, u64), Vec<[f32; 4]>)>(id));
+            if let Some((_, v)) = cached.filter(|(k, _)| *k == key) {
+                v
+            } else {
+                let image = photocraft_compose::thumbnail(&st.doc, 96);
+                let colors = extract_colors(&image.pixels);
+                ui.data_mut(|d| d.insert_temp(id, (key, colors.clone())));
+                colors
+            }
+        }
+        None => Vec::new(),
+    };
+    let t = Tokens::get(ui.ctx());
+    let size = ((ui.available_width() - 9. * 2. * scale) / 10.).max(0.);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2. * scale;
+        for i in 0..10 {
+            let (r, response) = ui.allocate_exact_size(vec2(size, 22. * scale), Sense::click());
+            ui.painter().rect_filled(r, t.radius_sm, colors.get(i).copied().map(c32).unwrap_or(t.field));
+            ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1., t.field_border), StrokeKind::Inside);
+            if response.on_hover_text(tl!("Image Palette Color")).clicked()
+                && let Some(c) = colors.get(i)
+            {
+                crate::color_panel_ui::set_color(app, ui.ctx(), false, [c[0], c[1], c[2]]);
+            }
+        }
+    });
+}
+
+/// Ten well-separated colours of a thumbnail: the most common bins, scored for hue distance from
+/// the ones already chosen so a flat image does not give ten near-duplicates.
+fn extract_colors(pixels: &[u8]) -> Vec<[f32; 4]> {
+    let mut bins = std::collections::BTreeMap::<(i32, i32, i32), ([f32; 4], u32, [f32; 3])>::new();
+    for p in pixels.chunks_exact(4).step_by((pixels.len() / 4 / 220).max(1)) {
+        if p[3] < 21 {
+            continue;
+        }
+        let rgb = [f32::from(p[0]) / 255., f32::from(p[1]) / 255., f32::from(p[2]) / 255.];
+        let h = srgb_hsva([rgb[0], rgb[1], rgb[2], 1.]);
+        let h = [h.h, h.s, h.v];
+        let key = ((h[0] * 24.).round() as i32, (h[1] * 8.).round() as i32, (h[2] * 8.).round() as i32);
+        let entry = bins.entry(key).or_insert(([rgb[0], rgb[1], rgb[2], 1.], 0, h));
+        entry.1 += 1;
+    }
+    let mut candidates: Vec<_> = bins.into_values().collect();
+    candidates.sort_by_key(|v| std::cmp::Reverse(v.1));
+    let mut selected = Vec::<([f32; 4], u32, [f32; 3])>::new();
+    while !candidates.is_empty() && selected.len() < 10 {
+        let score = |v: &([f32; 4], u32, [f32; 3])| {
+            let nearest = selected
+                .iter()
+                .map(|p| {
+                    let h = (p.2[0] - v.2[0]).abs();
+                    h.min(1. - h) * 0.56 + (p.2[2] - v.2[2]).abs() * 0.32 + (p.2[1] - v.2[1]).abs() * 0.12
+                })
+                .reduce(f32::min)
+                .unwrap_or(0.);
+            (v.1 as f32 + 1.).ln() * 0.42 + v.2[1] * 0.18 + v.2[2] * 0.12 + nearest * 2.4
+        };
+        let at = candidates.iter().enumerate().max_by(|(_, a), (_, b)| score(a).total_cmp(&score(b))).map_or(0, |(i, _)| i);
+        selected.push(candidates.remove(at));
+    }
+    selected.into_iter().map(|v| v.0).collect()
+}

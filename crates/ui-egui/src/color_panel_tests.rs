@@ -469,7 +469,8 @@ fn the_disc_carries_no_sliders() {
     h.run_steps(3);
 }
 
-/// A 色条 face carries no field or ramp: the strips and nothing else.
+/// A 色条 face carries no field or ramp: 色板 above (the chips and the picture's swatch row), the
+/// strips below, and nothing that draws a colour field.
 #[test]
 fn the_strips_carry_no_field() {
     for mode in ColorPanelMode::STRIP {
@@ -477,10 +478,21 @@ fn the_strips_carry_no_field() {
         for name in ["Color Ramp", "White", "Black", "Saturation / Brightness", "Color Wheel"] {
             assert!(h.query_by_label(name).is_none(), "{mode:?}: no {name}");
         }
+        assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "{mode:?}: 色板 stays above the strips");
         for (label, ..) in Model::of(mode).channels() {
             assert_eq!(h.query_all_by_label(label).count(), 1, "{mode:?}: the {label} strip is there");
         }
     }
+}
+
+/// 色板 在上、色条在下: a strip face keeps the swatch row above its sliders, so switching faces
+/// never takes the palette away.
+#[test]
+fn the_strips_keep_the_palette_above_them() {
+    let h = color_tab(ThemeKind::Studio, ColorPanelMode::HsbSliders, [0.2, 0.4, 0.6, 1.0]);
+    let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
+    let hue = h.get_by_label("H").rect();
+    assert!(swatch.bottom() <= hue.top(), "the palette sits above the strips: {swatch:?} vs {hue:?}");
 }
 
 /// #9592: the Color panel's options survive a restart (they ride in the preferences), as in

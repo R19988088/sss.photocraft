@@ -265,25 +265,27 @@ fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32
     changed
 }
 
-/// The 色条 faces: chips (with the out-of-gamut alert under them) beside the sliders. No ramp and
-/// no field of any kind under them: a strip is nothing but strips.
+/// The 色条 faces: 色板 on top — the chips, the out-of-gamut alert under them and the picture's
+/// swatch row — and the sliders below them. No field of any kind: a strip shows the colour as
+/// strips, and the 色板 above it stays the same one every face has.
 fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
     let model = Model::of(mode);
     let background = app.ui.color_panel.background;
     let rgb = active(app);
     let v = current_values(ui, model, background, rgb);
     let dynamic = app.session.prefs().interface.dynamic_color_sliders;
-    let rows_h = model.channels().len() as f32 * (ROW_H + ui.spacing().item_spacing.y);
-    let top_h = rows_h.max(CHIPS_W + 40.0);
-    let mut edited = None;
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, top_h), Sense::hover());
+        let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, CHIPS_W + 40.0), Sense::hover());
         field_chips(app, ui, col);
         alerts(app, ui, col, rgb);
-        ui.vertical(|ui| {
-            edited = slider_rows(ui, model, v, background, dynamic, false);
-        });
+    });
+    ui.add_space(2.0);
+    crate::panels::palette_row(app, ui, 1.0);
+    ui.add_space(6.0);
+    let mut edited = None;
+    ui.vertical(|ui| {
+        edited = slider_rows(ui, model, v, background, dynamic, false);
     });
     if let Some(v) = edited {
         apply_values(app, ui, model, v);
