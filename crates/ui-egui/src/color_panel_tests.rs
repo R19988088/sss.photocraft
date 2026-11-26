@@ -2,7 +2,7 @@
 //! in every theme, a 色盘 face carries no sliders and a 色条 face carries no field, and the
 //! choice is the panel menu's, never the theme's.
 
-use egui::{Modifiers, Pos2, Rect, pos2, vec2};
+use egui::{Modifiers, Pos2, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
@@ -10,15 +10,24 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::color_panel_ui::{Model, hex_code, html_color};
 use crate::dock::Group;
-use crate::state::ColorPanelMode;
+use crate::state::{ColorPanelMode, ColorStrip};
 use crate::theme::{ThemeKind, Tokens};
 
-/// The Color tab of `kind` in `mode`, alone in a 300 x 400 pt panel.
-fn color_tab(kind: ThemeKind, mode: ColorPanelMode, fg: [f32; 4]) -> Harness<'static, PhotocraftApp> {
+/// The Color tab of `kind` in `mode` (a 色盘) with the given 色条 switched on, alone in a
+/// 300 x 400 pt panel.
+fn color_tab_strips(kind: ThemeKind, mode: ColorPanelMode, strips: &[ColorStrip], fg: [f32; 4]) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.tools.foreground = fg;
     app.ui.color_panel.mode = mode;
+    for strip in strips {
+        app.ui.color_panel.toggle_strip(*strip);
+    }
     color_tab_of(kind, app)
+}
+
+/// [`color_tab_strips`] with no 色条.
+fn color_tab(kind: ThemeKind, mode: ColorPanelMode, fg: [f32; 4]) -> Harness<'static, PhotocraftApp> {
+    color_tab_strips(kind, mode, &[], fg)
 }
 
 /// The Color tab of `kind` for `app`, as [`color_tab`].
@@ -128,21 +137,22 @@ fn every_mode_works_in_every_theme() {
                         assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: {label}");
                     }
                 }
-                _ => {
-                    for (label, ..) in Model::of(mode).channels() {
-                        assert!(h.query_by_label(label).is_some(), "{kind:?} {mode:?}: the {label} slider");
-                    }
-                }
             }
-            // A 色盘 face carries no slider rows; a 色条 face carries no field.
-            if mode.is_sliders() {
-                assert_eq!(h.query_all_by_role(egui::accesskit::Role::SpinButton).count(), 3, "{kind:?} {mode:?}: three strip fields");
-                assert!(h.query_by_label("Saturation / Brightness").is_none(), "{kind:?} {mode:?}: no field in a strip");
-            } else {
-                for name in ["H value", "S value", "B value", "L value", "a value", "b value"] {
-                    assert!(h.query_by_label(name).is_none(), "{kind:?} {mode:?}: no {name} row in a disc");
-                }
+            // A 色盘 carries no 色条: strips are switched on under the disc, not built into it.
+            for name in ["H value", "S value", "B value", "L value", "a value", "b value"] {
+                assert!(h.query_by_label(name).is_none(), "{kind:?} {mode:?}: no {name} row in a disc");
             }
+            // Every disc keeps the picture's 色板 row under it.
+            assert!(h.query_all_by_label("Image Palette Color").next().is_some(), "{kind:?} {mode:?}: the 色板 row");
+        }
+        // A 色条 switched on draws its own three rows and keeps the disc above it whole.
+        for strip in ColorStrip::ALL {
+            let mut h = color_tab_strips(kind, ColorPanelMode::C2, &[strip], [1.0, 0.0, 0.0, 1.0]);
+            for (label, ..) in Model::of(strip).channels() {
+                assert!(h.query_by_label(label).is_some(), "{kind:?} {strip:?}: the {label} slider");
+            }
+            assert!(h.query_by_label("Saturation / Brightness").is_some(), "{kind:?} {strip:?}: the disc stays above its strip");
+            assert!(h.query_all_by_label("Image Palette Color").next().is_some(), "{kind:?} {strip:?}: the 色板 row stays between them");
         }
     }
 }
@@ -150,7 +160,7 @@ fn every_mode_works_in_every_theme() {
 /// Black has no hue or saturation of its own: typed H and S must stick while B is still 0.
 #[test]
 fn hsb_sliders_take_values_on_black() {
-    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::HsbSliders, [0.0, 0.0, 0.0, 1.0]);
+    let mut h = color_tab_strips(ThemeKind::Studio, ColorPanelMode::C2, &[ColorStrip::Hsb], [0.0, 0.0, 0.0, 1.0]);
     for (field, typed) in [(0, "120"), (1, "100"), (2, "100")] {
         type_into(&mut h, egui::accesskit::Role::SpinButton, field, typed);
     }
@@ -159,7 +169,7 @@ fn hsb_sliders_take_values_on_black() {
 
 #[test]
 fn hsb_slider_track_sets_its_channel() {
-    let mut h = color_tab(ThemeKind::AdwaitaDark, ColorPanelMode::HsbSliders, [1.0, 0.0, 0.0, 1.0]);
+    let mut h = color_tab_strips(ThemeKind::AdwaitaDark, ColorPanelMode::C2, &[ColorStrip::Hsb], [1.0, 0.0, 0.0, 1.0]);
     let s = h.get_by_label("S").rect();
     press(&mut h, pos2(s.right() - 2.0, s.center().y), Modifiers::NONE);
     // Saturation 100 of red is still red; the field takes a brightness next.
@@ -245,8 +255,8 @@ fn the_panel_menu_keeps_its_narrow_width_over_the_panel() {
 }
 
 /// The panel menu lists the faces in two groups — 色盘 (the discs) over 色条 (the strips) — with
-/// the reference layout checked first; picking one switches the panel and a theme change keeps it.
-/// The copy commands still work on the second page.
+/// the reference layout checked first; picking a disc switches the panel, a strip is switched on
+/// beside it, and a theme change keeps both. The copy commands still work on the second page.
 #[test]
 fn panel_menu_lists_the_faces_in_two_groups() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -261,17 +271,23 @@ fn panel_menu_lists_the_faces_in_two_groups() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    for (group, modes) in [("Color Discs", &ColorPanelMode::DISC[..]), ("Color Strips", &ColorPanelMode::STRIP[..])] {
+    for group in ["Color Discs", "Color Strips"] {
         assert_eq!(h.query_all_by_label(group).count(), 1, "the {group} heading");
-        for mode in modes {
-            let label = format!("{}{}", if *mode == ColorPanelMode::C2 { "✔ " } else { "   " }, mode.label());
-            assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
-        }
+    }
+    for mode in ColorPanelMode::ALL {
+        let label = format!("{}{}", if mode == ColorPanelMode::C2 { "✔ " } else { "   " }, mode.label());
+        assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
+    }
+    for strip in ColorStrip::ALL {
+        assert_eq!(h.query_all_by_label(&format!("   {}", strip.label())).count(), 1, "{strip:?} is offered unchecked");
     }
     assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
+    // A 色条 is switched on, not swapped for the disc: the disc stays and the strip comes under it.
     h.get_by_label("   HSB Sliders").click();
     h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::HsbSliders);
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2, "the disc stays");
+    assert!(h.state().ui.color_panel.hsb_strip, "the strip is on");
+    assert_eq!(h.query_all_by_label("✔ HSB Sliders").count(), 1, "the menu shows it on");
     // The copy commands live on the menu's second page, reached from the dot under the first.
     h.get_by_label("Page 2").click();
     h.run_steps(2);
@@ -280,11 +296,12 @@ fn panel_menu_lists_the_faces_in_two_groups() {
     let copied: Vec<_> =
         h.output().platform_output.commands.iter().filter_map(|c| if let egui::OutputCommand::CopyText(s) = c { Some(s.clone()) } else { None }).collect();
     assert_eq!(copied, ["3399cc"]);
-    // Switching theme keeps the mode the author picked.
+    // Switching theme keeps the disc and the strip the author picked.
     let ctx = h.ctx.clone();
     h.state_mut().set_theme(&ctx, ThemeKind::Pro);
     h.run_steps(2);
-    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::HsbSliders);
+    assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
+    assert!(h.state().ui.color_panel.hsb_strip);
 }
 
 /// `ui.set colorPanel` merges, so setting the mode keeps the edited chip; bad values change nothing.
@@ -300,10 +317,10 @@ fn control_sets_the_mode() {
         }
     };
     assert!(call(&mut app, json!({"colorPanel": {"background": true}})));
-    assert!(call(&mut app, json!({"colorPanel": {"mode": "labSliders"}})));
+    assert!(call(&mut app, json!({"colorPanel": {"mode": "colorWheel"}})));
     let cp = app.ui.color_panel;
     assert!(cp.background, "the chip is kept");
-    assert_eq!(cp.mode, ColorPanelMode::LabSliders);
+    assert_eq!(cp.mode, ColorPanelMode::ColorWheel);
     // The faces the panel no longer has, and values of the wrong type: rejected.
     for bad in [json!({"colorPanel": {"mode": "hueWheel"}}), json!({"colorPanel": {"mode": "grayscaleSlider"}}), json!({"colorPanel": {"background": "yes"}})] {
         assert!(!call(&mut app, bad.clone()), "{bad}");
@@ -377,7 +394,7 @@ fn mode_panel(width: f32, mode: ColorPanelMode) -> Harness<'static, PhotocraftAp
 
 /// The Color tab in `mode` with a document holding one selected black rectangle, the Rectangle tool
 /// in hand, foreground blue and background red, editing the background chip if `background`.
-fn color_tab_with_a_shape(mode: ColorPanelMode, background: bool) -> Harness<'static, PhotocraftApp> {
+fn color_tab_with_a_shape(mode: ColorPanelMode, strips: &[ColorStrip], background: bool) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
     app.sync_views();
@@ -386,6 +403,9 @@ fn color_tab_with_a_shape(mode: ColorPanelMode, background: bool) -> Harness<'st
     app.session.tools.foreground = [0.0, 0.0, 1.0, 1.0];
     app.session.tools.background = [1.0, 0.0, 0.0, 1.0];
     app.ui.color_panel.mode = mode;
+    for strip in strips {
+        app.ui.color_panel.toggle_strip(*strip);
+    }
     app.ui.color_panel.background = background;
     color_tab_of(ThemeKind::Studio, app)
 }
@@ -417,14 +437,14 @@ fn shape_fill(app: &PhotocraftApp) -> [u8; 3] {
 /// tool in hand) keeps its fill. On the foreground chip the shape follows.
 #[test]
 fn hsb_sliders_edit_the_active_chip_and_only_the_foreground_recolours_shapes() {
-    let mut h = color_tab_with_a_shape(ColorPanelMode::HsbSliders, true);
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, &[ColorStrip::Hsb], true);
     type_first_slider(&mut h, "120");
     let app = h.state();
     assert_eq!(bytes(app.session.tools.background), [0, 255, 0], "the background takes the hue");
     assert_eq!(bytes(app.session.tools.foreground), [0, 0, 255], "the foreground is left alone");
     assert_eq!(shape_fill(app), [0, 0, 0], "a background edit recolours nothing");
 
-    let mut h = color_tab_with_a_shape(ColorPanelMode::HsbSliders, false);
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, &[ColorStrip::Hsb], false);
     type_first_slider(&mut h, "120");
     let app = h.state();
     assert_eq!(bytes(app.session.tools.foreground), [0, 255, 0]);
@@ -436,7 +456,7 @@ fn hsb_sliders_edit_the_active_chip_and_only_the_foreground_recolours_shapes() {
 /// (`apply_color`), in one history step, and only for a foreground edit.
 #[test]
 fn the_strips_recolour_the_selected_shape_with_the_foreground() {
-    let mut h = color_tab_with_a_shape(ColorPanelMode::HsbSliders, false);
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, &[ColorStrip::Hsb], false);
     let before = h.state().session.active().unwrap().history.entries().len();
     type_first_slider(&mut h, "120");
     let app = h.state();
@@ -444,7 +464,7 @@ fn the_strips_recolour_the_selected_shape_with_the_foreground() {
     assert_eq!(shape_fill(app), [0, 255, 0]);
     assert_eq!(app.session.active().unwrap().history.entries().len(), before + 1, "one history step");
 
-    let mut h = color_tab_with_a_shape(ColorPanelMode::LabSliders, false);
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, &[ColorStrip::Lab], false);
     type_first_slider(&mut h, "70");
     let app = h.state();
     assert_ne!(bytes(app.session.tools.foreground), [0, 0, 255], "the Lab strip edits the foreground");
@@ -469,29 +489,31 @@ fn the_disc_carries_no_sliders() {
     h.run_steps(3);
 }
 
-/// A 色条 face carries no field or ramp: 色板 above (the chips and the picture's swatch row), the
-/// strips below, and nothing that draws a colour field.
+/// A 色条 is a strip only: its rows go below the 色盘, it draws no field of its own, and the 色板
+/// row sits between the two.
 #[test]
 fn the_strips_carry_no_field() {
-    for mode in ColorPanelMode::STRIP {
-        let h = color_tab(ThemeKind::Studio, mode, [0.2, 0.4, 0.6, 1.0]);
-        for name in ["Color Ramp", "White", "Black", "Saturation / Brightness", "Color Wheel"] {
-            assert!(h.query_by_label(name).is_none(), "{mode:?}: no {name}");
+    for strip in ColorStrip::ALL {
+        let h = color_tab_strips(ThemeKind::Studio, ColorPanelMode::C2, &[strip], [0.2, 0.4, 0.6, 1.0]);
+        for name in ["Color Ramp", "White", "Black", "Color Wheel"] {
+            assert!(h.query_by_label(name).is_none(), "{strip:?}: no {name}");
         }
-        assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "{mode:?}: 色板 stays above the strips");
-        for (label, ..) in Model::of(mode).channels() {
-            assert_eq!(h.query_all_by_label(label).count(), 1, "{mode:?}: the {label} strip is there");
+        assert_eq!(h.query_all_by_label("Image Palette Color").count(), 10, "{strip:?}: 色板 stays above the strips");
+        for (label, ..) in Model::of(strip).channels() {
+            assert_eq!(h.query_all_by_label(label).count(), 1, "{strip:?}: the {label} strip is there");
         }
     }
 }
 
-/// 色板 在上、色条在下: a strip face keeps the swatch row above its sliders, so switching faces
-/// never takes the palette away.
+/// 色板 在上、色条在下: a strip keeps the swatch row above its sliders, under the 色盘, so
+/// switching faces never takes the palette away.
 #[test]
 fn the_strips_keep_the_palette_above_them() {
-    let h = color_tab(ThemeKind::Studio, ColorPanelMode::HsbSliders, [0.2, 0.4, 0.6, 1.0]);
+    let h = color_tab_strips(ThemeKind::Studio, ColorPanelMode::C2, &[ColorStrip::Hsb], [0.2, 0.4, 0.6, 1.0]);
     let swatch = h.query_all_by_label("Image Palette Color").next().expect("a swatch").rect();
+    let picker = h.get_by_label("Saturation / Brightness").rect();
     let hue = h.get_by_label("H").rect();
+    assert!(picker.bottom() <= swatch.top(), "the 色盘 sits above the palette: {picker:?} vs {swatch:?}");
     assert!(swatch.bottom() <= hue.top(), "the palette sits above the strips: {swatch:?} vs {hue:?}");
 }
 
@@ -548,7 +570,8 @@ fn an_outside_preference_change_reaches_the_live_panel() {
     assert_eq!(stored.recent[1], [0.4, 0.5, 0.6, 1.0], "and the preference isn't overwritten");
     // A stored face is the one option that never reaches the panel.
     let mut mode_change = app.ui.color_panel;
-    mode_change.mode = ColorPanelMode::HsbSliders;
+    mode_change.mode = ColorPanelMode::ColorWheel;
+    mode_change.hsb_strip = true;
     app.session.prefs.edit(|p| p.color_panel = serde_json::to_value(mode_change).unwrap());
     crate::color_panel_ui::persist(&mut app);
     assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the stored face is not restored");
@@ -604,7 +627,7 @@ fn the_c2_source_switch_tops_the_panel() {
 /// stroke) instead of the patch, and 图案 brings the patch back.
 #[test]
 fn picking_a_solid_colour_keeps_pattern_and_paints_it() {
-    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, false);
+    let mut h = color_tab_with_a_shape(ColorPanelMode::C2, &[], false);
     h.state_mut().session.tools.foreground = [1.0, 0.0, 0.0, 1.0];
     h.state_mut().run("document.samplePattern", json!({"x": 4, "y": 4, "size": 4})).unwrap();
     h.run_steps(2);

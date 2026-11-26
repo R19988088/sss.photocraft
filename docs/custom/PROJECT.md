@@ -470,21 +470,31 @@ Ctrl+S 都会再弹一次文件选择框。改动三处：
 - 测试：`engine/.../file_cmds/tests.rs`（`layered_extension`、`holds_at`、Lab 不承载）、
   `file_open/tests.rs`（分层 TIFF 连按两次 Ctrl+S 不弹框、单层 TIFF 也不弹 TIFF Options）。
 
-## 12. 自研改动：颜色面板 色盘 / 色条 两类，绝不混用（2026-11-26）
+## 12. 自研改动：颜色面板 色盘在上、色条在下（2026-11-26）
 
-用户口径：「色轮、色板只在上面，不包含颜色调；色条只能在下面，禁止和色板部分混用」。
+用户口径：「色轮、色板这几个只在上面，不包含颜色调，这是源码代码的垃圾部分要处理掉，色条只能在下面，
+禁止和色板部分混用」；随后修正为「这个部分是一个整体，我怎么开启（是开启，不应该是切换），这部分就没了？
+并且顶部无论选择哪个色板模式 都应该是完整的保留」「下面点击切换点 不应该关闭右键菜单」。
 
-- `ColorPanelMode` 只留 5 个面：色盘 `C2 Color` / `Hue Cube` / `Color Wheel`，色条 `HSB Sliders` /
-  `Lab Sliders`。删掉的 `BrightnessCube`、`GrayscaleSlider`、`RgbSliders`、`CmykSliders`、
-  `WebColorSliders`（枚举、`Model` 的 Gray/Rgb/Cmyk/Web 分支、`hex_pair`、Web Color 六步吸附、
-  色盘下的 H/S/B 滑条、色轮上方的 HSB 滑条）都是「色盘里混色条」的垃圾代码。
-- 色条面不再画色带：`ColorRamp`（RGB Spectrum / CMYK Spectrum / Grayscale Ramp / Current Colors）、
-  `ramp` / `ramp_colors` / `ramp_mesh` / `ramp_color`、右下角白/黑块、Shift 轮换与 Alt 取另一色、
-  Make Ramp Web Safe、`state.ramp` / `web_safe_ramp` 全部删除；面板菜单第二页只剩两条 Copy 命令。
-- 色盘面不再画滑条：C2 下面那三行 H/S/B（原「显示颜色数值」）删除，`state.show_values` 一并删除；
-  颜色值只留在色盘右上角的 hex 框（`color_source` 里那个 `#` 输入）。
-- `color_field` 只留 Hue Cube（删除 Brightness Cube 分支）；`color_field_fill_id` /
-  `offer_color_field_fill`（只为色带撑高度）删除。
-- 测试：`color_panel_tests` 重写（`the_disc_carries_no_sliders`、`the_strips_carry_no_field`、
-  菜单两组、`ui.set colorPanel` 拒收已删面）；`color_tab_theme_tests` 改按控件 rect 取点。
-  与基线相比没有新红（既有红 46 条与本轮无关：测试机缺中文字体、dock/浮窗主题等）。
+- `ColorPanelMode` = 3 个**色盘**：`C2 Color` / `Hue Cube` / `Color Wheel`；新增 `ColorStrip` =
+  2 个**色条**：`HSB Sliders` / `Lab Sliders`，由 `ColorPanelState.hsb_strip` / `lab_strip` 两个布尔字段
+  （camelCase `hsbStrip` / `labStrip`）记录开关，`strip()` / `toggle_strip()` 读写。
+- `color_panel_ui::panel()` 是色盘 + 色板 + 色条的组合：先按 `mode` 画所选色盘（永远完整保留），
+  `ui.add_space(6.0)` 后画 `palette_row`（画面取色 10 格，所有面共用），再按顺序画已开启的色条
+  （`strip_rows`，只有滑条，不画色盘、不画色板）。
+- 右键菜单：色盘组单选（点击不关菜单，见下），色条组用 ✔ 开关（`toggle_strip`），色盘与色条可同时存在；
+  `Popup::context_menu` 加 `PopupCloseBehavior::CloseOnClickOutside`，所以点页码点、点色条都不会关菜单，
+  只有点菜单外面才关（菜单里的 Copy 按钮自己 `ui.close()`）。
+- 删除的「色盘里混色条」垃圾代码：`BrightnessCube`、`GrayscaleSlider`、`RgbSliders`、`CmykSliders`、
+  `WebColorSliders`（枚举、`Model` 的 Gray/Rgb/Cmyk/Web 分支、`hex_pair`、Web Color 六步吸附、C2 下的
+  H/S/B 滑条与 `state.show_values`、色轮上方的 HSB 滑条）。
+- 色条面不再画色带：`ColorRamp`（RGB/CMYK Spectrum、Grayscale Ramp、Current Colors）、`ramp` /
+  `ramp_colors` / `ramp_mesh` / `ramp_color`、右下角白/黑块、Shift 轮换与 Alt 取另一色、Make Ramp Web Safe、
+  `state.ramp` / `web_safe_ramp` 全部删除；菜单第二页只剩两条 Copy 命令。
+- 色盘面不再画滑条：颜色值只留在色盘右上角的 hex 框（`color_source` 里那个 `#` 输入）。
+  `color_field` 只留 Hue Cube；`color_field_fill_id` / `offer_color_field_fill`（只为色带撑高度）删除。
+- 测试：`color_panel_tests` 重写（`every_mode_works_in_every_theme` 覆盖 3 色盘 × 全主题 + 2 色条 ×
+  全主题、`the_disc_carries_no_sliders`、`the_strips_carry_no_field`、`the_strips_keep_the_palette_above_them`、
+  菜单两组、`ui.set colorPanel` 认 `colorWheel` 与 `hsbStrip/labStrip`、拒收已删面）；
+  `color_tab_theme_tests` 改按控件 rect 取点。与 stash 基线比没有新红（基线 49 红 → 现 46 红，少的三条是
+  本轮顺手修好的；剩下的既有红与本轮无关：测试机缺中文字体、dock/浮窗主题等）。

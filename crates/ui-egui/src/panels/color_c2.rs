@@ -240,7 +240,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if h.v < 0.04 && h.s < remembered.1 {
         h.s += (remembered.1 - h.s) * (1. - h.v / 0.04).clamp(0., 1.);
     }
-    let (rect, response) = ui.allocate_exact_size(vec2(width, side), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, side), Sense::hover());
     sources(app, ui, Rect::from_min_size(rect.min + vec2(pad, 0.), vec2(left, side)));
     let square = Rect::from_min_size(pos2(rect.min.x + pad + left + 8. * scale, rect.min.y), vec2(side, side));
     changed |= sv(ui, square, &mut h);
@@ -260,14 +260,4 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             recent[0] = current;
         }
     }
-    ui.add_space(6. * scale);
-    crate::panels::palette_row(app, ui, scale);
-    // The panel menu, from a right-click anywhere on the panel.
-    let popup = egui::Popup::context_menu(&response);
-    let open = ui.input(|i| {
-        i.pointer.button_clicked(egui::PointerButton::Secondary)
-            && i.pointer.interact_pos().is_some_and(|p| Rect::from_min_max(rect.min, ui.min_rect().max).contains(p))
-    });
-    popup.open_memory(open.then_some(egui::SetOpenCommand::Bool(true))).show(|ui| super::color_panel_ui::panel_menu(app, ui));
-    crate::apply_color::track_focus(ui.ctx());
 }

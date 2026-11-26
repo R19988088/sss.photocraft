@@ -1256,13 +1256,13 @@ fn ui_set_color_panel_mode() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let ctx = egui::Context::default();
     assert_eq!(app.ui.color_panel.mode, ColorPanelMode::C2, "the C2 layout is the panel's default");
-    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "labSliders"}}))["ok"], true);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::LabSliders);
-    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "hsbSliders"}}))["ok"], true);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::HsbSliders);
-    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "rgbSliders"}}))["ok"], false, "the RGB face is gone");
+    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "colorWheel"}}))["ok"], true);
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::ColorWheel);
+    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"hsbStrip": true, "labStrip": true}}))["ok"], true);
+    assert!(app.ui.color_panel.hsb_strip && app.ui.color_panel.lab_strip, "both strips switched on");
+    assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "hsbSliders"}}))["ok"], false, "a strip is not a disc");
     assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"mode": "nope"}}))["ok"], false);
-    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::HsbSliders);
+    assert_eq!(app.ui.color_panel.mode, ColorPanelMode::ColorWheel);
 }
 
 #[test]

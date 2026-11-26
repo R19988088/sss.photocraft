@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::color_picker_ui::{hex, out_of_gamut};
 use crate::panels::{field_chips, field_hsva, srgb_hsva};
-use crate::state::{ColorPanelMode, ColorPanelState};
+use crate::state::{ColorPanelMode, ColorPanelState, ColorStrip};
 use crate::theme::Tokens;
 use crate::widgets;
 use photocraft_color::convert;
@@ -37,10 +37,10 @@ pub(crate) enum Model {
 }
 
 impl Model {
-    pub(crate) fn of(mode: ColorPanelMode) -> Model {
-        match mode {
-            ColorPanelMode::LabSliders => Model::Lab,
-            _ => Model::Hsb,
+    pub(crate) fn of(strip: ColorStrip) -> Model {
+        match strip {
+            ColorStrip::Lab => Model::Lab,
+            ColorStrip::Hsb => Model::Hsb,
         }
     }
 
@@ -265,23 +265,14 @@ fn track(ui: &egui::Ui, r: Rect, resp: &egui::Response, value: &mut f32, lo: f32
     changed
 }
 
-/// The 色条 faces: 色板 on top — the chips, the out-of-gamut alert under them and the picture's
-/// swatch row — and the sliders below them. No field of any kind: a strip shows the colour as
-/// strips, and the 色板 above it stays the same one every face has.
-fn sliders(app: &mut PhotocraftApp, ui: &mut egui::Ui, mode: ColorPanelMode) {
-    let model = Model::of(mode);
+/// One 色条: the sliders of `strip` under the 色盘 and the 色板 row. No field of its own — a
+/// strip shows the colour as sliders and nothing else.
+fn strip_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, strip: ColorStrip) {
+    let model = Model::of(strip);
     let background = app.ui.color_panel.background;
     let rgb = active(app);
     let v = current_values(ui, model, background, rgb);
     let dynamic = app.session.prefs().interface.dynamic_color_sliders;
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let (col, _) = ui.allocate_exact_size(vec2(CHIPS_W, CHIPS_W + 40.0), Sense::hover());
-        field_chips(app, ui, col);
-        alerts(app, ui, col, rgb);
-    });
-    ui.add_space(2.0);
-    crate::panels::palette_row(app, ui, 1.0);
     ui.add_space(6.0);
     let mut edited = None;
     ui.vertical(|ui| {
@@ -509,15 +500,32 @@ fn check_item(ui: &mut egui::Ui, on: bool, label: &str) -> bool {
     resp.clicked()
 }
 
-/// The Color tab: whatever the panel menu picked. A 色盘 face draws a field, a 色条 face draws
-/// sliders; neither face draws the other kind.
+/// The Color tab: the 色盘 picked from the panel menu on top, the 色板 row under it, and the 色条
+/// switched on below them. The 色盘 is the panel's own top half and stays whole whatever the strips
+/// are set to: a strip is switched on, never swapped for the disc.
 pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let area = ui.max_rect();
     match app.ui.color_panel.mode {
         ColorPanelMode::C2 => super::color_c2::show(app, ui),
         ColorPanelMode::HueCube => crate::panels::color_field(app, ui),
         ColorPanelMode::ColorWheel => wheel(app, ui),
-        mode => sliders(app, ui, mode),
     }
+    // 色板: the picture's swatch row, the same in every panel, between the 色盘 and the 色条.
+    ui.add_space(6.0);
+    crate::panels::palette_row(app, ui, 1.0);
+    for strip in ColorStrip::ALL {
+        if app.ui.color_panel.strip(strip) {
+            strip_rows(app, ui, strip);
+        }
+    }
+    // The panel menu, from a right-click anywhere on the panel. A click inside it turns a 色条 on
+    // or off and pages the dots, so only a click outside the menu closes it.
+    let resp = ui.interact(area, ui.id().with("color-panel-menu-area"), Sense::hover());
+    let open = ui.input(|i| {
+        i.pointer.button_clicked(egui::PointerButton::Secondary) && i.pointer.interact_pos().is_some_and(|p| area.contains(p))
+    });
+    let popup = egui::Popup::context_menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    popup.open_memory(open.then_some(egui::SetOpenCommand::Bool(true))).show(|ui| panel_menu(app, ui));
     crate::apply_color::track_focus(ui.ctx());
 }
 
@@ -545,22 +553,22 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let page_id = ui.make_persistent_id("color_panel_menu_page");
     let page = ui.data(|d| d.get_temp::<usize>(page_id)).unwrap_or(0);
     if page == 0 {
-        // 色盘: the faces that put the colour on a disc or a square (the reference layout first and
-        // the default). A pick is remembered in the session.
+        // 色盘: the disc on top of the panel (the reference layout first and the default), one at
+        // a time. A pick is remembered in the session.
         section(ui, "Color Discs");
-        for mode in ColorPanelMode::DISC {
+        for mode in ColorPanelMode::ALL {
             if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
                 app.ui.color_panel.mode = mode;
-                ui.close();
             }
         }
         ui.separator();
-        // 色条: the faces that show the colour as sliders, and only as sliders.
+        // 色条: switched on under the 色盘, each on its own — a click turns it on or off and the
+        // 色盘 above stays whole. The menu stays open so both can be seen at once.
         section(ui, "Color Strips");
-        for mode in ColorPanelMode::STRIP {
-            if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
-                app.ui.color_panel.mode = mode;
-                ui.close();
+        for strip in ColorStrip::ALL {
+            if check_item(ui, app.ui.color_panel.strip(strip), strip.label()) {
+                app.ui.color_panel.toggle_strip(strip);
+                ui.ctx().request_repaint();
             }
         }
         ui.separator();

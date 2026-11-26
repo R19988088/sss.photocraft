@@ -67,7 +67,7 @@ pub mod type_panels_ui;
 pub(super) mod variables_ui;
 
 pub(crate) use color::{
-    color_field, field_chips, field_hsva, palette_picker_side, palette_row, palette_scale, srgb_hsva,
+    color_field, field_chips, field_hsva, palette_picker_side, palette_row, srgb_hsva,
 };
 #[cfg(test)]
 pub(crate) use color::{hsva_color32, hsva_srgb, srgb_bytes};

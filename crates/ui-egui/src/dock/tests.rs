@@ -117,7 +117,7 @@ fn switching_layer_kinds_keeps_the_layers_panel_still() {
 fn dragging_the_splitter_resizes_and_survives_a_ui_state_round_trip() {
     let (mut app, _, _) = app_with_layers();
     // CodeRabbit on #9606: the Color panel's options ride the same frames and preferences.
-    app.ui.color_panel.mode = crate::state::ColorPanelMode::HsbSliders;
+    app.ui.color_panel.hsb_strip = true;
     let mut h = harness(app, vec2(1200.0, 800.0), ThemeKind::ProMedium);
     let props = rect_of(&h, Group::Properties);
     let color = rect_of(&h, Group::Color);
@@ -146,7 +146,7 @@ fn dragging_the_splitter_resizes_and_survives_a_ui_state_round_trip() {
     assert!(app3.ui.docking.is_some());
     assert_eq!(app3.ui.docking.as_ref().map(|w| &w.layout), h.state().ui.docking.as_ref().map(|w| &w.layout));
     crate::color_panel_ui::restore(&mut app3);
-    assert_eq!(app3.ui.color_panel.mode, crate::state::ColorPanelMode::HsbSliders, "the Color panel's mode too");
+    assert!(app3.ui.color_panel.hsb_strip, "the Color panel's strips too");
     // …unless Remember Workspace Changes is off.
     let mut s3 = photocraft_engine::Session::new();
     s3.load_prefs_json(&prefs).unwrap();
