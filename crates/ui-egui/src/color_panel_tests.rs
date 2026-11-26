@@ -356,6 +356,25 @@ fn color_wheel_ring_sets_hue_and_triangle_sets_saturation_and_brightness() {
     assert!((hsv[0] - 90.0).abs() < 4.0 && hsv[1] < 0.9 && hsv[2] < 0.95, "{after:?} {hsv:?}");
 }
 
+/// A right-click on the panel opens the menu at the menu's own narrow width: the popup is anchored
+/// to the whole panel's rect, so without the menu pinning its width it stretched to the dock.
+#[test]
+fn the_panel_menu_keeps_its_narrow_width_over_the_panel() {
+    let mut h = color_tab(ThemeKind::Studio, ColorPanelMode::C2, [0.2, 0.4, 0.6, 1.0]);
+    let at = h.get_by_label("Saturation / Brightness").rect().center();
+    h.event(egui::Event::PointerMoved(at));
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    let row = h.get_by_label("✔ C2 Color").rect();
+    assert!(row.width() <= 210.0, "the menu keeps its own width: {row:?}");
+    assert_eq!(h.query_all_by_label("Color Discs").count(), 1);
+    assert_eq!(h.query_all_by_label("Color Strips").count(), 1);
+}
+
 /// The panel menu lists Photoshop's ten faces with the reference layout checked first; picking
 /// one switches the panel and a theme change keeps it; the ramp and copy commands still work.
 #[test]
@@ -372,10 +391,21 @@ fn panel_menu_lists_the_display_modes_and_picks_the_ramp() {
     );
     PhotocraftApp::setup_context(&h.ctx, ThemeKind::AdwaitaDark);
     h.run_steps(2);
-    // Every face is offered, the reference layout (C2) checked.
+    // Two groups: 色盘 (the discs and the reference square) and 色条 (the sliders). Every face in
+    // them is offered, the reference layout (C2) checked, and no other face is.
+    for (group, modes) in [("Color Discs", &ColorPanelMode::DISC[..]), ("Color Strips", &ColorPanelMode::STRIP[..])] {
+        assert_eq!(h.query_all_by_label(group).count(), 1, "the {group} heading");
+        for mode in modes {
+            let label = format!("{}{}", if *mode == ColorPanelMode::C2 { "✔ " } else { "   " }, mode.label());
+            assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
+        }
+    }
     for mode in ColorPanelMode::ALL {
-        let label = format!("{}{}", if mode == ColorPanelMode::C2 { "✔ " } else { "   " }, mode.label());
-        assert_eq!(h.query_all_by_label(&label).count(), 1, "{mode:?} is offered");
+        if ColorPanelMode::DISC.contains(&mode) || ColorPanelMode::STRIP.contains(&mode) {
+            continue;
+        }
+        let label = format!("   {}", mode.label());
+        assert_eq!(h.query_all_by_label(&label).count(), 0, "{mode:?} is gone from the menu");
     }
     assert_eq!(h.state().ui.color_panel.mode, ColorPanelMode::C2);
     h.get_by_label("   HSB Sliders").click();

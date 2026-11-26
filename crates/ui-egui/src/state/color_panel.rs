@@ -106,6 +106,12 @@ impl ColorPanelMode {
         ColorPanelMode::WebColorSliders,
     ];
 
+    /// The 色盘 group of the panel menu: the faces that put the colour on a disc or a square.
+    pub const DISC: [ColorPanelMode; 3] = [ColorPanelMode::C2, ColorPanelMode::HueCube, ColorPanelMode::ColorWheel];
+
+    /// The 色条 group of the panel menu: the faces that show the colour as sliders.
+    pub const STRIP: [ColorPanelMode; 2] = [ColorPanelMode::HsbSliders, ColorPanelMode::LabSliders];
+
     /// The panel menu item.
     pub fn label(self) -> &'static str {
         match self {

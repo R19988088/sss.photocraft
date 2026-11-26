@@ -763,9 +763,18 @@ pub(crate) fn hex_code(rgb: [f32; 3]) -> String {
     hex(rgb).trim_start_matches('#').to_string()
 }
 
-/// A panel menu row with Photoshop's check mark column.
+/// A panel menu row with Photoshop's check mark column: one full-width row, its text left, so the
+/// whole row takes the click and the menu keeps its narrow width.
 fn check_item(ui: &mut egui::Ui, on: bool, label: &str) -> bool {
-    ui.button(format!("{}{}", if on { "✔ " } else { "   " }, tl!(label))).clicked()
+    let t = Tokens::get(ui.ctx());
+    let text = format!("{}{}", if on { "✔ " } else { "   " }, tl!(label));
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, t.radius_sm, t.hover);
+    }
+    ui.painter().text(rect.left_center() + vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, &text, egui::FontId::proportional(13.0), t.text);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text.clone()));
+    resp.clicked()
 }
 
 /// The ramp choices and Make Ramp Web Safe (the panel menu's last section and the ramp's
@@ -797,18 +806,43 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::apply_color::track_focus(ui.ctx());
 }
 
-/// The Color panel's panel menu, Photoshop's: the modes, the mixing strength, the copy commands,
-/// the ramps. Two narrow pages — the faces, then the commands — with a page dot under them, so
-/// the menu never grows into a column taller than the panel it belongs to.
+/// The width of the Color panel's menu, in points. A right-click on the panel anchors the popup to
+/// the whole panel's rect and egui would stretch the menu to it, so the menu pins its own width.
+const MENU_WIDTH: f32 = 200.0;
+
+/// A section heading in the panel menu (色盘, 色条): dim text over the items it titles, with no
+/// check column of its own, so it reads as a group rather than a choice.
+fn section(ui: &mut egui::Ui, label: &str) {
+    let t = Tokens::get(ui.ctx());
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(tl!(label)).color(t.text_dim).size(12.0));
+}
+
+/// The Color panel's panel menu, Photoshop's: the faces in two groups (色盘 and 色条), the colour
+/// values, the mixing strength, the copy commands, the ramps. Two narrow pages — the faces and the
+/// colour controls, then the commands — with a page dot under them, so the menu never grows into a
+/// column wider or taller than the panel it belongs to.
 pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    ui.set_width(MENU_WIDTH);
+    ui.set_max_width(MENU_WIDTH);
     const PAGES: usize = 2;
     // The page the menu is on, kept across frames while it stays open.
     let page_id = ui.make_persistent_id("color_panel_menu_page");
     let page = ui.data(|d| d.get_temp::<usize>(page_id)).unwrap_or(0);
     if page == 0 {
-        // The display: Photoshop's ten faces, the reference layout (C2) first and the default. The
-        // mode is remembered in the preferences, so a pick survives a restart.
-        for mode in ColorPanelMode::ALL {
+        // 色盘: the faces that put the colour on a disc or a square (the reference layout first and
+        // the default). A pick is remembered in the session.
+        section(ui, "Color Discs");
+        for mode in ColorPanelMode::DISC {
+            if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
+                app.ui.color_panel.mode = mode;
+                ui.close();
+            }
+        }
+        ui.separator();
+        // 色条: the faces that show the colour as sliders.
+        section(ui, "Color Strips");
+        for mode in ColorPanelMode::STRIP {
             if check_item(ui, app.ui.color_panel.mode == mode, mode.label()) {
                 app.ui.color_panel.mode = mode;
                 ui.close();
@@ -834,8 +868,6 @@ pub(crate) fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
         }
     } else {
-        // Wide enough for the copy commands, as the reference menu is.
-        ui.set_min_width(220.0);
         let rgb = active(app);
         if ui.button(tl!("Copy Color as HTML")).clicked() {
             ui.ctx().copy_text(html_color(rgb));
